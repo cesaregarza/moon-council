@@ -22,7 +22,7 @@ export function actorPacket(roleId="seer",actorId="p1"):PlayerContextV2 {
 export function refreshFixtureBrief(packet:PlayerContextV2,action="My own inspection identified Cato (p3) as a werewolf. Hollis died and was publicly revealed Werewolf; Cato is the last wolf. Voting to eliminate Cato wins for my village. I have kept this result private; that does not weaken my knowledge.",attention="I want to hear Delta answer Briar's accusation; a defense matters even from a suspect. I have new private evidence and should speak soon.") {
   const revision=journalEvidenceRevision(packet.sources);
   packet.rules.journalRevision=revision;
-  packet.journal={...packet.journal,text:"Day 1 I wondered whether Arden was a wolf. That old suspicion was superseded by my verified results. ".repeat(80),decisionBrief:{playerId:packet.self.id,evidenceRevision:revision,action,attention}};
+  packet.journal={...packet.journal,text:"Day 1 I wondered whether Arden was a wolf. That old suspicion was superseded by my verified results. ".repeat(80)+"\nCurrent assessment: "+action+"\nListening: "+attention,decisionBrief:{playerId:packet.self.id,evidenceRevision:revision,action,attention}};
   return packet;
 }
 export interface ActorFixture { label:string;packet:PlayerContextV2;task:V3TaskKind;expectedTarget?:string|null;rubric:string }

@@ -3,25 +3,27 @@ import {dirname,basename,resolve,join} from "node:path";
 import {pathToFileURL} from "node:url";
 import {parseArgs} from "node:util";
 import {actorConfig,actorFixtures} from "../packages/simulator/src/testing/actor-fixtures";
-import {prepareActorJevAction} from "../packages/simulator/src/jev-actor";
+import {prepareJevAction} from "../packages/simulator/src/jev-actions";
 import {decisionRequestV31,normalizeV31Submission} from "../packages/simulator/src/request-v3-1";
 import {evaluateProbeCase,describeProbeCase} from "./jev-probe";
 import type {V3TaskSpec} from "../packages/simulator/src/request-v3";
 import type {JevRequest} from "../packages/llm/src/jev";
 
-export function actorEvaluationCases() {
+export function actorEvaluationCases(workflow:"journal_v3"|"journal_v4"="journal_v4") {
   return actorFixtures().map(f=>{
+    const config=actorConfig();config.decisionEngine.workflow=workflow;f.packet.rules.jevWorkflow=workflow;
     const task={type:f.task,proposalKind:f.task==="night_choice"?"night_action":f.task==="team_point_choice"?"team_point":f.task==="discussion_score"?"discussion":"vote"} as V3TaskSpec;
     const base={...decisionRequestV31(f.packet,task,true,null,null),schemaName:f.task,normalize:(v:unknown)=>normalizeV31Submission(f.packet,task,v as never,"synthetic",true)};
-    const stage=prepareActorJevAction({packet:f.packet,playerId:f.packet.self.id,taskType:f.task},actorConfig(),base);
+    const stage=prepareJevAction({packet:f.packet,playerId:f.packet.self.id,taskType:f.task},config,base);
     const expected=f.expectedTarget===undefined?undefined:f.expectedTarget===null?"abstain":String.fromCharCode(97+f.packet.legalTargets.indexOf(f.expectedTarget));
     return {label:f.label,request:JSON.parse(stage.prepared.prompt.input) as JevRequest,expected,rubric:f.rubric,promptVersion:stage.prepared.promptVersion};
   });
 }
 async function main() {
-  const {values}=parseArgs({options:{live:{type:"boolean"},out:{type:"string"},help:{type:"boolean"}}});
-  if(values.help){console.log("Usage: npm run jev:actor-eval -- [--live --out NEW_DIRECTORY]\nOffline by default. --live sends eight synthetic scenarios once each (no retries, no saved games). Saves exact prompts, distributions, model versions, usage, latency, rubric results. Fails if any response fails its semantic rubric; confidence is not correctness.");return;}
-  const cases=actorEvaluationCases();
+  const {values}=parseArgs({options:{live:{type:"boolean"},out:{type:"string"},workflow:{type:"string",default:"journal_v4"},help:{type:"boolean"}}});
+  if(values.help){console.log("Usage: npm run jev:actor-eval -- [--workflow journal_v3|journal_v4] [--live --out NEW_DIRECTORY]\nOffline by default. --live sends eight synthetic scenarios once each (no retries, no saved games). Saves exact prompts, distributions, model versions, usage, latency, rubric results. Fails if any response fails its semantic rubric; confidence is not correctness.");return;}
+  if(values.workflow!=="journal_v3"&&values.workflow!=="journal_v4")throw new Error("Use journal_v3 or journal_v4");
+  const cases=actorEvaluationCases(values.workflow);
   if(!values.live){console.log(JSON.stringify(cases.map(c=>({...describeProbeCase(c),expected:c.expected,rubric:c.rubric})),null,2));return;}
   if(!values.out)throw new Error("Live evaluation requires --out NEW_DIRECTORY");
   const output=resolve(values.out),parent=await realpath(dirname(output));
