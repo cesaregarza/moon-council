@@ -1,0 +1,42 @@
+{
+  "name": "werewolf-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n api,runner,web -c cyan,magenta,green \"npm run dev -w @werewolf/api\" \"npm run dev -w @werewolf/runner\" \"npm run dev -w @werewolf/web\"",
+    "build": "npm run typecheck && npm run build -w @werewolf/web",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "pilot": "tsx scripts/pilot.ts",
+    "test:e2e": "playwright test",
+    "test:live:codex": "RUN_LIVE_CODEX=1 vitest run packages/llm/src/codex.live.test.ts --reporter=verbose",
+    "cache:audit": "tsx scripts/cache-audit.ts",
+    "game:audit": "tsx scripts/game-audit.ts",
+    "codex:login": "codex login",
+    "codex:status": "codex login status",
+    "start:api": "npm run start -w @werewolf/api",
+    "start:runner": "npm run start -w @werewolf/runner"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "22.20.2",
+    "concurrently": "10.0.5",
+    "fast-check": "4.9.0",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true,
+    "esbuild@0.28.2": true
+  }
+}

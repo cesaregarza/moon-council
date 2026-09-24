@@ -1,0 +1,24 @@
+node_modules/
+dist/
+.vite/
+playwright-report/
+test-results/
+coverage/
+data/*.db
+data/*.db-*
+data/luna-xhigh-v2-*/
+data/pilots/
+.env
+*.log
+
+# Runtime and private material are never part of the source distribution.
+data/
+.env*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.log
+*.orig
+*.pem
+*.key

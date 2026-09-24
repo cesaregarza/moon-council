@@ -1,0 +1,25 @@
+.git
+.env
+node_modules
+**/node_modules
+**/dist
+data
+docs/research
+playwright-report
+test-results
+*.db
+*.db-shm
+*.db-wal
+npm-debug.log*
+
+# Runtime and private material are never part of the source distribution.
+data/
+.env*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.log
+*.orig
+*.pem
+*.key

@@ -1,0 +1,14 @@
+{
+  "name": "@werewolf/llm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@openai/codex-sdk": "0.154.0",
+    "@werewolf/contracts": "0.1.0",
+    "@werewolf/engine": "0.1.0",
+    "openai": "7.15.0",
+    "zod": "4.6.2"
+  }
+}

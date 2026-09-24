@@ -1,0 +1,16 @@
+{
+  "name": "@werewolf/runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@werewolf/db": "0.1.0",
+    "@werewolf/engine": "0.1.0",
+    "@werewolf/llm": "0.1.0",
+    "@werewolf/simulator": "0.1.0"
+  }
+}
