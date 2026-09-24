@@ -1,11 +1,10 @@
 import OpenAI from "openai";
-import { z } from "zod";
-import { promptFor } from "./prompt";
+import { cacheComparisonGroup, openAIRequest } from "./openai-cache";
 import type { DecisionProvider, DecisionRequest, DecisionResult } from "./provider";
-import { providerJsonSchema, unknownUsage, type UsageV2 } from "@werewolf/contracts";
+import { unknownUsage, type UsageV2 } from "@werewolf/contracts";
 
 function numberOrNull(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function openAiUsage(value: unknown): UsageV2 {
@@ -40,19 +39,17 @@ function combineSignals(first: AbortSignal | undefined, second: AbortSignal | un
   if (!second) return { signal: first, cleanup: () => undefined };
   const controller = new AbortController();
   const abort = (source: AbortSignal) => controller.abort(source.reason);
-  first.addEventListener("abort", () => abort(first), { once: true });
-  second.addEventListener("abort", () => abort(second), { once: true });
+  const onFirst = () => abort(first), onSecond = () => abort(second);
+  first.addEventListener("abort", onFirst, { once: true });
+  second.addEventListener("abort", onSecond, { once: true });
   if (first.aborted) abort(first);
   else if (second.aborted) abort(second);
-  return { signal: controller.signal, cleanup: () => undefined };
-}
-
-function supportsExplicitPromptCaching(model:string):boolean {
-  return /^gpt-(?:5\.(?:[6-9]|[1-9]\d)|[6-9])(?:-|$)/.test(model);
+  return { signal: controller.signal, cleanup: () => { first.removeEventListener("abort", onFirst); second.removeEventListener("abort", onSecond); } };
 }
 
 export class OpenAIResponsesProvider implements DecisionProvider {
   private readonly client: OpenAI;
+  private readonly comparisons = new Map<string, { id: string; at: number }>();
 
   constructor(apiKey = process.env.OPENAI_API_KEY) {
     if (!apiKey) throw new Error("OPENAI_API_KEY is required when LLM_PROVIDER=openai");
@@ -61,12 +58,17 @@ export class OpenAIResponsesProvider implements DecisionProvider {
   }
 
   async decide<T>(request: DecisionRequest<T>): Promise<DecisionResult<T>> {
-    const prompt = promptFor(request);
+    const initialBody = openAIRequest(request);
+    const group = cacheComparisonGroup(request, initialBody);
+    const baseline = group ? this.comparisons.get(group) : undefined;
+    const comparisonId = request.cacheComparisonResponseId ?? (baseline && Date.now() - baseline.at < 30 * 60_000 ? baseline.id : undefined);
+    const body = comparisonId ? openAIRequest(request, comparisonId) : initialBody;
+    let responseModel = request.model;
     let usageReported = false;
     const reportUsage = (usage: UsageV2): void => {
       if (usageReported) return;
       usageReported = true;
-      request.onUsage?.(usage, { provider: "openai", model: request.model, outputLimitEnforced: true });
+      request.onUsage?.(usage, { provider: "openai", model: responseModel, outputLimitEnforced: request.maxOutputTokens !== null });
     };
     let timedOut = false;
     const timeoutController = request.timeoutMs ? new AbortController() : undefined;
@@ -80,50 +82,38 @@ export class OpenAIResponsesProvider implements DecisionProvider {
 
     try {
       if (request.signal?.aborted) throw new Error("request aborted");
-      const explicitCache=Boolean(request.preparedPrompt?.cache)&&supportsExplicitPromptCaching(request.model);
-      const combinedInput=[prompt.publicInput,prompt.privateInput,prompt.sharedInput,prompt.input].filter((part):part is string=>Boolean(part)).join("\n");
+      request.onProviderRequest?.(body as unknown as Record<string, unknown>);
       const response = await this.client.responses.create(
-        {
-          model: request.model,
-          store: false,
-          ...(explicitCache?{
-            input:[
-              {role:"developer" as const,content:[{type:"input_text" as const,text:prompt.instructions,prompt_cache_breakpoint:{mode:"explicit" as const}}]},
-              ...(prompt.publicInput ? [{role:"user" as const,content:[{type:"input_text" as const,text:prompt.publicInput,prompt_cache_breakpoint:{mode:"explicit" as const}}]}] : []),
-              ...(prompt.privateInput ? [{role:"user" as const,content:prompt.privateInput}] : []),
-              ...(prompt.sharedInput ? [{role:"user" as const,content:[{type:"input_text" as const,text:prompt.sharedInput,prompt_cache_breakpoint:{mode:"explicit" as const}}]}] : []),
-              {role:"user" as const,content:prompt.input},
-            ],
-            prompt_cache_key:request.preparedPrompt!.cache!.stablePrefix,
-            prompt_cache_options:{mode:"explicit" as const,ttl:"30m" as const},
-          }:{instructions:prompt.instructions,input:combinedInput}),
-          max_output_tokens: request.maxOutputTokens,
-          ...(request.reasoningEffort
-            ? { reasoning: { effort: request.reasoningEffort as "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" } }
-            : {}),
-          text: {
-            format: {
-              type: "json_schema",
-              name: request.schemaName,
-              strict: true,
-              schema: providerJsonSchema(request.schema) as Record<string, unknown>,
-            },
-          },
-        },
+        body,
         {
           ...(combined.signal ? { signal: combined.signal } : {}),
           ...(request.timeoutMs ? { timeout: request.timeoutMs } : {}),
         },
       );
+      responseModel = response.model || request.model;
+      request.onProviderMetadata?.({
+        responseId: response.id ?? null, status: response.status ?? null,
+        model: responseModel, serviceTier: response.service_tier ?? null,
+        cacheLayout: body.prompt_cache_options ? "openai_layers_v2" : "implicit",
+        cacheDiagnostics: response.prompt_cache_diagnostics ?? null,
+        incompleteReason: response.incomplete_details?.reason ?? null,
+      });
+      if (group && response.status === "completed" && response.id) {
+        this.comparisons.delete(group);
+        this.comparisons.set(group, { id: response.id, at: Date.now() });
+        if (this.comparisons.size > 128) this.comparisons.delete(this.comparisons.keys().next().value!);
+      }
       const usage = openAiUsage(response.usage);
       reportUsage(usage);
+      if (response.output_text) request.onRawResponse?.(response.output_text);
+      if (response.status !== "completed") throw new Error(`OpenAI response ${response.status}: ${response.incomplete_details?.reason ?? "no completed result"}`);
       if (!response.output_text) throw new Error("OpenAI response did not contain output_text");
-      request.onRawResponse?.(response.output_text);
-      const data = request.schema.parse(JSON.parse(response.output_text));
+      const parsed = JSON.parse(response.output_text);
+      const data = request.schema.parse(request.apiResponseFormat ? request.apiResponseFormat.decode(parsed) : parsed);
       return {
         data,
         provider: "openai",
-        model: request.model,
+        model: responseModel,
         usage: {
           inputTokens: usage.inputTokens ?? 0,
           outputTokens: usage.outputTokens ?? 0,

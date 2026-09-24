@@ -159,7 +159,10 @@ describe("V3 task protocol",()=>{
     expect(repository.getGame(record.id)?.status,repository.getGame(record.id)?.error).toBe("completed");
     const events=repository.listEvents(record.id);
     expect(events.filter(event=>event.type==="player.eliminated"&&event.payload.roleName==="Werewolf")).toHaveLength(2);
-    expect(events.filter(event=>event.type==="team.point").every(event=>Object.keys(event.payload).sort().join(",")==="playerId,targetId")).toBe(true);
+    for(const point of events.filter(event=>event.type==="team.point")){
+      expect(Object.keys(point.payload).sort()).toEqual(["blind","playerId","round","targetId"]);
+      expect(point.payload).toMatchObject({blind:expect.any(Boolean),round:expect.any(Number)});
+    }
     expect(auditGameV2(repository,record.id).issues).toEqual([]);
   },45_000);
 });

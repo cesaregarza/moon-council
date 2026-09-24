@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { GameConfigSchema, GamePhaseSchema, RoleDefinitionSchema, CreateGameRequestSchema, DiscussionPolicySchema, ExperimentSpecSchema, ExperimentSummarySchema } from "./legacy";
+import { GameConfigSchema, GamePhaseSchema, RoleDefinitionSchema, CreateGameRequestSchema, DiscussionPolicySchema, ExperimentSpecSchema, ExperimentSummarySchema, SafetyLimitsSchema } from "./legacy";
 
 export const STANDARD_ROLE_IDS = ["werewolf", "werewolf", "seer", "doctor", "villager", "villager", "villager", "villager"] as const;
 
@@ -40,12 +40,19 @@ export const DeliberationPolicySchema = z.object({
   requestTimeoutMs: z.number().int().min(1_000).max(300_000).default(120_000),
   episodeTimeoutMs: z.number().int().min(1_000).max(600_000).default(300_000),
   maxContextTokens: z.number().int().min(1_000).max(32_000).default(8_000),
-  maxJournalTokens: z.number().int().min(200).max(4_000).default(1_200),
+  maxJournalTokens: z.number().int().min(200).max(16_000).default(1_200),
   bidReasoningEffort: z.string().default("medium"),
   /** V3.2: characters of speech text kept when a record is delivered at `digest` tier. */
   digestChars: z.number().int().min(40).max(600).default(140),
 });
-export const ModelSettingsSchema = z.object({ model: z.string().min(1), reasoningEffort: z.string().default("medium"), provider: z.enum(["fake", "codex", "openai"]) });
+export const DecisionEngineSchema = z.object({
+  mode: z.enum(["llm", "jev"]).default("llm"),
+  model: z.string().trim().min(1).default("jev-latest"),
+  /** Missing on archived games means the original Jev workflow. */
+  workflow: z.enum(["legacy_v1", "journal_v2", "journal_v3", "journal_v4"]).default("legacy_v1"),
+  reasoningThreshold: z.number().min(0).max(1).default(0.5),
+});
+export const ModelSettingsSchema = z.object({ model: z.string().min(1), reasoningEffort: z.string().default("medium"), provider: z.enum(["fake", "codex", "codex_direct", "openai"]) });
 export const DiscussionPolicyV2Schema = DiscussionPolicySchema.extend({
   speakerSelection: z.enum(["event_queue", "listener_auction"]).default("event_queue"),
   speakerBias: z.number().min(0.01).max(1).default(0.25),
@@ -56,16 +63,24 @@ const CreateDiscussionPolicyV2Schema = DiscussionPolicySchema.extend({
   speakerBias: z.number().min(0.01).max(1).default(0.25),
   maxParallelDecisions: z.number().int().min(1).max(16).default(4),
 });
+/** The Responses API output ceiling includes internal reasoning and final JSON. */
+export const SafetyLimitsV2Schema = SafetyLimitsSchema.extend({
+  maxOutputTokens: z.number().int().min(100).max(32_768).default(600),
+});
 export const GameConfigV2Schema = z.object({ ...GameConfigSchema.shape,
   schemaVersion: z.literal("game_config_v2"),
+  safety: SafetyLimitsV2Schema.default(SafetyLimitsV2Schema.parse({})),
   preset: z.enum(["standard-8-v2", "standard-8-v3", "custom-v2"]).default("custom-v2"),
   protocolVersion: z.enum(["agent_v2", "agent_v2_1", "agent_v3", "agent_v3_1", "agent_v3_2"]).default("agent_v2"),
   rules: z.object({ packExecution: z.literal("any_unblocked").default("any_unblocked"), revealBallots: z.literal(true).default(true), firstCycle: z.enum(["night_first", "day_first"]).default("night_first") }).default({ packExecution: "any_unblocked", revealBallots: true, firstCycle: "night_first" }),
   discussion: DiscussionPolicyV2Schema.default(DiscussionPolicyV2Schema.parse({})),
   deliberation: DeliberationPolicySchema.default(DeliberationPolicySchema.parse({})),
-  maxTotalTokens: z.number().int().min(1_000).max(100_000_000).default(2_000_000),
+  maxTotalTokens: z.number().int().min(1_000).max(100_000_000).nullable().default(2_000_000),
   modelSettings: z.record(z.string(), ModelSettingsSchema),
+  decisionEngine: DecisionEngineSchema.default(DecisionEngineSchema.parse({})),
 }).superRefine((value, ctx) => {
+  if (value.decisionEngine.mode === "jev" && !["agent_v3_1", "agent_v3_2"].includes(value.protocolVersion)) ctx.addIssue({code:"custom",message:"Jev decisions require the V3.1 or V3.2 handle protocol"});
+  if (value.decisionEngine.mode === "jev" && value.decisionEngine.workflow !== "legacy_v1" && value.discussion.speakerSelection !== "listener_auction") ctx.addIssue({code:"custom",message:"The journal Jev workflow requires listener auctions"});
   const roster=PRESET_ROSTERS[value.preset];
   if(roster) {
     const expected=roster.map(id=>`${id}:${rosterRoleVersion(id)}`).sort();
@@ -84,14 +99,21 @@ export const GameConfigV2Schema = z.object({ ...GameConfigSchema.shape,
 export type GameConfigV2 = z.infer<typeof GameConfigV2Schema>;
 export const StoredGameConfigSchema = z.union([GameConfigSchema, GameConfigV2Schema]);
 export type StoredGameConfig = z.infer<typeof StoredGameConfigSchema>;
+const NewGameSafetySchema = SafetyLimitsV2Schema.extend({ maxOutputTokens: z.number().int().min(100).max(32_768).default(8_192) });
+const NewGameDeliberationSchema = DeliberationPolicySchema.extend({
+  maxJournalTokens: z.number().int().min(200).max(16_000).default(16_000),
+  maxContextTokens: z.number().int().min(1_000).max(32_000).default(32_000),
+});
 export const CreateGameV2RequestSchema = CreateGameRequestSchema.extend({
+  safety: NewGameSafetySchema.default(NewGameSafetySchema.parse({})),
   preset: z.enum(["standard-8-v2", "standard-8-v3", "custom-v2"]).default("custom-v2"),
   discussion: CreateDiscussionPolicyV2Schema.default(CreateDiscussionPolicyV2Schema.parse({})),
-  deliberation: DeliberationPolicySchema.default(DeliberationPolicySchema.parse({})),
-  maxTotalTokens: z.number().int().min(1_000).max(100_000_000).default(2_000_000),
+  deliberation: NewGameDeliberationSchema.default(NewGameDeliberationSchema.parse({})),
+  maxTotalTokens: z.number().int().min(1_000).max(100_000_000).nullable().default(null),
   reasoningEffort: z.string().optional(),
   /** Opt in to the V3.2 delivery ladder; omitted means the V3.1 default. */
   protocolVersion: z.enum(["agent_v3_1", "agent_v3_2"]).optional(),
+  decisionEngine: DecisionEngineSchema.extend({ workflow: z.enum(["legacy_v1", "journal_v2", "journal_v3", "journal_v4"]).default("journal_v4") }).optional(),
 });
 export type CreateGameV2Request = z.infer<typeof CreateGameV2RequestSchema>;
 export const ExperimentSpecV2Schema = ExperimentSpecSchema.extend({ schemaVersion: z.literal("experiment_v2"), baseConfig: GameConfigV2Schema });
@@ -111,8 +133,14 @@ const SourceId = z.string().min(1).max(120).regex(/^[A-Za-z0-9][A-Za-z0-9:._-]*$
 const Refs = z.array(SourceId).max(6);
 export const BeliefV2Schema = z.strictObject({ playerId: Id, probability: z.number().min(0).max(1), basis: z.enum(["prior", "inference", "authorized_fact"]), note: Brief, sources: Refs });
 export const HypothesisV2Schema = z.strictObject({ id: Id, statement: Brief, confidence: z.number().min(0).max(1), sources: Refs });
+export const DecisionBriefTextSchema = z.strictObject({ action: z.string().trim().min(1).max(4000), attention: z.string().trim().min(1).max(3000) });
+export const DecisionBriefSchema = DecisionBriefTextSchema.extend({ playerId: Id, evidenceRevision: z.string().min(1) });
 export const PrivateJournalV2Schema = z.strictObject({
   schemaVersion: z.literal("journal_v2"), version: z.number().int().nonnegative(),
+  /** Free-form journal; legacy fields remain readable for archived games. */
+  text: z.string().optional(),
+  decisionBrief: DecisionBriefSchema.optional(),
+  attentionNotes: z.array(z.strictObject({playerId: Id, note: Brief, sources: Refs})).max(16).optional(),
   beliefs: z.array(BeliefV2Schema).max(16), hypotheses: z.array(HypothesisV2Schema).max(6),
   strategy: z.string().max(600), goals: z.array(Brief).max(4), unresolvedQuestions: z.array(Brief).max(4), deceptionPlan: z.string().max(400).nullable(),
 });
@@ -121,10 +149,13 @@ export const emptyJournalV2 = (): PrivateJournalV2 => ({ schemaVersion: "journal
 // Strict Structured Outputs accepts nested anyOf, not oneOf. Literal op tags
 // keep these union branches disjoint while retaining the same runtime contract.
 export const JournalOperationSchema = z.union([
+  z.strictObject({ op: z.literal("set_decision_brief"), value: DecisionBriefSchema }),
+  z.strictObject({ op: z.literal("write_text"), mode: z.enum(["append", "replace"]), text: z.string().min(1) }),
   z.strictObject({ op: z.literal("upsert_belief"), value: BeliefV2Schema }),
   z.strictObject({ op: z.literal("upsert_hypothesis"), value: HypothesisV2Schema }),
   z.strictObject({ op: z.literal("remove_hypothesis"), id: Id }),
   z.strictObject({ op: z.literal("set_strategy"), strategy: z.string().max(600), goals: z.array(Brief).max(4) }),
+  z.strictObject({ op: z.literal("set_attention"), notes: z.array(z.strictObject({playerId: Id, note: Brief, sources: Refs})).max(16) }),
   z.strictObject({ op: z.literal("set_questions"), questions: z.array(Brief).max(4) }),
   z.strictObject({ op: z.literal("set_deception"), plan: z.string().max(400).nullable() }),
 ]);
@@ -151,6 +182,7 @@ const EvidenceHandlesV3Schema = z.array(EvidenceHandleV3Schema).max(6);
 const AgentBeliefSuggestionV1Schema = z.strictObject({ playerId: Id, probability: z.number().min(0).max(1), note: Brief, evidence: EvidenceHandlesV3Schema });
 const AgentHypothesisSuggestionV1Schema = z.strictObject({ statement: Brief, confidence: z.number().min(0).max(1), evidence: EvidenceHandlesV3Schema });
 export const MemorySuggestionsV3Schema = z.strictObject({
+  attentionUpdate: z.array(z.strictObject({playerId: Id, note: Brief, evidence: EvidenceHandlesV3Schema})).max(16).nullable().optional(),
   beliefs: z.array(AgentBeliefSuggestionV1Schema).max(2),
   hypotheses: z.array(AgentHypothesisSuggestionV1Schema).max(1),
   strategyUpdate: z.strictObject({ strategy: z.string().max(600), goals: z.array(Brief).max(4) }).nullable(),
@@ -169,7 +201,7 @@ export type DiscussionBidV3 = z.infer<typeof DiscussionBidV3Schema>;
 export type ListenerBidV3 = z.infer<typeof ListenerBidV3Schema>;
 export type SpeechSubmissionV3 = z.infer<typeof SpeechSubmissionV3Schema>;
 export type TargetChoiceSubmissionV3 = z.infer<typeof TargetChoiceSubmissionV3Schema>;
-export type V3TaskKind = "discussion_bid" | "discussion_listen" | "discussion_speech" | "closing_response" | "vote_choice" | "night_choice" | "team_point_choice";
+export type V3TaskKind = "journal_update" | "discussion_score" | "discussion_free_speech" | "discussion_bid" | "discussion_listen" | "discussion_speech" | "closing_response" | "vote_choice" | "night_choice" | "team_point_choice";
 
 export const DecisionReportV2Schema = z.strictObject({
   observations: Refs,
@@ -231,6 +263,10 @@ export interface DecisionOpportunityV1 {
   baseJournalVersion: number; packet: PlayerContextV2; status: "open" | "pending" | "committed" | "paused" | "superseded";
   best: DecisionReportV2 | null; recovery: number; createdAt: string;
   taskType?: V3TaskKind; bestSubmission?: unknown;
+  /** Overflow is a durable intermediate stage; only a validated replacement may commit. */
+  journalCompaction?: { candidate: PrivateJournalV2; sourceReport: DecisionReportV2; sourceSubmission: unknown; sourceAttemptId: string; result?: PrivateJournalV2; attemptId?: string };
+  /** Intermediate reasoning is durable but never a committed action. */
+  jevState?: { stage: "reason" | "decide"; evaluation: unknown; reasoning?: unknown; semanticIssues?: string[]; semanticRejected?: boolean };
 }
 export interface PrivateDeliberationTurnV1 { decisionId: string; playerId: string; turnIndex: number; recovery: number; report: DecisionReportV2; viewId: string }
 export interface UsageV2 { inputTokens: number | null; outputTokens: number | null; totalTokens: number | null; cachedInputTokens: number | null; cacheWriteInputTokens: number | null; reasoningTokens: number | null }

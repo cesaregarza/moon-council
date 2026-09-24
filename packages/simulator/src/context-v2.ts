@@ -1,8 +1,10 @@
+import { journalEvidenceRevision } from "./player-brief";
 import { createHash } from "node:crypto";
 import { PrivateJournalV2Schema, type ActionProposalV2, type ContextSourceV2, type DecisionReportV2, type DecisionReportWithSpeakerIntentV1, type GameEventV1, type PlayerContextV2, type PrivateJournalV2 } from "@werewolf/contracts";
 import { shuffled, validateNightAction, type GameState } from "@werewolf/engine";
 import { decisionRequestV2, estimatedTokens } from "./request-v2";
 import { isDemotable, tierPayload, type DeliveryTier } from "./evidence-tiers";
+import { journalText, journalTokens } from "./freeform-journal";
 export { estimatedTokens } from "./request-v2";
 
 export class ContextLimitError extends Error {}
@@ -77,7 +79,7 @@ export function authorizedSources(state: GameState, events: GameEventV1[], playe
   }
   return sources;
 }
-export function buildContextV2(state: GameState, events: GameEventV1[], playerId: string, journal: PrivateJournalV2, opportunityKey: string, kind: ActionProposalV2["kind"], docket: string[] = [], closing = false, requestSizer?: (packet:PlayerContextV2)=>number): PlayerContextV2 {
+export function buildContextV2(state: GameState, events: GameEventV1[], playerId: string, journal: PrivateJournalV2, opportunityKey: string, kind: ActionProposalV2["kind"], docket: string[] = [], closing = false, requestSizer?: (packet:PlayerContextV2)=>number, requiredSources: string[] = []): PlayerContextV2 {
   if (state.config.schemaVersion !== "game_config_v2") throw new Error("V2 context requires V2 game");
   const config = state.config;
   const self = state.players.find(p => p.id === playerId)!;
@@ -95,6 +97,7 @@ export function buildContextV2(state: GameState, events: GameEventV1[], playerId
     players: shuffled(state.players.map(p => ({ id: p.id, name: p.name, alive: p.alive, ...(p.revealedRole ? { revealedRole: p.revealedRole } : {}) })), `${salt}:roster`),
     knownAllies: shuffled(knownAllies, `${salt}:allies`),
     rules: { preset: config.preset, roleCounts, firstCycle:config.rules.firstCycle,deathRevealsRole: config.revealRolesOnDeath, tieEliminatesNobody: true, sealedBallots: true, factionObjective: self.role.alignment, wolfVictory: "living parity", villageVictory: "all wolves eliminated", doctor: "Self-protection allowed; cannot repeat the preceding night's selected target, even if blocked.", pack: "Point only. All living wolves must agree within 3 times living wolves committed pointing opportunities. Any unblocked consenting wolf executes the attack; protection still applies.", claimsAreUnverified: true,
+      ...(config.decisionEngine.mode==="jev"&&config.decisionEngine.workflow!=="legacy_v1"?{jevWorkflow:config.decisionEngine.workflow,maxJournalTokens:config.deliberation.maxJournalTokens,voting:"Highest nonzero tally eliminates; one vote can suffice when others abstain. A tie eliminates nobody."}:{}),
       speakerSelection:closing?"frozen_closing":config.discussion.speakerSelection,speakerBias:config.discussion.speakerBias,speakerPriorityFormula:"(bias + urge) * normalized aggregate willingness to listen; maximum wins; response rights restrict the candidate set before scoring",listenerIntent:"For listener auctions, privately rate willingness to listen to every other living player. This is scheduling preference, not an alignment fact." },
     sources: [], legalActions,
     legalTargets: kind === "vote" ? shuffled(state.players.filter(p => p.alive && p.id !== playerId).map(p => p.id), `${salt}:votes`) : legalActions[0]?.targets ?? [],
@@ -107,6 +110,7 @@ export function buildContextV2(state: GameState, events: GameEventV1[], playerId
   ];
   packet.rules.roles = [...new Map(config.roleDeck.map(r=>[`${r.id}:${r.version}`,r])).values()].sort((a,b)=>a.id.localeCompare(b.id)).map(r=>({id:r.id,version:r.version,name:r.name,alignment:r.alignment,actions:r.actions,passives:r.passives,winCondition:r.winCondition}));
   let all = authorizedSources(state, events, playerId);
+  if(config.decisionEngine.workflow === "journal_v4") packet.rules.journalRevision = journalEvidenceRevision(all);
   // Set by the V3.2 ladder so the measured request can walk tiers back down; a no-op
   // under every other protocol.
   let applyTiers = () => undefined as void;
@@ -189,7 +193,7 @@ export function buildContextV2(state: GameState, events: GameEventV1[], playerId
     // The renderer must clip digests exactly as the budget above costed them.
     packet.rules.digestChars=digestChars;
   }
-  const citations = new Set([...journal.beliefs.flatMap(b => b.sources), ...journal.hypotheses.flatMap(h => h.sources), ...docket]);
+  const citations = new Set([...journal.beliefs.flatMap(b => b.sources), ...journal.hypotheses.flatMap(h => h.sources), ...(journal.attentionNotes??[]).flatMap(n=>n.sources), ...docket, ...requiredSources]);
   // A player can normally make at most opening + two follow-ups + one closing
   // statement in a day. Keep that complete recent commitment window essential;
   // older uncited speeches compete normally for the remaining context budget.
@@ -226,32 +230,49 @@ export function buildContextV2(state: GameState, events: GameEventV1[], playerId
   return packet;
 }
 
+export function journalLimitMessage(base: PrivateJournalV2, maxTokens: number, updatedTokens?: number): string {
+  if (base.text !== undefined) return `journal_limit: updated notebook uses ${updatedTokens ?? "too many"} estimated tokens; maximum ${maxTokens}. Summarize the prose faithfully, preserving current reasoning, uncertainty, listening notes, commitments and deception. Size is UTF-8 prose bytes / 3, rounded up.`;
+  return `journal_limit: ${updatedTokens === undefined ? "previous update exceeded the limit" : `updated notebook uses ${updatedTokens} estimated tokens`}; maximum ${maxTokens}; current saved notebook ${estimatedTokens(base)}. Size includes stored JSON and full citation IDs, not just prose. Shorten or replace existing sections. attentionUpdate replaces all listening notes; null preserves them. Empty beliefs/hypotheses arrays add nothing; adding a hypothesis retains older entries until slots fill. Condense obsolete or repetitive notes and avoid restating unchanged facts. Keep useful information; you choose the edits.`;
+}
+
 export function applyJournalV2(base: PrivateJournalV2, report: DecisionReportV2, maxTokens: number): PrivateJournalV2 {
   const next = structuredClone(base);
   for (const op of report.journalPatch) {
     switch (op.op) {
+      case "set_decision_brief": next.decisionBrief = structuredClone(op.value); break;
+      case "write_text": {
+        const text = op.mode === "append" ? [journalText(next), op.text].filter(Boolean).join("\n\n") : op.text;
+        // One source of truth: retire structured fields once prose takes ownership.
+        next.text = text; next.beliefs = []; next.hypotheses = []; next.strategy = "";
+        next.goals = []; next.unresolvedQuestions = []; next.deceptionPlan = null;
+        delete next.attentionNotes;
+        break;
+      }
       case "upsert_belief": next.beliefs = [...next.beliefs.filter(b => b.playerId !== op.value.playerId), op.value]; break;
       case "upsert_hypothesis": next.hypotheses = [...next.hypotheses.filter(h => h.id !== op.value.id), op.value]; break;
       case "remove_hypothesis": next.hypotheses = next.hypotheses.filter(h => h.id !== op.id); break;
       case "set_strategy": next.strategy = op.strategy; next.goals = op.goals; break;
+      case "set_attention": next.attentionNotes = op.notes; break;
       case "set_questions": next.unresolvedQuestions = op.questions; break;
       case "set_deception": next.deceptionPlan = op.plan; break;
     }
   }
   next.version += 1;
   const validated = PrivateJournalV2Schema.parse(next);
-  if (estimatedTokens(validated) > maxTokens) throw new Error("journal_limit: shorten or replace keyed entries");
+  if (journalTokens(validated) > maxTokens) throw new Error(journalLimitMessage(validated, maxTokens, journalTokens(validated)));
   return validated;
 }
 export function validateReport(report: DecisionReportV2, packet: PlayerContextV2, maxJournalTokens: number): string[] {
   const errors: string[] = [];
   const refs = new Set(packet.sources.map(s => s.id));
-  const cited = [...report.observations, ...report.inferences.flatMap(i => i.sources), ...report.journalPatch.flatMap(op => op.op === "upsert_belief" || op.op === "upsert_hypothesis" ? op.value.sources : [])];
+  const cited = [...report.observations, ...report.inferences.flatMap(i => i.sources), ...report.journalPatch.flatMap(op => op.op === "upsert_belief" || op.op === "upsert_hypothesis" ? op.value.sources : op.op === "set_attention" ? op.notes.flatMap(n=>n.sources) : [])];
   const proposal = report.proposal;
   if (proposal.kind === "discussion" && proposal.speech) cited.push(...proposal.speech.respondsTo, ...proposal.speech.acts.flatMap(a => a.sourceId ? [a.sourceId] : []));
   if (cited.some(id => !refs.has(id))) {
     errors.push("citations must reference delivered source IDs");
   }
+  for(const op of report.journalPatch)if(op.op==="set_decision_brief"&&(op.value.playerId!==packet.self.id||op.value.evidenceRevision!==packet.rules.journalRevision))errors.push("Decision brief must match the acting player and current authorized evidence");
+  for(const op of report.journalPatch)if(op.op==="set_attention"&&op.notes.some(n=>!packet.players.some(p=>p.id===n.playerId)))errors.push("attention note names an unknown player");
   for (const op of report.journalPatch) if (op.op === "upsert_belief") {
     if (!packet.players.some(p=>p.id === op.value.playerId)) errors.push("belief names an unknown player");
     if (op.value.basis === "authorized_fact" && !op.value.sources.some(id=>packet.sources.some(s=>s.id === id && (s.type === "inspection.delivered" && s.data.targetId === op.value.playerId || s.type === "authorized.self" && (op.value.playerId === packet.self.id || packet.knownAllies.some(ally=>ally.id===op.value.playerId)))))) errors.push("authorized_fact beliefs require an applicable private result or own-role/team source; public claims are not certified facts");

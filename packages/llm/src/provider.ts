@@ -16,7 +16,8 @@ export type DecisionKind =
   | "narration"
   | "decision_v2"
   | "decision_v3"
-  | "decision_v3_1";
+  | "decision_v3_1"
+  | "jev";
 
 export interface PreparedPrompt {
   instructions: string;
@@ -33,16 +34,28 @@ export interface PreparedPrompt {
   layerHashes?: {l0:string;l1:string|null;l2:string|null;l3:string;schema?:string};
 }
 
+/** Stable API wire schema; the original task schema still validates the decoded result. */
+export interface ApiResponseFormat {
+  name: string;
+  schema: z.ZodType;
+  instructions: string;
+  decode: (value: unknown) => unknown;
+}
+
 export interface DecisionRequest<T> {
   kind: DecisionKind;
   playerId?: string;
+  /** Diagnostic/cache accounting scope; never used as conversation state. */
+  gameId?: string;
   model: string;
   personality?: string;
   view?: PlayerViewV1;
   disclosurePacket?: Record<string, unknown>;
   schemaName: string;
   schema: z.ZodType<T>;
-  maxOutputTokens: number;
+  apiResponseFormat?: ApiResponseFormat;
+  /** null omits an application output cap; model/service limits still apply. */
+  maxOutputTokens: number | null;
   repairFeedback?: string;
   preparedPrompt?: PreparedPrompt;
   contextV2?: PlayerContextV2;
@@ -51,11 +64,16 @@ export interface DecisionRequest<T> {
   /** Isolated provider conversation used only for calls within one decision episode. */
   sessionKey?: string;
   reasoningEffort?: string;
+  /** Moderator replay diagnostic; compares metadata without loading any prior response. */
+  cacheComparisonResponseId?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
   onUsage?: (usage: UsageV2, metadata: { provider: string; model: string; outputLimitEnforced: boolean }) => void;
   /** Persist the explicit final response before parsing so malformed output remains auditable. */
   onRawResponse?: (response: string) => void;
+  /** Exact provider body, excluding authentication; contains authorized private game data. */
+  onProviderRequest?: (body: Record<string, unknown>) => void;
+  onProviderMetadata?: (metadata: Record<string, unknown>) => void;
 }
 
 export interface DecisionResult<T> {

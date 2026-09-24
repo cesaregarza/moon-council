@@ -9,6 +9,10 @@ export interface ProviderAttemptRecord {
   optional: boolean; startedAt: string; endedAt: string | null; latencyMs: number | null;
   model: string; provider: string; reasoningEffort: string; outputLimitEnforced: boolean;
   request: { instructions: string; publicInput?: string; privateInput?: string; sharedInput?: string; input: string; schema: unknown; layerHashes?: Record<string,string|null> };
+  maxOutputTokens?: number | null;
+  timeoutMs?: number;
+  wireRequest?: Record<string, unknown>;
+  providerMetadata?: Record<string, unknown>;
   usage: UsageV2; error: string | null; response: string | null;
   promptVersion: string; schemaVersion: string;
 }
@@ -37,9 +41,9 @@ export class DecisionStore {
     return rows.map(row => JSON.parse(row.value_json));
   }
   save(opportunity: DecisionOpportunityV1): void { this.put(opportunity.gameId, `decision:${opportunity.id}`, opportunity); }
-  beginAttempt(opportunity: Pick<DecisionOpportunityV1,"id"|"gameId"|"playerId"|"phase"|"day"|"recovery">, fields: Pick<ProviderAttemptRecord, "model" | "provider" | "reasoningEffort" | "request" | "optional"> & Partial<Pick<ProviderAttemptRecord,"promptVersion"|"schemaVersion">>): ProviderAttemptRecord {
+  beginAttempt(opportunity: Pick<DecisionOpportunityV1,"id"|"gameId"|"playerId"|"phase"|"day"|"recovery">, fields: Pick<ProviderAttemptRecord, "model" | "provider" | "reasoningEffort" | "request" | "optional"> & Partial<Pick<ProviderAttemptRecord,"promptVersion"|"schemaVersion"|"maxOutputTokens"|"timeoutMs">>): ProviderAttemptRecord {
     return this.atomic(() => {
-      const attempt: ProviderAttemptRecord = { ...fields, promptVersion:fields.promptVersion??"player_prompt_v2.2",schemaVersion:fields.schemaVersion??"private_decision_v2.stable",id: randomUUID(), gameId: opportunity.gameId, decisionId: opportunity.id, playerId: opportunity.playerId, recovery: opportunity.recovery, status: "started", startedAt: new Date().toISOString(), endedAt: null, latencyMs: null, outputLimitEnforced: fields.provider !== "codex", usage: unknownUsage(), error: null, response:null };
+      const attempt: ProviderAttemptRecord = { ...fields, promptVersion:fields.promptVersion??"player_prompt_v2.2",schemaVersion:fields.schemaVersion??"private_decision_v2.stable",id: randomUUID(), gameId: opportunity.gameId, decisionId: opportunity.id, playerId: opportunity.playerId, recovery: opportunity.recovery, status: "started", startedAt: new Date().toISOString(), endedAt: null, latencyMs: null, outputLimitEnforced: fields.provider !== "codex" && fields.maxOutputTokens !== null, usage: unknownUsage(), error: null, response:null };
       this.repository.connection.sqlite.prepare("INSERT INTO provider_attempts(id,game_id,decision_id,player_id,status,value_json) VALUES(?,?,?,?,?,?)").run(attempt.id, attempt.gameId, attempt.decisionId, attempt.playerId, attempt.status, JSON.stringify(attempt));
       this.repository.appendEvent(attempt.gameId, { type: "model.attempt_started", phase: opportunity.phase, day: opportunity.day, visibility: "moderator", payload: { attemptId: attempt.id, decisionId: opportunity.id, playerId: opportunity.playerId, optional: fields.optional } });
       return attempt;
@@ -64,6 +68,7 @@ export class DecisionStore {
       const state = reduceGame(game.id, this.repository.listEvents(game.id));
       if (`${state.day}:${state.phase}` !== opportunity.epoch || this.journal(game.id, opportunity.playerId).version !== opportunity.baseJournalVersion) throw new Error("stale_decision");
       this.repository.appendEvents(game.id, events);
+      if (opportunity.journalCompaction?.result) this.repository.appendEvent(game.id,{type:"journal.compacted",phase:opportunity.phase,day:opportunity.day,visibility:"player",audienceIds:[opportunity.playerId],payload:{playerId:opportunity.playerId,decisionId:opportunity.id,sourceAttemptId:opportunity.journalCompaction.sourceAttemptId,attemptId:opportunity.journalCompaction.attemptId,before:opportunity.journalCompaction.candidate,after:journal}});
       this.repository.appendEvent(game.id, { type: "journal.v2_updated", phase: opportunity.phase, day: opportunity.day, visibility: "player", audienceIds: [opportunity.playerId], payload: { playerId: opportunity.playerId, decisionId: opportunity.id, journal, patch: opportunity.best?.journalPatch ?? [] } });
       this.repository.appendEvent(game.id, { type: "decision.committed", phase: opportunity.phase, day: opportunity.day, visibility: "player", audienceIds: [opportunity.playerId], payload: { playerId: opportunity.playerId, decisionId: opportunity.id, proposal: opportunity.best?.proposal } });
       this.save({ ...opportunity, status: "committed" });

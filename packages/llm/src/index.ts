@@ -10,8 +10,10 @@ export * from "./codex-direct";
 export * from "./config";
 export * from "./fake";
 export * from "./openai";
+export * from "./openai-cache";
 export * from "./prompt";
 export * from "./provider";
+export * from "./jev";
 
 export function createDecisionProvider(kind: DecisionProviderKind = selectedProviderKind()): DecisionProvider {
   if (kind === "codex") return new CodexLoginProvider();

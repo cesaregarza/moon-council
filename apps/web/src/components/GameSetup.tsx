@@ -36,20 +36,21 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
   const [revealRoles, setRevealRoles] = useState(initialConfig?.revealRolesOnDeath ?? true);
   const [speedMs, setSpeedMs] = useState(initialConfig?.speedMs ?? 500);
   const [deliberationMode, setDeliberationMode] = useState<"single" | "gated">(initialV2?.deliberation.mode ?? "gated");
+  const [decisionEngine, setDecisionEngine] = useState<"llm" | "jev">(initialV2?.decisionEngine.mode ?? "llm");
   const [maxCalls, setMaxCalls] = useState(initialV2?.deliberation.maxCalls ?? 3);
   const [optionalDayCalls, setOptionalDayCalls] = useState(initialV2?.deliberation.optionalDayCalls ?? 4);
   const [optionalNightCalls, setOptionalNightCalls] = useState(initialV2?.deliberation.optionalNightCalls ?? 2);
   const [requestTimeoutMs, setRequestTimeoutMs] = useState(initialV2?.deliberation.requestTimeoutMs ?? 120_000);
   const [episodeTimeoutMs, setEpisodeTimeoutMs] = useState(initialV2?.deliberation.episodeTimeoutMs ?? 300_000);
-  const [maxTotalTokens, setMaxTotalTokens] = useState(initialV2?.maxTotalTokens ?? 2_000_000);
-  const [maxContextTokens, setMaxContextTokens] = useState(initialV2?.deliberation.maxContextTokens ?? 8_000);
-  const [maxJournalTokens, setMaxJournalTokens] = useState(initialV2?.deliberation.maxJournalTokens ?? 1_200);
+  const [maxTotalTokens, setMaxTotalTokens] = useState<number | null>(initialV2?.maxTotalTokens ?? null);
+  const [maxContextTokens, setMaxContextTokens] = useState(initialV2?.deliberation.maxContextTokens ?? 32_000);
+  const [maxJournalTokens, setMaxJournalTokens] = useState(initialV2?.deliberation.maxJournalTokens ?? 16_000);
   const [digestChars] = useState(initialV2?.deliberation.digestChars ?? 140);
   const [speakerBias, setSpeakerBias] = useState(initialV2?.discussion.speakerBias ?? 0.25);
   const [maxParallelDecisions, setMaxParallelDecisions] = useState(initialV2?.discussion.maxParallelDecisions ?? 4);
   const [maxCycles, setMaxCycles] = useState(initialConfig?.safety.maxCycles ?? 8);
   const [maxModelCalls, setMaxModelCalls] = useState(initialConfig?.safety.maxModelCalls ?? 500);
-  const [maxOutputTokens, setMaxOutputTokens] = useState(initialConfig?.safety.maxOutputTokens ?? 600);
+  const [maxOutputTokens, setMaxOutputTokens] = useState(initialConfig?.safety.maxOutputTokens ?? 8192);
   const [maxWallClockMs, setMaxWallClockMs] = useState(initialConfig?.safety.maxWallClockMs ?? 1_800_000);
   const [reasoningEffort, setReasoningEffort] = useState("xhigh");
   const [busy, setBusy] = useState(false);
@@ -119,6 +120,7 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
         },
         maxTotalTokens,
         reasoningEffort,
+        decisionEngine: { mode: decisionEngine, workflow: "journal_v4", model: initialV2?.decisionEngine.model ?? "jev-latest", reasoningThreshold: initialV2?.decisionEngine.reasoningThreshold ?? 0.5 },
       };
       const game = await api.createGame(input);
       onCreated(game.game.id);
@@ -169,7 +171,9 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
           ))}
         </div>
 
-        <div className="section-heading setup-section-heading"><div><div className="eyebrow">Deliberation policy</div><h3>Bounded private reasoning</h3></div><span className="token-pill">2M token ceiling</span></div>
+        <div className="section-heading setup-section-heading"><div><div className="eyebrow">Deliberation policy</div><h3>Bounded private reasoning</h3></div><span className="token-pill">{maxTotalTokens === null ? "No total-token ceiling" : `${maxTotalTokens.toLocaleString()} token ceiling`}</span></div>
+        <label>Decision engine<select value={decisionEngine} onChange={event => setDecisionEngine(event.target.value as "llm" | "jev")}><option value="llm">Selected LLM</option><option value="jev">Jev + selected LLM</option></select></label>
+        {decisionEngine === "jev" && <p className="muted">Your selected LLM writes its own speeches and updates each living player’s private journal after new speech or results. Jev scores urgency and listening interest, and chooses votes and night targets from that context.</p>}
         <div className="policy-mode">
           <label className="radio-card"><input type="radio" checked={deliberationMode === "single"} onChange={() => setDeliberationMode("single")} /> <span><strong>Single</strong><small>One small action response</small></span></label>
           <label className="radio-card"><input type="radio" checked={deliberationMode === "gated"} onChange={() => setDeliberationMode("gated")} /> <span><strong>Gated</strong><small>One optional consequential reconsideration</small></span></label>
@@ -182,14 +186,14 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
             <label>Optional night calls<input type="number" min={0} max={6} value={optionalNightCalls} onChange={(event) => setOptionalNightCalls(Number(event.target.value))} /></label>
             <label>Speaker bias<input type="number" min={0.01} max={1} step={0.01} value={speakerBias} onChange={(event) => setSpeakerBias(Number(event.target.value))} /></label>
             <label>Decision concurrency<input type="number" min={1} max={seatCount} value={maxParallelDecisions} onChange={(event) => setMaxParallelDecisions(Math.max(1,Math.min(seatCount,Number(event.target.value))))} /><small>{maxParallelDecisions === 1 ? "Sequential · strongest warm-cache opportunity, highest latency" : maxParallelDecisions >= seatCount ? "All seats at once · lowest latency, weakest first-wave reuse" : `Pool of ${maxParallelDecisions} · latency/cache compromise`}</small></label>
-            <label>Max total tokens<input type="number" min={1000} max={100000000} step={10000} value={maxTotalTokens} onChange={(event) => setMaxTotalTokens(Number(event.target.value))} /></label>
+            <label>Max total tokens<input type="number" min={1000} max={100000000} step={10000} value={maxTotalTokens ?? ""} placeholder="No limit" onChange={(event) => setMaxTotalTokens(event.target.value === "" ? null : Number(event.target.value))} /><small>Leave blank for no game-wide token ceiling.</small></label>
             <label>Request timeout (ms)<input type="number" min={1000} max={300000} step={1000} value={requestTimeoutMs} onChange={(event) => setRequestTimeoutMs(Number(event.target.value))} /></label>
             <label>Episode timeout (ms)<input type="number" min={1000} max={600000} step={1000} value={episodeTimeoutMs} onChange={(event) => setEpisodeTimeoutMs(Number(event.target.value))} /></label>
             <label>Context tokens<input type="number" min={1000} max={32000} step={500} value={maxContextTokens} onChange={(event) => setMaxContextTokens(Number(event.target.value))} /></label>
-            <label>Journal tokens<input type="number" min={200} max={4000} step={100} value={maxJournalTokens} onChange={(event) => setMaxJournalTokens(Number(event.target.value))} /></label>
+            <label>Journal tokens<input type="number" min={200} max={16000} step={100} value={maxJournalTokens} onChange={(event) => setMaxJournalTokens(Number(event.target.value))} /></label>
             <label>Max cycles<input type="number" min={1} max={30} value={maxCycles} onChange={(event) => setMaxCycles(Number(event.target.value))} /></label>
             <label>Max model calls<input type="number" min={20} max={10000} value={maxModelCalls} onChange={(event) => setMaxModelCalls(Number(event.target.value))} /></label>
-            <label>Output tokens<input type="number" min={100} max={4000} step={100} value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(Number(event.target.value))} /></label>
+            <label>Output + reasoning tokens<input type="number" min={100} max={32768} step={100} value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(Number(event.target.value))} /></label>
             <label>Wall clock (ms)<input type="number" min={60000} max={86400000} step={60000} value={maxWallClockMs} onChange={(event) => setMaxWallClockMs(Number(event.target.value))} /></label>
             <label>Reasoning effort<select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)}><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Xhigh</option></select></label>
           </div>
@@ -198,7 +202,7 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
         {error && <div className="error-banner">{error}</div>}
         <div className="action-row"><label className="toggle"><input type="checkbox" checked={narration} onChange={(event) => setNarration(event.target.checked)} /><span>LLM moderator narration</span></label><label className="toggle"><input type="checkbox" checked={revealRoles} onChange={(event) => setRevealRoles(event.target.checked)} /><span>Reveal roles on death</span></label><button className="primary" disabled={busy || latestRoles.length === 0} onClick={create}>{busy ? "Preparing…" : initialConfig ? "Clone simulation" : "Create V3.1 simulation"}</button></div>
       </div>
-      <aside className="panel rule-card"><div className="moon-mark">◒</div><h3>V3.1 contract</h3><dl><div><dt>Preset</dt><dd>{preset === "standard-8-v3" ? "Standard 8 · Bodyguard" : preset === "standard-8-v2" ? "Standard 8 · Doctor" : "Custom"}</dd></div><div><dt>First cycle</dt><dd>Day 1 · discussion and elimination vote</dd></div><div><dt>Speaking</dt><dd>Reactive bid → selected speech · bias {speakerBias}</dd></div><div><dt>Concurrency</dt><dd>{maxParallelDecisions === 1 ? "Sequential cache-first" : maxParallelDecisions >= seatCount ? `All ${seatCount} seats at once` : `${maxParallelDecisions}-call worker pool`}</dd></div><div><dt>Evidence</dt><dd>Stable public E refs · private R refs</dd></div><div><dt>Resolved model</dt><dd>{models[0] ? `${models[0]} · ${reasoningEffort}` : `Provider default · ${reasoningEffort}`}</dd></div><div><dt>Bid compute</dt><dd>Medium · actions {reasoningEffort}</dd></div><div><dt>Deliberation</dt><dd>{deliberationMode === "gated" ? "Bounded reconsideration" : "Single action"}</dd></div><div><dt>Budgets</dt><dd>{Math.round(requestTimeoutMs / 1000)}s request · {Math.round(episodeTimeoutMs / 1000)}s episode</dd></div><div><dt>Experimental</dt><dd>Roleblocker · Mayor</dd></div></dl></aside>
+      <aside className="panel rule-card"><div className="moon-mark">◒</div><h3>V3.1 contract</h3><dl><div><dt>Preset</dt><dd>{preset === "standard-8-v3" ? "Standard 8 · Bodyguard" : preset === "standard-8-v2" ? "Standard 8 · Doctor" : "Custom"}</dd></div><div><dt>First cycle</dt><dd>Day 1 · discussion and elimination vote</dd></div><div><dt>Speaking</dt><dd>Reactive bid → selected speech · bias {speakerBias}</dd></div><div><dt>Concurrency</dt><dd>{maxParallelDecisions === 1 ? "Sequential cache-first" : maxParallelDecisions >= seatCount ? `All ${seatCount} seats at once` : `${maxParallelDecisions}-call worker pool`}</dd></div><div><dt>Evidence</dt><dd>Stable public E refs · private R refs</dd></div><div><dt>Resolved model</dt><dd>{models[0] ? `${models[0]} · ${reasoningEffort}` : `Provider default · ${reasoningEffort}`}</dd></div><div><dt>Decision engine</dt><dd>{decisionEngine === "jev" ? `Jev · LLM analysis ${reasoningEffort}` : `LLM · bids medium · actions ${reasoningEffort}`}</dd></div><div><dt>Deliberation</dt><dd>{deliberationMode === "gated" ? "Bounded reconsideration" : "Single action"}</dd></div><div><dt>Budgets</dt><dd>{Math.round(requestTimeoutMs / 1000)}s request · {Math.round(episodeTimeoutMs / 1000)}s episode</dd></div><div><dt>Experimental</dt><dd>Roleblocker · Mayor</dd></div></dl></aside>
     </section>
   );
 }

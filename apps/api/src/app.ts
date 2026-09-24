@@ -16,7 +16,7 @@ const Query = z.object({ after: z.coerce.number().int().min(-1).default(-1), at:
 const Control = z.object({
   action: z.enum(["start","pause","resume","step","step_decision","abort","speed","extend_budget"]),
   speedMs: z.number().int().min(0).max(30_000).optional(),
-  maxTotalTokens: z.number().int().min(1_000).max(100_000_000).optional(),
+  maxTotalTokens: z.number().int().min(1_000).max(100_000_000).nullable().optional(),
   maxWallClockMs: z.number().int().min(60_000).max(86_400_000).optional(),
   maxContextTokens: z.number().int().min(1_000).max(32_000).optional(),
 });
@@ -84,7 +84,7 @@ export async function buildApi(options: ApiOptions = {}): Promise<{app:FastifyIn
       if (game.status !== "budget_exhausted"&&!contextLimited) return reply.status(409).send({error:"game_has_no_extendable_limit"});
       if (input.maxTotalTokens === undefined || input.maxWallClockMs === undefined) return reply.status(400).send({error:"extended_budgets_required"});
       const nextContextTokens=input.maxContextTokens??currentConfig.deliberation.maxContextTokens;
-      if (input.maxTotalTokens < currentConfig.maxTotalTokens || input.maxWallClockMs < currentConfig.safety.maxWallClockMs || nextContextTokens < currentConfig.deliberation.maxContextTokens) return reply.status(400).send({error:"limit_extension_cannot_reduce_limits"});
+      if ((input.maxTotalTokens !== null && (currentConfig.maxTotalTokens === null || input.maxTotalTokens < currentConfig.maxTotalTokens)) || input.maxWallClockMs < currentConfig.safety.maxWallClockMs || nextContextTokens < currentConfig.deliberation.maxContextTokens) return reply.status(400).send({error:"limit_extension_cannot_reduce_limits"});
       const events=repository.listEvents(id);
       const interrupted=contextLimited?events.findLast(event=>event.type==="game.paused"&&String(event.payload.reason??"").startsWith("context_limit:")):events.findLast(event=>event.type==="game.budget_exhausted");
       if(!interrupted) return reply.status(409).send({error:"missing_limit_event"});

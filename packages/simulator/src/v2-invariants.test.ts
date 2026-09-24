@@ -77,6 +77,18 @@ describe("V2 checkpoint and budget invariants", () => {
   it("recovers expired work into a pause without starting a model call", () => {
     const repository = createRepository(); const record = game(repository); const job = repository.enqueueJob("game", record.id); repository.claimJob(); repository.connection.sqlite.prepare("UPDATE jobs SET updated_at=? WHERE id=?").run(new Date(Date.now() - 31_000).toISOString(), job.id); expect(recoverStaleWork(repository)).toBe(1); expect(repository.getGame(record.id)?.status).toBe("paused"); expect(new DecisionStore(repository).attempts(record.id)).toHaveLength(0);
   });
+  it("admits unlimited token usage while retaining call and runtime limits", () => {
+    const repository=createRepository(),record=game(repository,{maxTotalTokens:null}),store=new DecisionStore(repository),op=opportunity(repository,record);
+    const attempt=store.beginAttempt(op,{model:"fake",provider:"fake",reasoningEffort:"medium",optional:false,request:{instructions:"",input:"",schema:{}}});
+    attempt.usage.totalTokens=1_000_000_000;store.updateAttempt(attempt);
+    expect(repository.getGame(record.id)?.config).toMatchObject({maxTotalTokens:null});
+    expect(()=>assertV2Budget(store,record.id,record.config as ReturnType<typeof config>)).not.toThrow();
+    for(let i=1;i<20;i++)store.beginAttempt(op,{model:"fake",provider:"fake",reasoningEffort:"medium",optional:false,request:{instructions:"",input:"",schema:{}}});
+    expect(()=>assertV2Budget(store,record.id,record.config as ReturnType<typeof config>)).toThrow("model-call admission");
+    const runtimeRecord=game(repository,{maxTotalTokens:null}),runtimeStore=new DecisionStore(repository);runtimeStore.put(runtimeRecord.id,"runtimeMs",60_000);
+    expect(()=>assertV2Budget(runtimeStore,runtimeRecord.id,runtimeRecord.config as ReturnType<typeof config>)).toThrow("active-runtime");
+    expect(config().maxTotalTokens).toBe(2_000_000);
+  });
   it("enforces call, token, and runtime admission thresholds", () => {
     const repository = createRepository(); const record = game(repository); const store = new DecisionStore(repository); const op = opportunity(repository, record); for (let i = 0; i < 20; i += 1) store.beginAttempt(op, { model: "fake", provider: "fake", reasoningEffort: "medium", optional: false, request: { instructions: "", input: "", schema: {} } }); expect(() => assertV2Budget(store, record.id, record.config as ReturnType<typeof config>)).toThrow("model-call admission");
     const tokenRecord = game(repository, { maxTotalTokens: 1_000 }); const tokenStore = new DecisionStore(repository); const tokenOp = opportunity(repository, tokenRecord); tokenStore.beginAttempt(tokenOp, { model: "fake", provider: "fake", reasoningEffort: "medium", optional: false, request: { instructions: "", input: "x".repeat(5000), schema: {} } }); expect(() => assertV2Budget(tokenStore, tokenRecord.id, tokenRecord.config as ReturnType<typeof config>)).toThrow("total-token admission");

@@ -194,9 +194,17 @@ function fakeV3Submission(request:DecisionRequest<unknown>):unknown {
   const episode=JSON.parse(request.preparedPrompt?.input??"{}").REQUEST as {task?:Record<string,unknown>}|undefined;
   const briefing=legacy??{task:episode?.task??{},legalChoices:privateState?.legalChoices,view:{responseDocket:privateState?.responseDocket??[]}};
   const task=briefing.task;
-  const memory={beliefs:[],hypotheses:[],strategyUpdate:null,questionsUpdate:null,deceptionUpdate:null};
+  const memory=["journal_v3","journal_v4"].includes(String(context.rules.jevWorkflow))?{journalUpdate:null,...(context.rules.jevWorkflow==="journal_v4"?{decisionBrief:null}:{})}:{beliefs:[],hypotheses:[],strategyUpdate:null,questionsUpdate:null,deceptionUpdate:null};
   const stable=request.kind==="decision_v3_1";
   const listen=Object.fromEntries(context.players.filter(player=>stable||player.alive&&player.id!==context.self.id).map(player=>[player.id,player.id===context.self.id||!player.alive?null:((hashSeed(`${context.self.id}:listen:${player.id}:${context.day}`)%81)+20)/100]));
+  if(task.type==="journal_update"&&["journal_v3","journal_v4"].includes(String(context.rules.jevWorkflow)))return {memory:{...(context.rules.jevWorkflow==="journal_v4"?{decisionBrief:{action:"Use my verified private results and current evidence to advance my role objective. Public doubts do not erase my private knowledge.",attention:"Listen to unanswered accusations and genuinely new claims; avoid repeated arguments."}}:{}),journalUpdate:{mode:"append",text:`Compare new claims and votes with prior evidence. Listen to ${context.players.filter(p=>p.alive&&p.id!==context.self.id).map(p=>p.name).join(", ")} for new evidence and answers to outstanding questions.`}},rationale:"Reflect on the delivered evidence before the next decision."};
+  if(task.type==="journal_update")return {memory:{...memory,attentionUpdate:context.players.filter(p=>p.alive&&p.id!==context.self.id).map(p=>({playerId:p.id,note:"Listen for new evidence and answers to outstanding questions.",evidence:[]})),strategyUpdate:{strategy:"Compare new claims and votes with prior evidence.",goals:[]}},rationale:"Reflect on the delivered evidence before the next decision."};
+  if(task.type==="discussion_free_speech"){
+    const ref=briefing.view.responseDocket[0];
+    const target=context.players.find(p=>p.alive&&p.id!==context.self.id)!;
+    const seer=seerSpeech(context).speech;
+    return {text:seer?.text??(ref?"I dispute the accusation; please compare the actual evidence.":`${target.name}, what concrete observation supports your current read?`),acts:seer?seer.acts.map(a=>({kind:a.kind,targetId:a.targetId,claim:a.claim,evidence:null})):[{kind:ref?"reply":"challenge",targetId:ref?null:target.id,claim:ref?"I dispute the accusation.":"Please explain your current read.",evidence:ref??null}],respondsTo:ref?[ref]:[],rationale:"Choose my own contribution from the current briefing.",memory};
+  }
   if(task.type==="discussion_bid"){
     const target=context.players.find(player=>player.alive&&player.id!==context.self.id)?.id??null;
     return {urge:((hashSeed(`${context.self.id}:${context.day}:${context.sources.at(-1)?.id??"initial"}`)%61)+40)/100,ready:context.sources.filter(source=>source.type==="speech.public").length>=4,plan:{kind:"challenge",targetId:target,respondsTo:[],point:"Ask for one specific read that distinguishes the leading possibilities."},listen,memory,rationale:"A specific question can create a useful public commitment."};
@@ -250,6 +258,7 @@ function choose(request: DecisionRequest<unknown>, values: string[]): string | u
 
 export class FakeDecisionProvider implements DecisionProvider {
   async decide<T>(request: DecisionRequest<T>): Promise<DecisionResult<T>> {
+    if (request.kind === "jev") throw new Error("Use an injected Jev test provider for typed Jev requests");
     if(request.kind==="decision_v3"||request.kind==="decision_v3_1"){
       const data=request.schema.parse(fakeV3Submission(request as DecisionRequest<unknown>));
       const usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningTokens:0};

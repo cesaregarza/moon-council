@@ -1,3 +1,12 @@
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+/** Environment variables win; environment-file read errors must not silently select fake mode. */
+export function loadProviderEnvironment(): void {
+  const path = fileURLToPath(new URL("../../../.env", import.meta.url));
+  if (existsSync(path)) process.loadEnvFile(path);
+}
+
 export const DecisionProviderKinds = ["fake", "openai", "codex", "codex_direct"] as const;
 export type DecisionProviderKind = (typeof DecisionProviderKinds)[number];
 

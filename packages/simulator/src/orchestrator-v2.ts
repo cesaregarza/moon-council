@@ -1,11 +1,14 @@
+import { JOURNAL_EVIDENCE_TYPES } from "./player-brief";
 import type { ActionProposalV2, DecisionOpportunityV1, DecisionReportV2, DecisionReportWithSpeakerIntentV1, DiscussionBidV3, DiscussionPlanV3, GameConfigV2, GameEventV1, ListenerBidV3, SpeakerIntentV1, SpeechSubmissionV3, TargetChoiceSubmissionV3 } from "@werewolf/contracts";
 import { DecisionStore, LabRepository } from "@werewolf/db";
 import { checkWinners, createGameCreatedEvent, createGameState, reduceGame, resolveNight, resolveVote, seededChoice, shuffled, transition, validateNightAction, type EngineEventInput, type GameState } from "@werewolf/engine";
 import type { DecisionProvider } from "@werewolf/llm";
 import { authorizedSources, buildContextV2, contentHash, publicPayload } from "./context-v2";
-import { assertV2Budget, DecisionExecutorV2, DecisionPausedError, V2BudgetError } from "./decisions-v2";
+import { assertV2Budget, preparedTokenEstimate, DecisionExecutorV2, DecisionPausedError, V2BudgetError } from "./decisions-v2";
 import { discussionAuctionPlan, nextDiscussionWork, publicRevision, rankSpeakerAuction, responseDockets, type DiscussionStage } from "./scheduler-v2";
 import { NarrationV2 } from "./narration-v2";
+import { usesJournalWorkflow } from "./jev-actions";
+import { prepareJevStage, usesJev } from "./jev-decision";
 import { canonicalizeV3Plan, decisionRequestV3, normalizeV3Submission, validateV3Submission, type V3TaskSpec } from "./request-v3";
 import { canonicalizeV31Plan, decisionRequestV31, decisionRequestV32, normalizeV31Submission, validateV31Submission } from "./request-v3-1";
 
@@ -32,7 +35,7 @@ export class V2GameOrchestrator {
   readonly store: DecisionStore;
   private executor: DecisionExecutorV2;
   private narrator: NarrationV2;
-  constructor(private repository: LabRepository, provider: DecisionProvider) { this.store = new DecisionStore(repository); this.executor = new DecisionExecutorV2(repository, provider); this.narrator=new NarrationV2(repository,provider); }
+  constructor(private repository: LabRepository, provider: DecisionProvider, jevProvider?: DecisionProvider) { this.store = new DecisionStore(repository); this.executor = new DecisionExecutorV2(repository, provider, jevProvider); this.narrator=new NarrationV2(repository,provider); }
   private events(id: string) { return this.repository.listEvents(id); }
   private state(id: string) { return reduceGame(id, this.events(id)); }
   private config(state: GameState): GameConfigV2 {
@@ -106,6 +109,9 @@ export class V2GameOrchestrator {
         this.repository.appendEvent(id, transition(state, config.rules.firstCycle === "day_first" ? "day_discussion" : "night_team", 1));
       });
       return false;
+    }
+    if (usesJournalWorkflow(config) && ["day_discussion", "day_vote", "night_team", "night_actions"].includes(state.phase)) {
+      if (await this.refreshJournals(state, events)) return true;
     }
     if (state.phase === "night_team") {
       if(config.protocolVersion!=="agent_v2")return this.coordinateTeamsParallel(state,events,living);
@@ -333,12 +339,33 @@ export class V2GameOrchestrator {
     });
     return false;
   }
+  /** All living seats reflect on new speech/results before any subsequent scoring or action. */
+  private async refreshJournals(state: GameState, events: GameEventV1[]): Promise<boolean> {
+    const meaningful = JOURNAL_EVIDENCE_TYPES;
+    const at = events.at(-1)!.sequence, dockets = responseDockets(state, events);
+    const pending = state.players.filter(p => p.alive).flatMap(player => {
+      const sources = authorizedSources(state, events, player.id).filter(s => meaningful.has(s.type));
+      const revision = contentHash(sources.map(s => s.id));
+      const previous = events.findLast(e => e.type === "journal.refreshed" && e.payload.playerId === player.id);
+      const brief = this.store.journal(state.gameId, player.id).decisionBrief;
+      const currentBrief = this.config(state).decisionEngine.workflow !== "journal_v4" || brief?.playerId === player.id && brief.evidenceRevision === revision;
+      if (previous?.payload.revision === revision && currentBrief) return [];
+      const reviewed = new Set((previous?.payload.sourceIds as string[] | undefined) ?? []);
+      return [{ playerId: player.id, revision, sourceIds: sources.map(s => s.id), newIds: sources.filter(s => !reviewed.has(s.id)).map(s => s.id) }];
+    });
+    if (!pending.length) return false;
+    return this.parallel(pending, this.config(state).discussion.maxParallelDecisions, item => this.decide(
+      state, item.playerId, "pass", `journal:${item.playerId}:${item.revision}`, dockets[item.playerId]??[], false, at,
+      () => [{ type: "journal.refreshed", phase: state.phase, day: state.day, visibility: "player", audienceIds: [item.playerId], payload: { playerId: item.playerId, revision: item.revision, sourceIds: item.sourceIds } }],
+      false, { type: "journal_update", revision: item.revision, sourceIds: item.newIds },
+    ));
+  }
   private async auctionDiscussionV3(state:GameState,events:GameEventV1[],plan:NonNullable<ReturnType<typeof discussionAuctionPlan>>):Promise<boolean>{
     const config=this.config(state),at=events.at(-1)!.sequence,revision=publicRevision(events),base=`auction-v3:${plan.stage}:${plan.round}:${revision}`;
     const listeners=plan.candidates.length===1?[plan.candidates[0]!]:plan.listeners;
     const bidCall=(playerId:string)=>{
       const eligible=plan.candidates.includes(playerId);
-      const task:V3TaskSpec=eligible?{type:"discussion_bid",eligible:true,candidateIds:plan.candidates,revision}:{type:"discussion_listen",eligible:false,candidateIds:plan.candidates,revision};
+      const task:V3TaskSpec=eligible?{type:usesJournalWorkflow(config)?"discussion_score":"discussion_bid",eligible:true,candidateIds:plan.candidates,revision}:{type:"discussion_listen",eligible:false,candidateIds:plan.candidates,revision};
       return this.decide(state,playerId,"discussion",`${base}:bid:${playerId}`,plan.dockets[playerId]??[],false,at,(report,submission)=>{
         const bid=submission as DiscussionBidV3|ListenerBidV3;
         return [{type:"discussion.bid_submitted",phase:state.phase,day:state.day,visibility:"player",audienceIds:[playerId],payload:{playerId,auctionKey:base,stage:plan.stage,round:plan.round,publicRevision:revision,eligible,submission:bid,intent:(report as DecisionReportWithSpeakerIntentV1).speakerIntent}}];
@@ -374,9 +401,9 @@ export class V2GameOrchestrator {
     }
     if(!resolution.selectedPlayerId)return true;
     const selected=bids.find(bid=>bid.playerId===resolution!.selectedPlayerId),frozenPlan=(selected?.submission as DiscussionBidV3|undefined)?.plan;
-    if(!selected||!frozenPlan)throw new DecisionPausedError("selected v3 speaker has no frozen contribution plan");
-    const task:V3TaskSpec={type:"discussion_speech",plan:frozenPlan,ready:selected.submission.ready,revision};
-    const speechDocket=[...new Set([...(plan.dockets[selected.playerId]??[]),...frozenPlan.respondsTo])];
+    if(!selected||!usesJournalWorkflow(config)&&!frozenPlan)throw new DecisionPausedError("selected v3 speaker has no frozen contribution plan");
+    const task:V3TaskSpec=usesJournalWorkflow(config)?{type:"discussion_free_speech",ready:selected.submission.ready,revision}:{type:"discussion_speech",plan:frozenPlan!,ready:selected.submission.ready,revision};
+    const speechDocket=[...new Set([...(plan.dockets[selected.playerId]??[]),...(frozenPlan?.respondsTo??[])])];
     return this.decide(state,selected.playerId,"discussion",`${base}:speech:${selected.playerId}`,speechDocket,false,at,(report,submission)=>{
       const speech=submission as SpeechSubmissionV3,proposal=report.proposal as Extract<ActionProposalV2,{kind:"discussion"}>,name=state.players.find(player=>player.id===selected.playerId)!.name;
       if(!proposal.speech)throw new DecisionPausedError("selected v3 speaker did not produce a publishable speech");
@@ -445,13 +472,20 @@ export class V2GameOrchestrator {
     const sourceEvents = () => this.events(state.gameId).filter(e => at === undefined || e.sequence <= at);
     if (!op) {
       const journal = this.store.journal(state.gameId, playerId);
-      const requestFor=(candidate:Parameters<typeof decisionRequestV3>[0])=>usesHandleProtocol(config.protocolVersion)?requestForProtocol(config.protocolVersion)(candidate,inferredTask!,true,null,null):decisionRequestV3(candidate,inferredTask!,true,null,null);
-      const packet = buildContextV2(state, sourceEvents(), playerId, journal, key, kind, docket, closing,inferredTask?(candidate)=>requestFor(candidate).tokens:undefined);
+      const requestFor=(candidate:Parameters<typeof decisionRequestV3>[0])=> {
+        const request = usesHandleProtocol(config.protocolVersion)?requestForProtocol(config.protocolVersion)(candidate,inferredTask!,true,null,null):decisionRequestV3(candidate,inferredTask!,true,null,null);
+        const sizingOpportunity = { packet: candidate, playerId, taskType: inferredTask!.type };
+        if (!usesJev(sizingOpportunity, config)) return {...request,tokens:preparedTokenEstimate(request,config.modelSettings[playerId]?.provider==="openai")};
+        const stage = prepareJevStage(sizingOpportunity, config, { ...request, schemaName: inferredTask!.type, normalize: () => { throw new Error("Context sizing cannot normalize a decision"); } }, config.deliberation.mode === "gated");
+        // Reserve room for one explicit LLM response and the compact routing summary.
+        return { ...request, tokens: usesJournalWorkflow(config)?stage.prepared.tokens:Math.max(request.tokens, stage.prepared.tokens) + request.maxOutputTokens + 160 };
+      };
+      const packet = buildContextV2(state, sourceEvents(), playerId, journal, key, kind, docket, closing,inferredTask?(candidate)=>requestFor(candidate).tokens:undefined,inferredTask?.type==="journal_update"?inferredTask.sourceIds:[]);
       // V3 validates scheduling bids with their own narrow contract. The legacy
       // report validator couples a positive bid to a pre-written speech, which is
       // deliberately not part of the bid -> select -> speak protocol.
-      if(inferredTask?.type==="discussion_bid"||inferredTask?.type==="discussion_listen")packet.rules.speakerSelection="bid_only";
-      if(inferredTask?.type==="discussion_speech")packet.rules.speakerSelection="selected_speech";
+      if(inferredTask?.type==="discussion_bid"||inferredTask?.type==="discussion_score"||inferredTask?.type==="discussion_listen")packet.rules.speakerSelection="bid_only";
+      if(inferredTask?.type==="discussion_speech"||inferredTask?.type==="discussion_free_speech")packet.rules.speakerSelection="selected_speech";
       op = { id, gameId: state.gameId, playerId, kind, phase: state.phase, day: state.day, epoch: `${state.day}:${state.phase}`, viewId: contentHash(packet), baseJournalVersion: journal.version, packet, status: "open", best: null, recovery: 0, createdAt: new Date().toISOString(),taskType:v3Task?.type };
       this.store.atomic(() => { this.store.save(op!); this.append(state, "decision.opened", { playerId, decisionId: id, viewId: op!.viewId, includedSourceIds: packet.sources.map(s => s.id) }, "player", [playerId]); });
     }

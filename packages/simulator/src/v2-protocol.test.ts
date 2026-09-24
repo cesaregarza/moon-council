@@ -149,7 +149,10 @@ describe("V2 mocked protocol", () => {
       if (["completed", "paused", "budget_exhausted"].includes(status)) break;
     }
     expect(repository.getGame(record.id)!.status,repository.getGame(record.id)!.error).toBe("completed");
-    for(const point of repository.listEvents(record.id).filter(event=>event.type==="team.point"))expect(Object.keys(point.payload).sort()).toEqual(["playerId","targetId"]);
+    for(const point of repository.listEvents(record.id).filter(event=>event.type==="team.point")){
+      expect(Object.keys(point.payload).sort()).toEqual(["blind","playerId","round","targetId"]);
+      expect(point.payload).toMatchObject({blind:expect.any(Boolean),round:expect.any(Number)});
+    }
     expect(auditGameV2(repository,record.id).issues).toEqual([]);
   },30_000);
   it("keeps opponent roles and journals out of projections and excludes global metadata", () => {

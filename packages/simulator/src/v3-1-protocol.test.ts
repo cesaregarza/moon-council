@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { GameConfigV2Schema, emptyJournalV2, type GameEventV1 } from "@werewolf/contracts";
+import { providerJsonSchema, GameConfigV2Schema, emptyJournalV2, type GameEventV1 } from "@werewolf/contracts";
 import { DecisionStore, LabRepository, openDatabase, type DatabaseConnection } from "@werewolf/db";
 import { DOCTOR_V2, STARTER_ROLES, createGameCreatedEvent, createGameState } from "@werewolf/engine";
 import { FakeDecisionProvider } from "@werewolf/llm";
@@ -12,6 +12,7 @@ import {
   evidenceMapV31,
   normalizeV31Submission,
   v31SubmissionSchema,
+  v31ApiResponseFormat,
   validateV31Submission,
 } from "./request-v3-1";
 
@@ -61,6 +62,25 @@ describe("V3.1 evidence and cache protocol",()=>{
     expect(p1.prompt.layerHashes?.l1).toBe(p2.prompt.layerHashes?.l1);
     expect(p1.prompt.layerHashes?.schema).toBe(p2.prompt.layerHashes?.schema);
     expect(p1.prompt.cache).toMatchObject({stablePrefix:`werewolf-player-v3.1:${p1.prompt.layerHashes!.l0.slice(0,16)}`,boundary:"public"});
+  });
+
+  it("keeps one strict API schema across journal, free speech and closing without weakening task validation",()=>{
+    const state=createGameState("game",config());state.phase="day_discussion";
+    const packet=buildContextV2(state,[],"p1",emptyJournalV2(),"api","discussion");packet.rules.jevWorkflow="journal_v2";
+    const journalTask:V3TaskSpec={type:"journal_update",sourceIds:[],revision:"a"};
+    const speechTask:V3TaskSpec={type:"discussion_free_speech",ready:false,revision:"b"};
+    const closingTask:V3TaskSpec={type:"closing_response",revision:"c"};
+    const journal=v31ApiResponseFormat(packet,journalTask)!,speech=v31ApiResponseFormat(packet,speechTask)!,closing=v31ApiResponseFormat(packet,closingTask)!;
+    expect(providerJsonSchema(journal.schema)).toEqual(providerJsonSchema(speech.schema));
+    expect(providerJsonSchema(closing.schema)).toEqual(providerJsonSchema(speech.schema));
+    expect(journal.instructions).toBe(speech.instructions);
+    const envelope={task:"journal_update",memory:{...memory,attentionUpdate:null},speech:null,rationale:"No change."};
+    expect(v31SubmissionSchema(packet,journalTask).safeParse(journal.decode(envelope)).success).toBe(true);
+    expect(()=>speech.decode(envelope)).toThrow("Expected API response task");
+    expect(()=>journal.decode({...envelope,speech:{text:"hello",acts:[],respondsTo:[]}})).toThrow("cannot contain speech");
+    const decoded=closing.decode({...envelope,task:"closing_response",speech:{text:"An accusation",acts:[{kind:"accusation",targetId:"p2",claim:"Suspect",evidence:null}],respondsTo:[]}});
+    expect(v31SubmissionSchema(packet,closingTask).safeParse(decoded).success).toBe(false);
+    expect(()=>speech.decode({...envelope,task:"discussion_free_speech",speech:{text:"hello",acts:[],respondsTo:[]},memory:{...envelope.memory,attentionUpdate:[]}})).toThrow("Listening-note replacement");
   });
 
   it("never publishes private provenance or packet handles in natural-language speech",()=>{

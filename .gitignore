@@ -11,6 +11,9 @@ data/pilots/
 .env
 *.log
 
+__pycache__/
+*.pyc
+
 # Runtime and private material are never part of the source distribution.
 data/
 .env*

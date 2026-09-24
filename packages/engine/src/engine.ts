@@ -139,7 +139,7 @@ function reduceEvent(state: GameState, event: GameEventV1): GameState {
       if (isV2Config(next.config)) {
         next.config = {
           ...next.config,
-          maxTotalTokens: Number(event.payload.maxTotalTokens),
+          maxTotalTokens: event.payload.maxTotalTokens === null ? null : Number(event.payload.maxTotalTokens),
           safety: { ...next.config.safety, maxWallClockMs: Number(event.payload.maxWallClockMs) },
           deliberation: {
             ...next.config.deliberation,

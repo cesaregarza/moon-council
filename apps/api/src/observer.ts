@@ -7,10 +7,10 @@ function historicalAttempts(store:DecisionStore,id:string,events:GameEventV1[],a
   return store.attempts(id,decisionId).filter(a=>events.some(e=>e.type === "model.attempt_started" && e.payload.attemptId === a.id)).map(a=>{
     if(at === undefined) return a;
     const receipt=events.findLast(e=>e.type === "decision.usage_received" && e.payload.attemptId === a.id);
-    const verdict=events.findLast(e=>["decision.reported","decision.narration_reported","decision.submission_rejected","decision.report_rejected","decision.attempt_failed"].includes(e.type) && e.payload.attemptId === a.id);
-    const valid=verdict && ["decision.reported","decision.narration_reported"].includes(verdict.type);
+    const verdict=events.findLast(e=>["decision.reported","decision.jev_stage","decision.narration_reported","decision.submission_rejected","decision.report_rejected","decision.attempt_failed"].includes(e.type) && e.payload.attemptId === a.id);
+    const valid=verdict && ["decision.reported","decision.jev_stage","decision.narration_reported"].includes(verdict.type);
     const validationError=Array.isArray(verdict?.payload.errors)?verdict.payload.errors.join("; "):verdict?.payload.error;
-    return {...a,response:verdict ? a.response ?? null : null,usage:receipt?.payload.usage as typeof a.usage ?? unknownUsage(),status:valid ? "valid" as const : verdict ? "invalid" as const : receipt ? "received" as const : "started" as const,error:validationError as string ?? null,latencyMs:receipt?.payload.latencyMs as number ?? null,endedAt:receipt?.createdAt ?? null};
+    return {...a,providerMetadata:receipt ? a.providerMetadata : undefined,response:verdict ? a.response ?? null : null,usage:receipt?.payload.usage as typeof a.usage ?? unknownUsage(),status:valid ? "valid" as const : verdict ? "invalid" as const : receipt ? "received" as const : "started" as const,error:validationError as string ?? null,latencyMs:receipt?.payload.latencyMs as number ?? null,endedAt:receipt?.createdAt ?? null};
   });
 }
 
@@ -72,7 +72,7 @@ export function observerPayload(repository: LabRepository, game: GameRecord, vie
   const journalIds = viewer.kind === "moderator" ? state.players.map(p => p.id) : viewer.kind === "player" ? [viewer.playerId] : [];
   const journals = journalsAt(repository,game,canonical,journalIds);
   const config = game.config;
-  const safeConfig = { schemaVersion: config.schemaVersion, ...(config.schemaVersion === "game_config_v2" ? { preset: config.preset, protocolVersion: config.protocolVersion, deliberation: config.deliberation, maxTotalTokens: config.maxTotalTokens } : {}), discussion: config.discussion, safety: config.safety };
+  const safeConfig = { schemaVersion: config.schemaVersion, ...(config.schemaVersion === "game_config_v2" ? { preset: config.preset, protocolVersion: config.protocolVersion, deliberation: config.deliberation, decisionEngine: config.decisionEngine, maxTotalTokens: config.maxTotalTokens } : {}), discussion: config.discussion, safety: config.safety };
   const calls = historicalAttempts(new DecisionStore(repository),game.id,canonical,at).filter(a => viewer.kind === "moderator" || viewer.kind === "player" && a.playerId === viewer.playerId);
   const usage = viewer.kind === "public" || viewer.kind === "team" ? [] : config.schemaVersion === "game_config_v2" ? calls.map(a => ({ ...a.usage, model: a.model, provider: a.provider, reasoningEffort: a.reasoningEffort, latencyMs: a.latencyMs, outputLimitEnforced: a.outputLimitEnforced })) : repository.usageForGame(game.id).filter(row => viewer.kind === "moderator" || viewer.kind === "player" && row.playerId === viewer.playerId);
   const historicalStatus = at === undefined ? game.status : state.status;
@@ -91,11 +91,12 @@ export function decisionRecords(repository: LabRepository, id: string, viewer: V
     const report = events.findLast(e => e.type === "decision.reported" && e.payload.decisionId === op.id);
     const committed = events.some(e => e.type === "decision.committed" && e.payload.decisionId === op.id);
     const superseded = events.some(e => e.type === "decision.superseded" && e.payload.decisionId === op.id);
-    return { ...op, best: report?.payload.report as DecisionOpportunityV1["best"] ?? null, bestSubmission: report?.payload.submission, taskType: report?.payload.taskType as DecisionOpportunityV1["taskType"] ?? op.taskType, status: committed ? "committed" : superseded ? "superseded" : report ? "pending" : "open", recovery: Number(report?.payload.recovery ?? 0) };
+    const checkpoint = events.findLast(e => e.type === "decision.jev_stage" && e.payload.decisionId === op.id);
+    return { ...op, jevState: checkpoint?.payload.checkpoint as DecisionOpportunityV1["jevState"], best: report?.payload.report as DecisionOpportunityV1["best"] ?? null, bestSubmission: report?.payload.submission, taskType: report?.payload.taskType as DecisionOpportunityV1["taskType"] ?? op.taskType, status: committed ? "committed" : superseded ? "superseded" : report ? "pending" : "open", recovery: Number(report?.payload.recovery ?? 0) };
   });
 }
 export function decisionSummaries(repository: LabRepository, id: string, viewer: Viewer, at?: number) {
-  return decisionRecords(repository,id,viewer,at).map(({packet: _packet,best: _best,bestSubmission: _bestSubmission,...opportunity}) => opportunity);
+  return decisionRecords(repository,id,viewer,at).map(({packet: _packet,best: _best,bestSubmission: _bestSubmission,jevState: _jevState,...opportunity}) => opportunity);
 }
 export function decisionDetail(repository: LabRepository, id: string, decisionId: string, viewer: Viewer, at?: number) {
   const opportunity = decisionRecords(repository,id,viewer,at).find(op => op.id === decisionId);
