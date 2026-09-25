@@ -81,7 +81,7 @@ describe("V2 provider contracts", () => {
     const bodies: ResponseCreateParamsNonStreaming[] = [];
     const create = vi.fn(async (body: ResponseCreateParamsNonStreaming) => {
       bodies.push(body);
-      return { output_text: JSON.stringify({ answer: "ok" }), usage: null } as never;
+      return { status: "completed", output_text: JSON.stringify({ answer: "ok" }), usage: null } as never;
     });
     const provider = new OpenAIResponsesProvider("test-key");
     installOpenAiCreate(provider, create);
@@ -101,12 +101,12 @@ describe("V2 provider contracts", () => {
   it("places cache breakpoints after the game prefix and stable decision context for GPT-5.6",async()=>{
     const bodies:ResponseCreateParamsNonStreaming[]=[];
     const provider=new OpenAIResponsesProvider("test-key");
-    installOpenAiCreate(provider,vi.fn(async(body:ResponseCreateParamsNonStreaming)=>{bodies.push(body);return {output_text:'{"answer":"ok"}',usage:null} as never;}));
+    installOpenAiCreate(provider,vi.fn(async(body:ResponseCreateParamsNonStreaming)=>{bodies.push(body);return {status:"completed",output_text:'{"answer":"ok"}',usage:null} as never;}));
     await provider.decide(request(answerSchema,{model:"gpt-5.6-luna",preparedPrompt:{instructions:"stable rules",sharedInput:"stable player context",input:"changing episode suffix",cache:{mode:"explicit",ttl:"30m",stablePrefix:"werewolf-player-v2.2"}}}));
     expect(bodies[0]).toMatchObject({store:false,prompt_cache_key:"werewolf-player-v2.2",prompt_cache_options:{mode:"explicit",ttl:"30m"},input:[
       {role:"developer",content:[{type:"input_text",text:"stable rules",prompt_cache_breakpoint:{mode:"explicit"}}]},
       {role:"user",content:[{type:"input_text",text:"stable player context",prompt_cache_breakpoint:{mode:"explicit"}}]},
-      {role:"user",content:"changing episode suffix"},
+      {role:"user",content:[{type:"input_text",text:"changing episode suffix"}]},
     ]});
     expect(bodies[0]).not.toHaveProperty("instructions");
   });
@@ -114,13 +114,13 @@ describe("V2 provider contracts", () => {
   it("places V3.1 public state before private state and the changing task suffix",async()=>{
     const bodies:ResponseCreateParamsNonStreaming[]=[];
     const provider=new OpenAIResponsesProvider("test-key");
-    installOpenAiCreate(provider,vi.fn(async(body:ResponseCreateParamsNonStreaming)=>{bodies.push(body);return {output_text:'{"answer":"ok"}',usage:null} as never;}));
+    installOpenAiCreate(provider,vi.fn(async(body:ResponseCreateParamsNonStreaming)=>{bodies.push(body);return {status:"completed",output_text:'{"answer":"ok"}',usage:null} as never;}));
     await provider.decide(request(answerSchema,{kind:"decision_v3_1",model:"gpt-5.6-luna",preparedPrompt:{instructions:"L0 rules",publicInput:"L1 public",privateInput:"L2 private",input:"L3 task",cache:{mode:"explicit",ttl:"30m",stablePrefix:"werewolf-player-v3.1:abc",boundary:"public"}}}));
     expect(bodies[0]).toMatchObject({prompt_cache_key:"werewolf-player-v3.1:abc",input:[
       {role:"developer",content:[{type:"input_text",text:"L0 rules",prompt_cache_breakpoint:{mode:"explicit"}}]},
       {role:"user",content:[{type:"input_text",text:"L1 public",prompt_cache_breakpoint:{mode:"explicit"}}]},
-      {role:"user",content:"L2 private"},
-      {role:"user",content:"L3 task"},
+      {role:"user",content:[{type:"input_text",text:"L2 private"}]},
+      {role:"user",content:[{type:"input_text",text:"L3 task"}]},
     ]});
   });
 
@@ -146,6 +146,7 @@ describe("V2 provider contracts", () => {
 
   it("reports usage before rejecting malformed output", async () => {
     const create = vi.fn(async () => ({
+      status: "completed",
       output_text: "{malformed",
       usage: {
         input_tokens: 11,

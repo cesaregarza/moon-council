@@ -7,6 +7,7 @@ import Database from "better-sqlite3";
 type JsonRecord = Record<string, unknown>;
 
 export interface AuditEvent {
+  id?: string;
   sequence: number;
   type: string;
   phase: string;
@@ -21,6 +22,7 @@ export interface AuditAttempt {
   playerId: string;
   status: string;
   schemaVersion: string;
+  error?: string | null;
   provider: string;
   model: string;
   reasoningEffort: string;
@@ -41,6 +43,7 @@ export interface AuditGame {
   error: string | null;
   createdAt: string;
   updatedAt: string;
+  activeRuntimeMs?: number;
 }
 
 interface EnginePlayer {
@@ -97,6 +100,45 @@ function latestBelief(events: AuditEvent[], observerId: string, targetId: string
 function tokenField(attempts: AuditAttempt[], key: keyof AuditAttempt["usage"]) {
   const known = attempts.flatMap(attempt => typeof attempt.usage[key] === "number" ? [attempt.usage[key] as number] : []);
   return { knownTotal: known.reduce((sum, value) => sum + value, 0), unknownAttempts: attempts.length - known.length };
+}
+
+/** Verify fresh public speech has reached every living journal before the next Jev call. */
+export function summarizeJournalWorkflow(events: AuditEvent[], attempts: AuditAttempt[]) {
+  const reflections = events.filter(event => event.type === "journal.refreshed");
+  const jevAttemptIds = new Set(attempts.filter(attempt => attempt.provider === "jev").map(attempt => attempt.id));
+  const jevStarts = events.filter(event => event.type === "model.attempt_started" && jevAttemptIds.has(String(event.payload.attemptId)));
+  const players = rolePlayers(events);
+  const speeches = events.filter(event => event.type === "speech.public");
+  const observed = reflections.length > 0;
+  const checks = observed ? speeches.filter(speech => speech.id != null).map(speech => {
+    const nextJev = jevStarts.find(event => event.sequence > speech.sequence);
+    const before = nextJev?.sequence ?? (events.at(-1)?.sequence ?? speech.sequence) + 1;
+    const living = [...aliveAt(players, events, before)];
+    const missingPlayerIds = living.filter(playerId => !reflections.some(event =>
+      event.sequence > speech.sequence && event.sequence < before && event.payload.playerId === playerId &&
+      Array.isArray(event.payload.sourceIds) && event.payload.sourceIds.includes(speech.id),
+    ));
+    return {speechId:speech.id!, sequence:speech.sequence, day:speech.day, speakerId:String(speech.payload.playerId),
+      nextJevSequence:nextJev?.sequence ?? null, expectedPlayers:living.length, missingPlayerIds,
+      status:nextJev ? (missingPlayerIds.length ? "gap" : "verified") : "pending"};
+  }) : [];
+  const last = speeches.at(-1);
+  return {
+    observed,
+    reflections:reflections.length,
+    proseUpdates:events.filter(event => event.type === "journal.v2_updated" && Array.isArray(event.payload.patch) &&
+      event.payload.patch.some(op => (op as JsonRecord).op === "write_text")).length,
+    attentionUpdates:events.filter(event => event.type === "journal.v2_updated" && Array.isArray(event.payload.patch) &&
+      event.payload.patch.some(op => (op as JsonRecord).op === "set_attention")).length,
+    speechesWithoutIds:speeches.filter(event => event.id == null).length,
+    verifiedSpeeches:checks.filter(check => check.status === "verified").length,
+    pendingSpeeches:checks.filter(check => check.status === "pending").length,
+    gaps:checks.filter(check => check.status === "gap"),
+    byPlayer:players.map(player => ({playerId:player.id,playerName:player.name,
+      reflections:reflections.filter(event => event.payload.playerId === player.id).length})),
+    latestSpeech:last ? {sequence:last.sequence,day:last.day,playerId:last.payload.playerId,playerName:last.payload.playerName,text:last.payload.text} : null,
+    checks,
+  };
 }
 
 export function summarizeGameAudit(game: AuditGame, events: AuditEvent[], attempts: AuditAttempt[]) {
@@ -196,6 +238,11 @@ export function summarizeGameAudit(game: AuditGame, events: AuditEvent[], attemp
     const taskCached = tokenField(rows, "cachedInputTokens");
     return {
       schemaVersion,
+      byEffort:[...new Set(rows.map(row=>row.reasoningEffort))].sort().map(reasoningEffort=>{
+        const calls=rows.filter(row=>row.reasoningEffort===reasoningEffort);
+        return {reasoningEffort,attempts:calls.length,valid:calls.filter(row=>row.status==="valid").length,invalid:calls.filter(row=>row.status==="invalid").length,unknown:calls.filter(row=>row.status==="unknown").length,
+          medianLatencyMs:median(calls.flatMap(row=>row.latencyMs===null?[]:[row.latencyMs])),outputTokens:tokenField(calls,"outputTokens"),reasoningTokens:tokenField(calls,"reasoningTokens")};
+      }),
       attempts: rows.length,
       valid: rows.filter(row => row.status === "valid").length,
       invalid: rows.filter(row => row.status === "invalid").length,
@@ -239,6 +286,7 @@ export function summarizeGameAudit(game: AuditGame, events: AuditEvent[], attemp
       name: game.name,
       status: game.status,
       error: game.error,
+      activeRuntimeMs: game.activeRuntimeMs ?? null,
       latestSequence: latest?.sequence ?? null,
       latestDay: latest?.day ?? null,
       latestPhase: latest?.phase ?? null,
@@ -248,6 +296,7 @@ export function summarizeGameAudit(game: AuditGame, events: AuditEvent[], attemp
       recordedElapsedMs: elapsedMs,
     },
     roster,
+    journal:summarizeJournalWorkflow(events, attempts),
     mechanics: {
       eliminations,
       daysWithVotes: voteEvents.length,
@@ -264,6 +313,7 @@ export function summarizeGameAudit(game: AuditGame, events: AuditEvent[], attemp
       bids: events.filter(event => event.type === "discussion.bid_submitted").length,
       selectedSpeakers: events.filter(event => event.type === "discussion.speaker_selected").length,
       publicSpeeches: speeches.length,
+      transcript:speeches.map(event => ({sequence:event.sequence,day:event.day,playerId:event.payload.playerId,playerName:event.payload.playerName,text:event.payload.text,acts:event.payload.acts,respondsTo:event.payload.respondsTo})),
       ordinarySpeeches: speeches.filter(event => event.payload.closing !== true).length,
       closingSpeeches: speeches.filter(event => event.payload.closing === true).length,
       selectedWithMaximumUrge: auctionDetails.filter(auction => auction.selectedPlayerId && auction.maximumUrgeIds.includes(auction.selectedPlayerId)).length,
@@ -280,6 +330,8 @@ export function summarizeGameAudit(game: AuditGame, events: AuditEvent[], attemp
       attempts: attempts.length,
       statusCounts,
       invalidAttempts: attempts.filter(attempt => attempt.status === "invalid").length,
+      invalidDetails:attempts.filter(attempt => attempt.status === "invalid").map(attempt => ({id:attempt.id,playerId:attempt.playerId,provider:attempt.provider,schemaVersion:attempt.schemaVersion,error:attempt.error ?? null})),
+      failedDetails:attempts.filter(attempt => ["invalid","unknown"].includes(attempt.status)).map(attempt => ({id:attempt.id,playerId:attempt.playerId,provider:attempt.provider,schemaVersion:attempt.schemaVersion,status:attempt.status,reasoningEffort:attempt.reasoningEffort,latencyMs:attempt.latencyMs,error:attempt.error ?? null})),
       usage: {
         inputTokens: input,
         outputTokens: tokenField(attempts, "outputTokens"),
@@ -296,23 +348,42 @@ export function summarizeGameAudit(game: AuditGame, events: AuditEvent[], attemp
         maxMs: latencyValues.length ? Math.max(...latencyValues) : null,
       },
       byTask,
+      byModel:[...new Set(attempts.map(attempt => `${attempt.provider}:${attempt.model}`))].sort().map(model => {
+        const rows = attempts.filter(attempt => `${attempt.provider}:${attempt.model}` === model);
+        return {model,attempts:rows.length,medianLatencyMs:median(rows.flatMap(row => row.latencyMs == null ? [] : [row.latencyMs]))};
+      }),
       byDayPhase,
     },
     eventTypeCounts: typeCounts,
   };
 }
 
+/** Small reusable snapshot for monitoring a running pilot, without private notebooks. */
+export function summarizeGameProgress(audit: ReturnType<typeof summarizeGameAudit>) {
+  return {
+    game:audit.game,
+    eliminations:audit.mechanics.eliminations,
+    speeches:audit.discussion.publicSpeeches,
+    compactions:audit.eventTypeCounts["journal.compacted"]??0,
+    recentFailures:audit.provider.failedDetails.slice(-3).map(attempt=>({...attempt,error:attempt.error?.replace(/\s+/g," ").slice(0,180)})),
+    latestSpeech:audit.journal.latestSpeech,
+    journal:{reflections:audit.journal.reflections,verifiedSpeeches:audit.journal.verifiedSpeeches,pendingSpeeches:audit.journal.pendingSpeeches,gaps:audit.journal.gaps.length},
+    provider:{attempts:audit.provider.attempts,statusCounts:audit.provider.statusCounts,byModel:audit.provider.byModel,knownTokens:audit.provider.usage.totalTokens.knownTotal,invalidAttempts:audit.provider.invalidAttempts},
+  };
+}
+
 function usage(exitCode = 2): never {
-  console.error("Usage: npm run game:audit -- --db <sqlite-path> --game <game-id> [--compact]");
+  console.error("Usage: npm run game:audit -- --db <sqlite-path> --game <game-id> [--compact] [--status]");
   process.exit(exitCode);
 }
 
 function parseArgs(argv: string[]) {
-  let dbPath = "", gameId = "", compact = false;
+  let dbPath = "", gameId = "", compact = false, status = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--help" || arg === "-h") usage(0);
     if (arg === "--compact") { compact = true; continue; }
+    if (arg === "--status") { status = true; continue; }
     const value = argv[++index];
     if (!value) usage();
     if (arg === "--db") dbPath = resolve(value);
@@ -320,7 +391,7 @@ function parseArgs(argv: string[]) {
     else usage();
   }
   if (!dbPath || !gameId) usage();
-  return {dbPath, gameId, compact};
+  return {dbPath, gameId, compact, status};
 }
 
 function main(): void {
@@ -330,18 +401,22 @@ function main(): void {
   try {
     const row = db.prepare("SELECT id,name,status,error,created_at AS createdAt,updated_at AS updatedAt FROM games WHERE id=?").get(options.gameId) as AuditGame | undefined;
     if (!row) throw new Error(`Unknown game: ${options.gameId}`);
-    const eventRows = db.prepare("SELECT sequence,type,phase,day,visibility,payload_json AS payloadJson,created_at AS createdAt FROM events WHERE game_id=? ORDER BY sequence").all(options.gameId) as Array<Omit<AuditEvent,"payload"> & {payloadJson:string}>;
+    const runtimeRows=db.prepare("SELECT record_key AS key,value_json AS value FROM agent_records WHERE game_id=? AND record_key IN ('runtimeMs','runtimeStartedAt')").all(options.gameId) as Array<{key:string;value:string}>;
+    const runtime=Object.fromEntries(runtimeRows.map(record=>[record.key,numberOrNull(JSON.parse(record.value))]));
+    row.activeRuntimeMs=(runtime.runtimeMs??0)+(runtime.runtimeStartedAt==null?0:Math.max(0,Date.now()-runtime.runtimeStartedAt));
+    const eventRows = db.prepare("SELECT id,sequence,type,phase,day,visibility,payload_json AS payloadJson,created_at AS createdAt FROM events WHERE game_id=? ORDER BY sequence").all(options.gameId) as Array<Omit<AuditEvent,"payload"> & {payloadJson:string}>;
     const attemptRows = db.prepare("SELECT value_json AS valueJson FROM provider_attempts WHERE game_id=? ORDER BY rowid").all(options.gameId) as Array<{valueJson:string}>;
     const events = eventRows.map(({payloadJson,...event}) => ({...event,payload:JSON.parse(payloadJson) as JsonRecord}));
     const attempts = attemptRows.map(item => {
       const value = JSON.parse(item.valueJson) as JsonRecord;
       const usage = (value.usage ?? {}) as JsonRecord;
       return {
-        id:String(value.id),playerId:String(value.playerId),status:String(value.status),schemaVersion:String(value.schemaVersion ?? "unknown"),provider:String(value.provider ?? "unknown"),model:String(value.model ?? "unknown"),reasoningEffort:String(value.reasoningEffort ?? "unknown"),latencyMs:numberOrNull(value.latencyMs),
+        id:String(value.id),playerId:String(value.playerId),status:String(value.status),error:typeof value.error === "string" ? value.error : null,schemaVersion:String(value.schemaVersion ?? "unknown"),provider:String(value.provider ?? "unknown"),model:String(value.model ?? "unknown"),reasoningEffort:String(value.reasoningEffort ?? "unknown"),latencyMs:numberOrNull(value.latencyMs),
         usage:{inputTokens:numberOrNull(usage.inputTokens),outputTokens:numberOrNull(usage.outputTokens),totalTokens:numberOrNull(usage.totalTokens),cachedInputTokens:numberOrNull(usage.cachedInputTokens),reasoningTokens:numberOrNull(usage.reasoningTokens)},
       } satisfies AuditAttempt;
     });
-    console.log(JSON.stringify(summarizeGameAudit(row, events, attempts), null, options.compact ? 0 : 2));
+    const audit=summarizeGameAudit(row, events, attempts);
+    console.log(JSON.stringify(options.status?summarizeGameProgress(audit):audit, null, options.compact ? 0 : 2));
   } finally { db.close(); }
 }
 

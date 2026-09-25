@@ -42,16 +42,19 @@ cp .env.example .env
 npm run dev
 ```
 
-Open [http://127.0.0.1:4311](http://127.0.0.1:4311). The default `LLM_PROVIDER=fake` mode needs no credentials and is useful for interface checks, engine development, and deterministic test runs.
+Open [http://127.0.0.1:4311](http://127.0.0.1:4311). The setup template selects the OpenAI API and GPT-6 Luna. Set `OPENAI_API_KEY` before running real players, or set `LLM_PROVIDER=fake` for interface checks and deterministic offline tests.
 
 To run real players, edit `.env`:
 
 ```dotenv
 LLM_PROVIDER=openai
 OPENAI_API_KEY=your_key
-OPENAI_MODEL=your_available_model_id
+OPENAI_MODEL=gpt-6-luna
+OPENAI_REASONING_EFFORT=xhigh
 OPENAI_MODERATOR_MODEL=optional_separate_model_id
 ```
+
+Default live games have no total-token ceiling; they are still bounded by 500 model calls, 30 minutes of active runtime, and 8 day/night cycles.
 
 The API key remains in the API/runner environment and is never sent to the browser or stored in SQLite. OpenAI requests use the Responses API with `store: false` and strict JSON-schema output. The application reconstructs every turn from its own filtered state.
 
@@ -74,9 +77,15 @@ CODEX_TIMEOUT_MS=120000
 
 `CODEX_MODEL` falls back to `OPENAI_MODEL`, which can be convenient when both providers use the same model id. The Codex adapter never reads or copies the login cache itself: the SDK launches its bundled CLI, which reuses the saved account session. Every game decision starts a fresh, independent Codex thread from the engine-filtered player view. The child receives a minimal environment without `OPENAI_API_KEY`, runs in an empty temporary directory with a read-only sandbox, and has shell, web, apps, hooks, memories, plugins, MCP servers, and subagents disabled. Only the schema-validated final JSON and token usage enter the event store.
 
-OpenAI player requests remain independent (`store: false`). V3.1 puts stable instructions first, then a same-revision public layer, then the authorized private briefing, and finally the changing task suffix. Compatible models receive explicit cache breakpoints after the stable and public layers. Independent player sessions do not imply shared memory and do not prevent prefix cache reuse. Setup exposes a decision-concurrency factor: `1` favors warm-prefix reuse, the seat count favors latency, and intermediate pools trade between them. Cached and cache-write token counts are recorded when the provider reports them; a hit is never assumed.
+OpenAI player requests remain independent (`store: false`). Four explicit cache boundaries separate immutable behavior, frozen rules, durable public outcomes, and the current public view. A common strict API response format preserves reuse across notebooks and speeches. Private notebooks and task/repair instructions follow the cached section. New games allow 8,192 output tokens including reasoning, with concise final responses still enforced by schema. Exact wire bodies, cache reads/writes, and diagnostic miss reasons are available in moderator audits. See [API configuration, cache layout, and the bounded live probe](docs/OPENAI_CACHING.md).
 
 If `codex:status` reports that you are signed out, run `npm run codex:login` and complete the browser flow. A live Codex game consumes the Codex allowance associated with that ChatGPT account; API-key mode continues to use OpenAI Platform billing.
+
+## Jev decision engine
+
+New games can select **Jev + selected LLM** in setup. The selected LLM freely generates speeches and refreshes every living player’s private journal after new speech or results. New Jev games use free-form prose journals with a 16k estimated-token ceiling. Jev reads a short current action or attention brief plus a compact task briefing with verified facts, ballots and legal choices to score urgency/listening and choose votes, protection, inspection, and pack targets. Routine reflections append notes; overflow triggers a faithful LLM summary without per-note quotas. Speaker selection retains the existing listener auction and response rights. The existing LLM-only path remains available for comparison.
+
+See [Jev setup, budgets, and audit behavior](docs/JEV_DECISIONS.md). The runner needs the installed `ask-jev` CLI and its configured credentials. Use `npm run test:live:jev` for a small synthetic live check.
 
 ## Architecture
 
@@ -164,6 +173,8 @@ Control actions are `start`, `pause`, `resume`, `step`, `step_decision`, `abort`
 npm run pilot -- --provider codex --model gpt-5.6-luna --effort xhigh --seed standard-v3-pilot
 ```
 
+New games have no total-token ceiling. Use `--max-tokens NUMBER` to opt into one or `--max-tokens unlimited` explicitly; usage remains recorded.
+
 The pilot prints a game ID and database path. Resume the same game by supplying both values and `--resume`; the existing game must be V2:
 
 ```bash
@@ -176,6 +187,8 @@ Use `--audit` with the same database and game ID to emit the moderator audit art
 Add `--snapshot --out /native/path/private-archive` to save a consistent SQLite backup beside the research JSON/JSONL and audit files. Snapshot creation refuses to overwrite an existing backup. Audit mode does not make model calls, and terminal budget outcomes cannot be resumed. Keep these spoiler archives private.
 
 For read-only latency/usage summaries and targeted transcript/journal searches, use `npm run pilot -- --inspect-bundle /native/path/research.json --match PLAYER_NAME --match PLAYER_ID --day 2`. Matches are literal and case-insensitive; `--limit` and `--offset` page through source-identified records. Without `--match`, only timing/usage metadata is printed. This mode opens no database, changes no game, and makes no model calls.
+
+For a live or completed game, `npm run game:audit -- --db /native/path/game.db --game GAME_ID --compact` reads SQLite without changing the game. Add `--status` for a concise live progress snapshot without private notebooks. Alongside outcomes and provider timings, `journal` reports reflection counts, listening-note updates, and whether every living player reviewed each speech before the next Jev call. An unfinished reflection batch is pending, not a failure; legacy games without reflection events are marked unobserved.
 
 ## Verification
 

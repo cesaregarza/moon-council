@@ -19,6 +19,9 @@ const Brief = z.string().max(240);
 const Rationale = z.string().max(300);
 
 export type V3TaskSpec =
+  | { type: "journal_update"; revision: string; sourceIds: string[] }
+  | { type: "discussion_score"; eligible: true; candidateIds: string[]; revision: string }
+  | { type: "discussion_free_speech"; ready: boolean; revision: string }
   | { type: "discussion_bid"; eligible: true; candidateIds: string[]; revision: string }
   | { type: "discussion_listen"; eligible: false; candidateIds: string[]; revision: string }
   | { type: "discussion_speech"; plan: DiscussionPlanV3; ready: boolean; revision: string }

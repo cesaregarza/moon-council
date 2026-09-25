@@ -7,6 +7,7 @@ and unresolved questions. The journal is an explicit game artifact, not hidden c
 step-by-step reasoning. Keep public speech under 120 words.`;
 
 export function buildPrompt<T>(request: DecisionRequest<T>): PreparedPrompt {
+  if (request.kind === "jev") throw new Error("Jev requires an explicit typed request");
   if (request.kind === "narration") {
     return {
       instructions:

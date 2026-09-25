@@ -94,7 +94,7 @@ function compactRole(role: PublishedRole): Record<string, unknown> {
 
 /** Same for every player in a frozen game, so it belongs before any private data. */
 export function stableGameReference(packet:PlayerContextV2):Record<string,unknown> {
-  const {roles,factionObjective:_factionObjective,speakerSelection:_speakerSelection,...publishedRules}=packet.rules;
+  const {roles,factionObjective:_factionObjective,speakerSelection:_speakerSelection,journalRevision:_journalRevision,...publishedRules}=packet.rules;
   const roleCatalog=Array.isArray(roles) ? (roles as PublishedRole[]).map(compactRole) : [];
   return {promptVersion:"player_prompt_v2.2",publishedRules,roleCatalog};
 }

@@ -17,6 +17,9 @@ export type CacheAttempt = {
   startedAt: string;
   schemaVersion: string;
   usage?: TokenUsage | null;
+  provider?: string;
+  model?: string;
+  providerMetadata?: { cacheDiagnostics?: { type?: string; reason?: string } | null };
   request?: {
     instructions?: unknown;
     schema?: unknown;
@@ -33,10 +36,15 @@ type Bucket = {
   hitCalls: number;
   invalidCalls: number;
   unknownInputCalls: number;
+  knownCacheInputTokens: number;
+  unknownCacheCalls: number;
+  unknownWriteCalls: number;
+  knownUncachedInputTokens: number;
+  unknownBreakdownCalls: number;
 };
 
 function emptyBucket(): Bucket {
-  return {calls:0,inputTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,hitCalls:0,invalidCalls:0,unknownInputCalls:0};
+  return {calls:0,inputTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,hitCalls:0,invalidCalls:0,unknownInputCalls:0,knownCacheInputTokens:0,unknownCacheCalls:0,unknownWriteCalls:0,knownUncachedInputTokens:0,unknownBreakdownCalls:0};
 }
 
 function addAttempt(bucket: Bucket, attempt: CacheAttempt): void {
@@ -46,8 +54,14 @@ function addAttempt(bucket: Bucket, attempt: CacheAttempt): void {
   const written=attempt.usage?.cacheWriteInputTokens;
   if(typeof input==="number")bucket.inputTokens+=input;
   else bucket.unknownInputCalls+=1;
-  if(typeof cached==="number")bucket.cachedInputTokens+=cached;
+  if(typeof cached==="number" && typeof input==="number") {
+    bucket.cachedInputTokens+=cached;
+    bucket.knownCacheInputTokens+=input;
+  } else bucket.unknownCacheCalls+=1;
   if(typeof written==="number")bucket.cacheWriteInputTokens+=written;
+  else bucket.unknownWriteCalls+=1;
+  if(typeof input==="number" && typeof cached==="number" && typeof written==="number" && cached+written<=input) bucket.knownUncachedInputTokens+=input-cached-written;
+  else bucket.unknownBreakdownCalls+=1;
   if(typeof cached==="number"&&cached>0)bucket.hitCalls+=1;
   if(attempt.status!=="valid")bucket.invalidCalls+=1;
 }
@@ -63,15 +77,21 @@ export function canonicalJson(value: unknown): string {
 }
 
 function rate(bucket: Bucket): number | null {
-  return bucket.inputTokens>0?100*bucket.cachedInputTokens/bucket.inputTokens:null;
+  return bucket.knownCacheInputTokens>0?100*bucket.cachedInputTokens/bucket.knownCacheInputTokens:null;
 }
 
 export function summarizeAttempts(attempts: CacheAttempt[]) {
   const total=emptyBucket(),bySchema=new Map<string,Bucket>(),byOrdinal=new Map<number,Bucket>();
+  const byProvider=new Map<string,Bucket>(),diagnostics=new Map<string,number>();
   const seenByDecision=new Map<string,number>();
   const prefixBySchema=new Map<string,{instructions:Set<string>;schemas:Set<string>;canonicalSchemas:Set<string>;cache:Set<string>;briefings:Set<string>}>();
   for(const attempt of attempts){
     addAttempt(total,attempt);
+    const providerKey=`${attempt.provider??"unknown"}:${attempt.model??"unknown"}`;
+    const providerBucket=byProvider.get(providerKey)??emptyBucket();addAttempt(providerBucket,attempt);byProvider.set(providerKey,providerBucket);
+    const diagnostic=attempt.providerMetadata?.cacheDiagnostics;
+    const diagnosticKey=diagnostic ? `${diagnostic.type??"unknown"}${diagnostic.reason?`:${diagnostic.reason}`:""}` : "not_reported";
+    diagnostics.set(diagnosticKey,(diagnostics.get(diagnosticKey)??0)+1);
     const schema=attempt.schemaVersion||"unknown";
     const schemaBucket=bySchema.get(schema)??emptyBucket();addAttempt(schemaBucket,attempt);bySchema.set(schema,schemaBucket);
     const ordinal=(seenByDecision.get(attempt.decisionId)??0)+1;seenByDecision.set(attempt.decisionId,ordinal);
@@ -87,6 +107,8 @@ export function summarizeAttempts(attempts: CacheAttempt[]) {
   const row=(key:string|number,bucket:Bucket)=>({key,...bucket,cachePercent:rate(bucket)});
   return {
     total:row("total",total),
+    byProvider:[...byProvider].sort(([a],[b])=>a.localeCompare(b)).map(([key,bucket])=>row(key,bucket)),
+    diagnostics:Object.fromEntries([...diagnostics].sort(([a],[b])=>a.localeCompare(b))),
     bySchema:[...bySchema].sort(([a],[b])=>a.localeCompare(b)).map(([key,bucket])=>row(key,bucket)),
     byAttemptOrdinal:[...byOrdinal].sort(([a],[b])=>a-b).map(([key,bucket])=>row(key,bucket)),
     prefixVariants:[...prefixBySchema].sort(([a],[b])=>a.localeCompare(b)).map(([schema,value])=>({schema,instructions:value.instructions.size,schemas:value.schemas.size,canonicalSchemas:value.canonicalSchemas.size,cacheMetadata:value.cache.size,briefings:value.briefings.size})),
@@ -141,13 +163,15 @@ function main():void{
     if(rows.length===0)throw new Error(`No provider attempts found for game: ${options.gameId}`);
     const attempts=rows.map((row,index)=>{
       const value=JSON.parse(row.valueJson) as Partial<CacheAttempt>;
-      return {id:row.id,decisionId:row.decisionId,status:row.status,startedAt:value.startedAt??String(index),schemaVersion:value.schemaVersion??"unknown",usage:value.usage,request:value.request} satisfies CacheAttempt;
+      return {id:row.id,decisionId:row.decisionId,status:row.status,startedAt:value.startedAt??String(index),schemaVersion:value.schemaVersion??"unknown",usage:value.usage,request:value.request,provider:value.provider,model:value.model,providerMetadata:value.providerMetadata} satisfies CacheAttempt;
     }).slice(options.after).filter(attempt=>!options.schemaSuffix||attempt.schemaVersion.endsWith(options.schemaSuffix));
     if(attempts.length===0)throw new Error("No attempts remain after applying filters");
     const summary=summarizeAttempts(attempts),result={gameId:options.gameId,after:options.after,schemaSuffix:options.schemaSuffix||null,...summary};
     if(options.json){console.log(JSON.stringify(result,null,2));return;}
     console.log(`Game ${options.gameId}`);console.log(`Attempts ${summary.total.calls} (after ${options.after})`);
-    console.log(`Cache ${compact(summary.total.cachedInputTokens)} / ${compact(summary.total.inputTokens)} = ${percent(summary.total.cachePercent)}; ${summary.total.hitCalls}/${summary.total.calls} hit calls; ${summary.total.invalidCalls} invalid`);
+    console.log(`Cache ${compact(summary.total.cachedInputTokens)} / ${compact(summary.total.knownCacheInputTokens)} known input = ${percent(summary.total.cachePercent)}; ${summary.total.hitCalls}/${summary.total.calls} hit calls; ${summary.total.invalidCalls} invalid`);
+    printRows("By provider/model",summary.byProvider,["key","calls","inputTokens","cachedInputTokens","cacheWriteInputTokens","cachePercent","unknownCacheCalls","unknownWriteCalls"]);
+    console.log(`Diagnostics: ${JSON.stringify(summary.diagnostics)}`);
     printRows("By schema",summary.bySchema,["key","calls","inputTokens","cachedInputTokens","cachePercent","hitCalls","invalidCalls"]);
     printRows("By attempt ordinal within decision",summary.byAttemptOrdinal,["key","calls","inputTokens","cachedInputTokens","cachePercent","hitCalls"]);
     printRows("Request variation",summary.prefixVariants,["schema","instructions","schemas","canonicalSchemas","cacheMetadata","briefings"]);

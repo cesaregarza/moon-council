@@ -24,7 +24,11 @@
     "codex:login": "codex login",
     "codex:status": "codex login status",
     "start:api": "npm run start -w @werewolf/api",
-    "start:runner": "npm run start -w @werewolf/runner"
+    "start:runner": "npm run start -w @werewolf/runner",
+    "test:live:jev": "RUN_LIVE_JEV=1 vitest run packages/llm/src/jev.live.test.ts --maxWorkers=1",
+    "cache:probe": "tsx scripts/cache-probe.ts",
+    "jev:probe": "tsx scripts/jev-probe.ts",
+    "jev:actor-eval": "tsx scripts/jev-actor-eval.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

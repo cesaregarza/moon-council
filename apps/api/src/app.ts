@@ -7,16 +7,18 @@ import { CreateGameV2RequestSchema, GameConfigV2Schema, PRESET_ROSTERS, rosterRo
 import { DecisionStore, LabRepository, openDatabase, type DatabaseConnection } from "@werewolf/db";
 import { BODYGUARD, DOCTOR_V2, reduceGame, STARTER_ROLES, type Viewer } from "@werewolf/engine";
 import { describeProviderConfiguration, resolveDefaultModel, resolveModeratorModel, selectedProviderKind } from "@werewolf/llm";
-import { summarizeExperiment } from "@werewolf/simulator";
+import { acknowledgeSemanticAnomaly, summarizeExperiment } from "@werewolf/simulator";
 import { z } from "zod";
 import { decisionDetail, decisionRecords, decisionSummaries, ensureInitialized, observerEvents, observerPayload, replaySlice } from "./observer";
 
 const Params = z.object({ id: z.string().min(1) });
 const Query = z.object({ after: z.coerce.number().int().min(-1).default(-1), at: z.coerce.number().int().min(0).optional(), view: z.enum(["public","moderator","player","team"]).default("public"), playerId: z.string().optional(), teamId: z.string().optional(), format: z.enum(["json","jsonl"]).default("json") });
 const Control = z.object({
-  action: z.enum(["start","pause","resume","step","step_decision","abort","speed","extend_budget"]),
+  action: z.enum(["start","pause","resume","step","step_decision","abort","speed","extend_budget","acknowledge_semantic_anomaly"]),
+  decisionId: z.string().min(1).optional(),
+  note: z.string().trim().min(1).max(1_000).optional(),
   speedMs: z.number().int().min(0).max(30_000).optional(),
-  maxTotalTokens: z.number().int().min(1_000).max(100_000_000).optional(),
+  maxTotalTokens: z.number().int().min(1_000).max(100_000_000).nullable().optional(),
   maxWallClockMs: z.number().int().min(60_000).max(86_400_000).optional(),
   maxContextTokens: z.number().int().min(1_000).max(32_000).optional(),
 });
@@ -78,13 +80,19 @@ export async function buildApi(options: ApiOptions = {}): Promise<{app:FastifyIn
     const {id}=Params.parse(request.params); const input=Control.parse(request.body); const game=repository.getGame(id);
     if (!game) return reply.status(404).send({error:"not_found"});
     if (game.config.schemaVersion !== "game_config_v2") return reply.status(409).send({error:"legacy_replay_only",message:"Create a new V2 game using the legacy configuration; original logs remain unchanged."});
+    if (input.action === "acknowledge_semantic_anomaly") {
+      if (!input.decisionId || !input.note) {
+        return reply.status(400).send({ error: "decisionId_and_note_required" });
+      }
+      return { ok: true, ...acknowledgeSemanticAnomaly(repository, id, input.decisionId, input.note) };
+    }
     const currentConfig=game.config;
     if (input.action === "extend_budget") {
       const contextLimited=game.status==="paused"&&game.error?.startsWith("context_limit:");
       if (game.status !== "budget_exhausted"&&!contextLimited) return reply.status(409).send({error:"game_has_no_extendable_limit"});
       if (input.maxTotalTokens === undefined || input.maxWallClockMs === undefined) return reply.status(400).send({error:"extended_budgets_required"});
       const nextContextTokens=input.maxContextTokens??currentConfig.deliberation.maxContextTokens;
-      if (input.maxTotalTokens < currentConfig.maxTotalTokens || input.maxWallClockMs < currentConfig.safety.maxWallClockMs || nextContextTokens < currentConfig.deliberation.maxContextTokens) return reply.status(400).send({error:"limit_extension_cannot_reduce_limits"});
+      if ((input.maxTotalTokens !== null && (currentConfig.maxTotalTokens === null || input.maxTotalTokens < currentConfig.maxTotalTokens)) || input.maxWallClockMs < currentConfig.safety.maxWallClockMs || nextContextTokens < currentConfig.deliberation.maxContextTokens) return reply.status(400).send({error:"limit_extension_cannot_reduce_limits"});
       const events=repository.listEvents(id);
       const interrupted=contextLimited?events.findLast(event=>event.type==="game.paused"&&String(event.payload.reason??"").startsWith("context_limit:")):events.findLast(event=>event.type==="game.budget_exhausted");
       if(!interrupted) return reply.status(409).send({error:"missing_limit_event"});

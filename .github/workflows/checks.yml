@@ -1,0 +1,29 @@
+name: Checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      LLM_PROVIDER: fake
+      DATABASE_URL: /tmp/moon-council-ci.db
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: python3 scripts/test_public_snapshot.py
+      - run: python3 scripts/public-snapshot.py --source . --verify-history
+      - run: npm test -- --maxWorkers=2
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e

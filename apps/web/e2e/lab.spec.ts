@@ -48,15 +48,16 @@ test("creates the standard V3.1 setup with editable deliberation, concurrency, a
   await page.getByRole("button", { name: /new game/i }).click();
   await expect(page.getByRole("heading", { name: "Seat the council" })).toBeVisible();
   await expect(page.getByText("2 wolves · Seer · Doctor · 4 villagers")).toBeVisible();
+  await page.getByRole("button", { name: /Standard eight \(Doctor\)/ }).click();
   await page.getByText("Advanced discussion & budget controls").click();
   await page.getByLabel("Request timeout (ms)").fill("90000");
   await page.getByLabel("Journal tokens").fill("1500");
   await page.getByLabel("Decision concurrency").fill("2");
-  await page.getByLabel("Player 1 model").selectOption("gpt-5.6-luna");
+  await page.getByLabel("Ada model").selectOption("gpt-5.6-luna");
   await page.getByRole("button", { name: "Create V3.1 simulation" }).click();
   await expect(page.getByText("Council record")).toBeVisible();
   expect(mock.requests.some((request) => request === "/api/v1/games")).toBeTruthy();
-  expect(mock.creations[0]).toMatchObject({ preset: "standard-8-v2", maxTotalTokens: 2000000, reasoningEffort: "xhigh", discussion:{speakerSelection:"listener_auction",speakerBias:0.25,maxParallelDecisions:2},deliberation: { mode: "gated", requestTimeoutMs: 90000, maxJournalTokens: 1500 } });
+  expect(mock.creations[0]).toMatchObject({ preset: "standard-8-v2", maxTotalTokens: null, reasoningEffort: "xhigh", discussion:{speakerSelection:"listener_auction",speakerBias:0.25,maxParallelDecisions:2},deliberation: { mode: "gated", requestTimeoutMs: 90000, maxJournalTokens: 1500 } });
 });
 
 test("keeps observer views safe while covering both stepping controls, decisions, replay, and exports", async ({ page }) => {

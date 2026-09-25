@@ -1,15 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { DecisionStore, LabRepository, openDatabase } from "@werewolf/db";
 import { reduceGame, STARTER_ROLES } from "@werewolf/engine";
-import { createDecisionProvider, resolveDefaultModel, selectedProviderKind } from "@werewolf/llm";
+import { loadProviderEnvironment, createDecisionProvider, resolveDefaultModel, selectedProviderKind } from "@werewolf/llm";
 import { runExperiment, V2GameOrchestrator, recoverStaleWork } from "@werewolf/simulator";
 
-try {
-  process.loadEnvFile(fileURLToPath(new URL("../../../.env", import.meta.url)));
-} catch {
-  // .env is optional; process environment remains authoritative.
-}
+loadProviderEnvironment();
 
 const connection = openDatabase();
 const repository = new LabRepository(connection);
@@ -33,6 +28,13 @@ async function processNextJob(): Promise<boolean> {
   let renewTimer: ReturnType<typeof setInterval> | undefined;
   try {
     if (job.kind === "experiment") {
+      const experiment = repository.getExperiment(job.targetId);
+      if (experiment?.spec.schemaVersion === "experiment_v2" && Object.values(experiment.spec.baseConfig.modelSettings).some(settings => settings.provider !== providerKind)) {
+        const reason = `Frozen experiment provider differs from runner (${providerKind}); restore its original provider.`;
+        repository.updateExperiment(job.targetId, { status: "paused", error: reason });
+        repository.finishJob(job.id, reason);
+        return true;
+      }
       activeExperimentId=job.targetId;
       await runExperiment(repository, provider, job.targetId, defaultModel);
       repository.finishJob(job.id);
@@ -47,6 +49,14 @@ async function processNextJob(): Promise<boolean> {
       return true;
     }
     leasedGameId = before.id;
+    if (Object.values(before.config.modelSettings).some(settings => settings.provider !== providerKind)) {
+      const state = reduceGame(before.id, repository.listEvents(before.id));
+      const reason = `Frozen game provider differs from runner (${providerKind}); create a new game or restore its original provider.`;
+      repository.appendEvent(before.id, { type: "game.paused", phase: state.phase, day: state.day, visibility: "public", payload: { reason } });
+      repository.updateGame(before.id, { status: "paused", error: reason });
+      repository.finishJob(job.id, reason);
+      return true;
+    }
     renewTimer = setInterval(() => decisionStore.renew(before.id, owner), 10_000);
     const wasStepping = before.status === "stepping";
     await v2Orchestrator.runGameStep(job.targetId);

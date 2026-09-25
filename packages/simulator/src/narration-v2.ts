@@ -101,7 +101,7 @@ export class NarrationV2 {
     const admitsBudget = () => {
       const usage = usageTotals(this.store, options.gameId);
       try { assertV2Budget(this.store, options.gameId, config); } catch (error) { if (!(error instanceof V2BudgetError)) throw error; return false; }
-      return usage.calls + 1 + reserveCalls < config.safety.maxModelCalls && usage.admissionTokens + estimatedTokens(basePrompt) + estimatedTokens(jsonSchema) + maxOutputTokens + reserveTokens < config.maxTotalTokens;
+      return usage.calls + 1 + reserveCalls < config.safety.maxModelCalls && (config.maxTotalTokens === null || usage.admissionTokens + estimatedTokens(basePrompt) + estimatedTokens(jsonSchema) + maxOutputTokens + reserveTokens < config.maxTotalTokens);
     };
     if (!admitsBudget()) {
       checkpoint = { ...checkpoint, status: "skipped", error: "optional narration skipped to reserve mandatory decision budget" };
