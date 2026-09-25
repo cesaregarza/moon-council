@@ -103,13 +103,18 @@ export class LabRepository {
   }
 
   createRole(input: unknown): RoleDefinitionV1 {
-    const requested = RoleDefinitionSchema.omit({ version: true }).extend({ version: RoleDefinitionSchema.shape.version.optional() }).parse(input);
+    const requested = RoleDefinitionSchema.omit({ version: true })
+      .extend({ version: RoleDefinitionSchema.shape.version.optional() })
+      .parse(input);
     const latest = this.connection.db
       .select({ version: max(roles.version) })
       .from(roles)
       .where(eq(roles.id, requested.id))
       .get();
-    const definition = RoleDefinitionSchema.parse({ ...requested, version: (latest?.version ?? 0) + 1 });
+    const definition = RoleDefinitionSchema.parse({
+      ...requested,
+      version: (latest?.version ?? 0) + 1,
+    });
     this.connection.db
       .insert(roles)
       .values({
@@ -174,34 +179,53 @@ export class LabRepository {
 
   updateGame(
     id: string,
-    values: { status?: string; error?: string | null; outcome?: Record<string, unknown>; speedMs?: number },
+    values: {
+      status?: string;
+      error?: string | null;
+      outcome?: Record<string, unknown>;
+      speedMs?: number;
+    },
   ): void {
-    this.connection.sqlite.transaction(() => {
-    if (values.status !== undefined && this.getGame(id)?.config.schemaVersion === "game_config_v2") {
-      const read = (key: string): number | null => {
-        const row = this.connection.sqlite.prepare("SELECT value_json FROM agent_records WHERE game_id=? AND record_key=?").get(id,key) as {value_json:string}|undefined;
-        return row ? JSON.parse(row.value_json) as number|null : null;
-      };
-      const write = (key:string,value:number|null) => this.connection.sqlite.prepare("INSERT INTO agent_records(game_id,record_key,value_json) VALUES(?,?,?) ON CONFLICT(game_id,record_key) DO UPDATE SET value_json=excluded.value_json").run(id,key,JSON.stringify(value));
-      const started = read("runtimeStartedAt");
-      const active = ["running","stepping"].includes(values.status);
-      if (started !== null && !active) {
-        write("runtimeMs",(read("runtimeMs") ?? 0)+Math.max(0,Date.now()-started));
-        write("runtimeStartedAt",null);
-      } else if (started === null && active) write("runtimeStartedAt",Date.now());
-    }
-    this.connection.db
-      .update(games)
-      .set({
-        ...(values.status !== undefined ? { status: values.status } : {}),
-        ...(values.error !== undefined ? { error: values.error } : {}),
-        ...(values.outcome !== undefined ? { outcomeJson: JSON.stringify(values.outcome) } : {}),
-        ...(values.speedMs !== undefined ? { speedMs: values.speedMs } : {}),
-        updatedAt: now(),
+    this.connection.sqlite
+      .transaction(() => {
+        if (
+          values.status !== undefined &&
+          this.getGame(id)?.config.schemaVersion === "game_config_v2"
+        ) {
+          const read = (key: string): number | null => {
+            const row = this.connection.sqlite
+              .prepare("SELECT value_json FROM agent_records WHERE game_id=? AND record_key=?")
+              .get(id, key) as { value_json: string } | undefined;
+            return row ? (JSON.parse(row.value_json) as number | null) : null;
+          };
+          const write = (key: string, value: number | null) =>
+            this.connection.sqlite
+              .prepare(
+                "INSERT INTO agent_records(game_id,record_key,value_json) VALUES(?,?,?) ON CONFLICT(game_id,record_key) DO UPDATE SET value_json=excluded.value_json",
+              )
+              .run(id, key, JSON.stringify(value));
+          const started = read("runtimeStartedAt");
+          const active = ["running", "stepping"].includes(values.status);
+          if (started !== null && !active) {
+            write("runtimeMs", (read("runtimeMs") ?? 0) + Math.max(0, Date.now() - started));
+            write("runtimeStartedAt", null);
+          } else if (started === null && active) write("runtimeStartedAt", Date.now());
+        }
+        this.connection.db
+          .update(games)
+          .set({
+            ...(values.status !== undefined ? { status: values.status } : {}),
+            ...(values.error !== undefined ? { error: values.error } : {}),
+            ...(values.outcome !== undefined
+              ? { outcomeJson: JSON.stringify(values.outcome) }
+              : {}),
+            ...(values.speedMs !== undefined ? { speedMs: values.speedMs } : {}),
+            updatedAt: now(),
+          })
+          .where(eq(games.id, id))
+          .run();
       })
-      .where(eq(games.id, id))
-      .run();
-    }).immediate();
+      .immediate();
   }
 
   updateGameConfig(id: string, input: StoredGameConfig): void {
@@ -215,7 +239,11 @@ export class LabRepository {
 
   appendEvent(gameId: string, input: EngineEventInput): GameEventV1 {
     return this.connection.db.transaction((tx) => {
-      const latest = tx.select({ sequence: max(events.sequence) }).from(events).where(eq(events.gameId, gameId)).get();
+      const latest = tx
+        .select({ sequence: max(events.sequence) })
+        .from(events)
+        .where(eq(events.gameId, gameId))
+        .get();
       const event = GameEventSchema.parse({
         schemaVersion: "game_event_v1",
         id: randomUUID(),
@@ -281,7 +309,9 @@ export class LabRepository {
       .from(journals)
       .where(and(eq(journals.gameId, gameId), eq(journals.playerId, playerId)))
       .get();
-    return row ? PrivateJournalSchema.parse(parseJson(row.journalJson)) : PrivateJournalSchema.parse({});
+    return row
+      ? PrivateJournalSchema.parse(parseJson(row.journalJson))
+      : PrivateJournalSchema.parse({});
   }
 
   listJournals(gameId: string): Record<string, PrivateJournalV1> {
@@ -311,28 +341,59 @@ export class LabRepository {
     const existing = this.connection.db
       .select()
       .from(jobs)
-      .where(and(eq(jobs.kind, kind), eq(jobs.targetId, targetId), inArray(jobs.status, ["queued", "running"])))
+      .where(
+        and(
+          eq(jobs.kind, kind),
+          eq(jobs.targetId, targetId),
+          inArray(jobs.status, ["queued", "running"]),
+        ),
+      )
       .limit(1)
       .get();
-    if (existing) return { id: existing.id, kind: existing.kind as JobRecord["kind"], targetId, attempts: existing.attempts };
+    if (existing)
+      return {
+        id: existing.id,
+        kind: existing.kind as JobRecord["kind"],
+        targetId,
+        attempts: existing.attempts,
+      };
     const id = randomUUID();
     const createdAt = now();
     this.connection.db
       .insert(jobs)
-      .values({ id, kind, targetId, status: "queued", attempts: 0, createdAt, updatedAt: createdAt })
+      .values({
+        id,
+        kind,
+        targetId,
+        status: "queued",
+        attempts: 0,
+        createdAt,
+        updatedAt: createdAt,
+      })
       .run();
     return { id, kind, targetId, attempts: 0 };
   }
 
   claimJob(): JobRecord | undefined {
     return this.connection.db.transaction((tx) => {
-      const row = tx.select().from(jobs).where(eq(jobs.status, "queued")).orderBy(asc(jobs.createdAt)).limit(1).get();
+      const row = tx
+        .select()
+        .from(jobs)
+        .where(eq(jobs.status, "queued"))
+        .orderBy(asc(jobs.createdAt))
+        .limit(1)
+        .get();
       if (!row) return undefined;
       tx.update(jobs)
         .set({ status: "running", attempts: row.attempts + 1, updatedAt: now() })
         .where(eq(jobs.id, row.id))
         .run();
-      return { id: row.id, kind: row.kind as JobRecord["kind"], targetId: row.targetId, attempts: row.attempts + 1 };
+      return {
+        id: row.id,
+        kind: row.kind as JobRecord["kind"],
+        targetId: row.targetId,
+        attempts: row.attempts + 1,
+      };
     });
   }
 
@@ -370,7 +431,9 @@ export class LabRepository {
       name: row.name,
       status: row.status,
       spec: StoredExperimentSpecSchema.parse(parseJson(row.specJson)),
-      ...(row.summaryJson ? { summary: StoredExperimentSummarySchema.parse(parseJson(row.summaryJson)) } : {}),
+      ...(row.summaryJson
+        ? { summary: StoredExperimentSummarySchema.parse(parseJson(row.summaryJson)) }
+        : {}),
       ...(row.error ? { error: row.error } : {}),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -386,12 +449,17 @@ export class LabRepository {
       .map((row) => this.getExperiment(row.id)!);
   }
 
-  updateExperiment(id: string, values: { status?: string; summary?: StoredExperimentSummary; error?: string | null }): void {
+  updateExperiment(
+    id: string,
+    values: { status?: string; summary?: StoredExperimentSummary; error?: string | null },
+  ): void {
     this.connection.db
       .update(experiments)
       .set({
         ...(values.status !== undefined ? { status: values.status } : {}),
-        ...(values.summary !== undefined ? { summaryJson: JSON.stringify(StoredExperimentSummarySchema.parse(values.summary)) } : {}),
+        ...(values.summary !== undefined
+          ? { summaryJson: JSON.stringify(StoredExperimentSummarySchema.parse(values.summary)) }
+          : {}),
         ...(values.error !== undefined ? { error: values.error } : {}),
         updatedAt: now(),
       })

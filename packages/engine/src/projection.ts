@@ -10,9 +10,12 @@ export type Viewer =
 export function eventVisibleTo(event: GameEventV1, viewer: Viewer): boolean {
   if (viewer.kind === "moderator") return true;
   if (event.visibility === "public") return true;
-  if (viewer.kind === "player" && event.visibility === "player") return event.audienceIds.includes(viewer.playerId);
-  if (viewer.kind === "player" && event.visibility === "team") return event.audienceIds.includes(viewer.playerId);
-  if (viewer.kind === "team" && event.visibility === "team") return event.audienceIds.includes(viewer.teamId);
+  if (viewer.kind === "player" && event.visibility === "player")
+    return event.audienceIds.includes(viewer.playerId);
+  if (viewer.kind === "player" && event.visibility === "team")
+    return event.audienceIds.includes(viewer.playerId);
+  if (viewer.kind === "team" && event.visibility === "team")
+    return event.audienceIds.includes(viewer.teamId);
   return false;
 }
 
@@ -37,7 +40,9 @@ export function projectPlayer(
     self: { id: self.id, name: self.name, alive: self.alive, role: self.role },
     knownAllies: knowsTeam
       ? state.players
-          .filter((player) => player.id !== self.id && player.role.alignment === self.role.alignment)
+          .filter(
+            (player) => player.id !== self.id && player.role.alignment === self.role.alignment,
+          )
           .map((player) => ({ id: player.id, name: player.name }))
       : [],
     players: state.players.map((player) => ({
@@ -58,11 +63,14 @@ export function projectPlayer(
   };
 }
 
-export function moderatorSnapshot(state: GameState, events: readonly GameEventV1[], journals: Record<string, PrivateJournalV1>) {
+export function moderatorSnapshot(
+  state: GameState,
+  events: readonly GameEventV1[],
+  journals: Record<string, PrivateJournalV1>,
+) {
   return {
     ...state,
     events: projectEvents(events, { kind: "moderator" }),
     journals,
   };
 }
-

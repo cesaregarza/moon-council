@@ -40,7 +40,15 @@ export interface GameState {
   config: StoredGameConfig;
   phase: GamePhase;
   day: number;
-  status: "lobby" | "queued" | "running" | "paused" | "completed" | "aborted" | "budget_exhausted" | "failed";
+  status:
+    | "lobby"
+    | "queued"
+    | "running"
+    | "paused"
+    | "completed"
+    | "aborted"
+    | "budget_exhausted"
+    | "failed";
   players: EnginePlayer[];
   pendingNightActions: SubmittedNightAction[];
   actionUses: Record<string, number>;
@@ -110,7 +118,16 @@ export function reduceGame(gameId: string, events: readonly GameEventV1[]): Game
 
 function reduceEvent(state: GameState, event: GameEventV1): GameState {
   // Configuration and role snapshots are immutable; copy only mutable reducer fields.
-  const next: GameState = { ...state, players: state.players.map(player=>({...player})), pendingNightActions:[...state.pendingNightActions], actionUses:{...state.actionUses}, protectionHistory:{...state.protectionHistory}, votes:[...state.votes], winnerAlignments:[...state.winnerAlignments], winnerPlayerIds:[...state.winnerPlayerIds] };
+  const next: GameState = {
+    ...state,
+    players: state.players.map((player) => ({ ...player })),
+    pendingNightActions: [...state.pendingNightActions],
+    actionUses: { ...state.actionUses },
+    protectionHistory: { ...state.protectionHistory },
+    votes: [...state.votes],
+    winnerAlignments: [...state.winnerAlignments],
+    winnerPlayerIds: [...state.winnerPlayerIds],
+  };
   if (!isV2MetadataAuditEvent(next.config, event)) {
     next.phase = event.phase;
     next.day = event.day;
@@ -139,11 +156,14 @@ function reduceEvent(state: GameState, event: GameEventV1): GameState {
       if (isV2Config(next.config)) {
         next.config = {
           ...next.config,
-          maxTotalTokens: event.payload.maxTotalTokens === null ? null : Number(event.payload.maxTotalTokens),
+          maxTotalTokens:
+            event.payload.maxTotalTokens === null ? null : Number(event.payload.maxTotalTokens),
           safety: { ...next.config.safety, maxWallClockMs: Number(event.payload.maxWallClockMs) },
           deliberation: {
             ...next.config.deliberation,
-            maxContextTokens: Number(event.payload.maxContextTokens ?? next.config.deliberation.maxContextTokens),
+            maxContextTokens: Number(
+              event.payload.maxContextTokens ?? next.config.deliberation.maxContextTokens,
+            ),
           },
         };
       }
@@ -163,7 +183,9 @@ function reduceEvent(state: GameState, event: GameEventV1): GameState {
       next.actionUses[useKey] = (next.actionUses[useKey] ?? 0) + 1;
       const historyKey = `${submitted.actorId}:${submitted.actionId}:${event.day}`;
       const previousTargets = next.protectionHistory[historyKey] ?? [];
-      next.protectionHistory[historyKey] = [...new Set([...previousTargets, ...submitted.targetIds])];
+      next.protectionHistory[historyKey] = [
+        ...new Set([...previousTargets, ...submitted.targetIds]),
+      ];
       break;
     case "night.resolved":
       next.pendingNightActions = [];
@@ -184,7 +206,8 @@ function reduceEvent(state: GameState, event: GameEventV1): GameState {
     }
     case "role.revealed": {
       const player = next.players.find((candidate) => candidate.id === event.payload.playerId);
-      if (player && typeof event.payload.roleName === "string") player.revealedRole = event.payload.roleName;
+      if (player && typeof event.payload.roleName === "string")
+        player.revealedRole = event.payload.roleName;
       break;
     }
     case "game.ended":
@@ -200,7 +223,9 @@ function reduceEvent(state: GameState, event: GameEventV1): GameState {
   return next;
 }
 
-function isV2Config(config: StoredGameConfig): config is Extract<StoredGameConfig, { schemaVersion: "game_config_v2" }> {
+function isV2Config(
+  config: StoredGameConfig,
+): config is Extract<StoredGameConfig, { schemaVersion: "game_config_v2" }> {
   return config.schemaVersion === "game_config_v2";
 }
 
@@ -228,8 +253,14 @@ export function transition(state: GameState, phase: GamePhase, day = state.day):
   };
 }
 
-export function getAction(state: GameState, actorId: string, actionId: string): RoleActionV1 | undefined {
-  return state.players.find((player) => player.id === actorId)?.role.actions.find((action) => action.id === actionId);
+export function getAction(
+  state: GameState,
+  actorId: string,
+  actionId: string,
+): RoleActionV1 | undefined {
+  return state.players
+    .find((player) => player.id === actorId)
+    ?.role.actions.find((action) => action.id === actionId);
 }
 
 export function validateNightAction(
@@ -246,24 +277,36 @@ export function validateNightAction(
   }
   const action = getAction(state, submitted.actorId, submitted.actionId);
   if (!action) return ["action is not available to this role"];
-  if (options.forTeamPoint && (action.effect !== "eliminate" || action.teamAggregation === "none")) {
+  if (
+    options.forTeamPoint &&
+    (action.effect !== "eliminate" || action.teamAggregation === "none")
+  ) {
     return ["action is not a coordinated elimination"];
   }
   const uses = state.actionUses[`${submitted.actorId}:${submitted.actionId}`] ?? 0;
-  if (!options.forResolution && !options.forTeamPoint && state.pendingNightActions.some((item) => item.actorId === submitted.actorId)) {
+  if (
+    !options.forResolution &&
+    !options.forTeamPoint &&
+    state.pendingNightActions.some((item) => item.actorId === submitted.actorId)
+  ) {
     return ["actor already submitted a night action"];
   }
   if (!options.forResolution && action.charges !== undefined && uses >= action.charges) {
     return ["action has no charges remaining"];
   }
-  if (submitted.targetIds.length < action.target.min || submitted.targetIds.length > action.target.max) {
+  if (
+    submitted.targetIds.length < action.target.min ||
+    submitted.targetIds.length > action.target.max
+  ) {
     return [`action requires ${action.target.min}-${action.target.max} targets`];
   }
-  if (new Set(submitted.targetIds).size !== submitted.targetIds.length) return ["targets must be unique"];
+  if (new Set(submitted.targetIds).size !== submitted.targetIds.length)
+    return ["targets must be unique"];
   const errors: string[] = [];
   const previousTargets =
     action.target.allowConsecutiveTarget === false
-      ? state.protectionHistory[`${submitted.actorId}:${submitted.actionId}:${state.day - 1}`] ?? []
+      ? (state.protectionHistory[`${submitted.actorId}:${submitted.actionId}:${state.day - 1}`] ??
+        [])
       : [];
   for (const targetId of submitted.targetIds) {
     const target = state.players.find((player) => player.id === targetId);
@@ -271,15 +314,20 @@ export function validateNightAction(
       errors.push(`unknown target ${targetId}`);
       continue;
     }
-    if (!action.target.allowSelf && target.id === actor.id) errors.push("self-targeting is not allowed");
+    if (!action.target.allowSelf && target.id === actor.id)
+      errors.push("self-targeting is not allowed");
     if (action.target.aliveOnly && !target.alive) errors.push(`${target.name} is not alive`);
-    if (action.target.allowedAlignments && !action.target.allowedAlignments.includes(target.role.alignment)) {
+    if (
+      action.target.allowedAlignments &&
+      !action.target.allowedAlignments.includes(target.role.alignment)
+    ) {
       errors.push(`${target.name} does not have an allowed alignment`);
     }
     if (action.target.deniedAlignments?.includes(target.role.alignment)) {
       errors.push(`${target.name} has a denied alignment`);
     }
-    if (previousTargets.includes(targetId)) errors.push("same target is not allowed on consecutive nights");
+    if (previousTargets.includes(targetId))
+      errors.push("same target is not allowed on consecutive nights");
   }
   return errors;
 }
@@ -334,16 +382,23 @@ function unanimousTarget(
 
 export function resolveNight(state: GameState): EngineEventInput[] {
   const v2 = isV2Config(state.config);
-  const valid = state.pendingNightActions.filter((action) => validateNightAction(state, action, { forResolution: true }).length === 0);
+  const valid = state.pendingNightActions.filter(
+    (action) => validateNightAction(state, action, { forResolution: true }).length === 0,
+  );
   const blocked = new Set(
     valid
-      .filter((submitted) => getAction(state, submitted.actorId, submitted.actionId)?.effect === "block")
+      .filter(
+        (submitted) => getAction(state, submitted.actorId, submitted.actionId)?.effect === "block",
+      )
       .flatMap((submitted) => submitted.targetIds),
   );
   const active = valid.filter((submitted) => !blocked.has(submitted.actorId));
   const protectedIds = new Set(
     active
-      .filter((submitted) => getAction(state, submitted.actorId, submitted.actionId)?.effect === "protect")
+      .filter(
+        (submitted) =>
+          getAction(state, submitted.actorId, submitted.actionId)?.effect === "protect",
+      )
       .flatMap((submitted) => submitted.targetIds),
   );
   const events: EngineEventInput[] = [];
@@ -352,11 +407,16 @@ export function resolveNight(state: GameState): EngineEventInput[] {
   );
   const grouped = new Map<
     string,
-    { aggregation: RoleActionV1["teamAggregation"]; group: string; submissions: SubmittedNightAction[] }
+    {
+      aggregation: RoleActionV1["teamAggregation"];
+      group: string;
+      submissions: SubmittedNightAction[];
+    }
   >();
   for (const submitted of eliminateActions) {
     const action = getAction(state, submitted.actorId, submitted.actionId)!;
-    const group = action.teamAggregation === "none" ? submitted.actorId : teamGroup(state, submitted.actorId);
+    const group =
+      action.teamAggregation === "none" ? submitted.actorId : teamGroup(state, submitted.actorId);
     const key = `${action.teamAggregation}:${group}`;
     const existing = grouped.get(key);
     grouped.set(key, {
@@ -375,7 +435,10 @@ export function resolveNight(state: GameState): EngineEventInput[] {
     let target =
       aggregation === "unanimity"
         ? unanimousTarget(state, group, submissions, v2)
-       : pluralityTarget(executableSubmissions, `${state.config.seed}:night:${state.day}:${group}`);
+        : pluralityTarget(
+            executableSubmissions,
+            `${state.config.seed}:night:${state.day}:${group}`,
+          );
     if (v2 && aggregation === "unanimity" && target) {
       const hasUnblockedConsenter = submissions.some(
         (submission) => submission.targetIds[0] === target && !blocked.has(submission.actorId),
@@ -448,7 +511,11 @@ export function resolveNight(state: GameState): EngineEventInput[] {
   return events;
 }
 
-export function resolveVote(state: GameState): { targetId?: string; tally: Record<string, number>; tied: boolean } {
+export function resolveVote(state: GameState): {
+  targetId?: string;
+  tally: Record<string, number>;
+  tied: boolean;
+} {
   const tally: Record<string, number> = {};
   for (const vote of state.votes) {
     if (!vote.targetId) continue;
@@ -462,7 +529,11 @@ export function resolveVote(state: GameState): { targetId?: string; tally: Recor
     .filter(([, count]) => count === highest && highest > 0)
     .map(([id]) => id)
     .sort();
-  return { targetId: leaders.length === 1 ? leaders[0] : undefined, tally, tied: leaders.length !== 1 };
+  return {
+    targetId: leaders.length === 1 ? leaders[0] : undefined,
+    tally,
+    tied: leaders.length !== 1,
+  };
 }
 
 function predicateMatches(predicate: WinPredicateV1, state: GameState, selfId: string): boolean {
@@ -472,7 +543,9 @@ function predicateMatches(predicate: WinPredicateV1, state: GameState, selfId: s
       return alive.every((player) => player.role.alignment !== predicate.alignment);
     case "alignment_parity": {
       const own = alive.filter((player) => player.role.alignment === predicate.alignment).length;
-      const opposing = alive.filter((player) => predicate.against.includes(player.role.alignment)).length;
+      const opposing = alive.filter((player) =>
+        predicate.against.includes(player.role.alignment),
+      ).length;
       return own > 0 && own >= opposing;
     }
     case "self_alive":
@@ -488,7 +561,9 @@ function predicateMatches(predicate: WinPredicateV1, state: GameState, selfId: s
 
 export function checkWinners(state: GameState): EngineEventInput | undefined {
   const terminalWinners = state.players.filter(
-    (player) => player.role.winCondition.terminal && predicateMatches(player.role.winCondition.predicate, state, player.id),
+    (player) =>
+      player.role.winCondition.terminal &&
+      predicateMatches(player.role.winCondition.predicate, state, player.id),
   );
   if (terminalWinners.length === 0) return undefined;
   const alignments = [...new Set(terminalWinners.map((player) => player.role.alignment))];

@@ -55,7 +55,10 @@ class DisagreeingPointProvider implements DecisionProvider {
       throw new Error(`Unexpected decision request: ${request.kind}`);
     }
     this.calls += 1;
-    const packIds = [request.view.self.id, ...request.view.knownAllies.map((player) => player.id)].sort();
+    const packIds = [
+      request.view.self.id,
+      ...request.view.knownAllies.map((player) => player.id),
+    ].sort();
     const pack = new Set(packIds);
     const targets = request.view.players
       .filter((player) => player.alive && !pack.has(player.id))
@@ -97,7 +100,8 @@ describe("point-only werewolf coordination", () => {
     await orchestrator.runGameStep(game.id);
     events = repository.listEvents(game.id);
     const submissions = events.filter(
-      (event) => event.type === "night.action_submitted" && event.payload.source === "team_consensus",
+      (event) =>
+        event.type === "night.action_submitted" && event.payload.source === "team_consensus",
     );
     expect(submissions).toHaveLength(2);
     const targets = submissions.map(
@@ -127,7 +131,9 @@ describe("point-only werewolf coordination", () => {
     events = repository.listEvents(game.id);
     expect(events.some((event) => event.type === "night.action_submitted")).toBe(false);
     expect(events.some((event) => event.type === "player.eliminated")).toBe(false);
-    expect(events.find((event) => event.type === "night.team_action_skipped")?.payload).toMatchObject({
+    expect(
+      events.find((event) => event.type === "night.team_action_skipped")?.payload,
+    ).toMatchObject({
       reason: "no_unanimous_target",
     });
   });

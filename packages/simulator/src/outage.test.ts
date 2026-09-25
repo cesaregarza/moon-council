@@ -35,7 +35,9 @@ describe("provider-wide failure handling", () => {
       await orchestrator.runGameStep(game.id);
 
       expect(repository.getGame(game.id)?.status).toBe("paused");
-      expect(repository.listEvents(game.id).some((event) => event.type === "game.paused")).toBe(true);
+      expect(repository.listEvents(game.id).some((event) => event.type === "game.paused")).toBe(
+        true,
+      );
     } finally {
       connection.close();
     }

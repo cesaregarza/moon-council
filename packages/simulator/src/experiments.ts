@@ -14,7 +14,11 @@ import { V2GameOrchestrator } from "./orchestrator-v2";
 
 export type ExperimentSummary = ExperimentSummaryV2;
 
-async function mapConcurrent<T>(items: readonly T[], concurrency: number, task: (item: T) => Promise<void>): Promise<void> {
+async function mapConcurrent<T>(
+  items: readonly T[],
+  concurrency: number,
+  task: (item: T) => Promise<void>,
+): Promise<void> {
   let cursor = 0;
   await Promise.all(
     Array.from({ length: Math.min(concurrency, items.length) }, async () => {
@@ -37,13 +41,17 @@ export async function runExperiment(
   if (!experiment) throw new Error(`Unknown experiment ${experimentId}`);
   const store = new DecisionStore(repository);
   const indices = Array.from({ length: experiment.spec.runs }, (_, index) => index);
-  const resuming = experiment.status === "paused" || indices.some((index) => {
-    const gameId = store.runGame(experimentId, index);
-    return gameId ? repository.getGame(gameId)?.status === "paused" : false;
-  });
+  const resuming =
+    experiment.status === "paused" ||
+    indices.some((index) => {
+      const gameId = store.runGame(experimentId, index);
+      return gameId ? repository.getGame(gameId)?.status === "paused" : false;
+    });
   repository.updateExperiment(experimentId, { status: "running", error: null });
   const isV2 = experiment.spec.schemaVersion === "experiment_v2";
-  const legacyOrchestrator = isV2 ? undefined : new GameOrchestrator(repository, provider, defaultModel);
+  const legacyOrchestrator = isV2
+    ? undefined
+    : new GameOrchestrator(repository, provider, defaultModel);
   const v2Orchestrator = isV2 ? new V2GameOrchestrator(repository, provider) : undefined;
   const owner = randomUUID();
   let admissionOpen = true;
@@ -67,10 +75,12 @@ export async function runExperiment(
   const runV2ToCompletion = async (gameId: string): Promise<void> => {
     for (let step = 0; step < 100; step += 1) {
       const game = repository.getGame(gameId);
-      if (!game || ["completed", "aborted", "budget_exhausted", "failed"].includes(game.status)) return;
+      if (!game || ["completed", "aborted", "budget_exhausted", "failed"].includes(game.status))
+        return;
       if (game.status === "paused") return;
-      if (["queued", "lobby"].includes(game.status)) repository.updateGame(gameId, { status: "running" });
-      if (!(["running", "stepping"].includes(repository.getGame(gameId)?.status ?? ""))) return;
+      if (["queued", "lobby"].includes(game.status))
+        repository.updateGame(gameId, { status: "running" });
+      if (!["running", "stepping"].includes(repository.getGame(gameId)?.status ?? "")) return;
       await v2Orchestrator!.runGameStep(gameId);
     }
     throw new Error(`Game ${gameId} exceeded the batch step limit`);
@@ -81,40 +91,50 @@ export async function runExperiment(
     return gameId ? repository.getGame(gameId)?.status === "paused" : false;
   });
   const initialIndices = resuming && resumeIndices.length > 0 ? resumeIndices : indices;
-  const remainingIndices = resuming && resumeIndices.length > 0 ? indices.filter((index) => !resumeIndices.includes(index)) : [];
+  const remainingIndices =
+    resuming && resumeIndices.length > 0
+      ? indices.filter((index) => !resumeIndices.includes(index))
+      : [];
   const runIndex = async (index: number): Promise<void> => {
-      if (!admissionOpen || repository.getExperiment(experimentId)?.status === "paused") { admissionOpen=false; return; }
-      const game = ensureRun(index);
-      if (!game) return;
-      if (["completed", "aborted", "budget_exhausted", "failed"].includes(game.status)) return;
-      const resumePaused = resuming && game.status === "paused";
-      if (["paused", "running", "stepping", "queued"].includes(game.status) && repository.listEvents(game.id).length > 0 && !resumePaused) {
-        admissionOpen = false;
-        return;
-      }
-      if (resumePaused) repository.updateGame(game.id, { status: "running", error: null });
-      if (!store.acquire(game.id, owner)) {
-        admissionOpen = false;
-        return;
-      }
-      const renewTimer = setInterval(() => store.renew(game.id, owner), 10_000);
-      try {
-        if (isV2) {
-          await runV2ToCompletion(game.id);
-        } else {
-          legacyOrchestrator!.initializeGame(game);
-          repository.updateGame(game.id, { status: "running" });
-          try {
-            await legacyOrchestrator!.runToCompletion(game.id);
-          } catch (error) {
-            if (repository.getGame(game.id)?.status !== "paused") throw error;
-          }
+    if (!admissionOpen || repository.getExperiment(experimentId)?.status === "paused") {
+      admissionOpen = false;
+      return;
+    }
+    const game = ensureRun(index);
+    if (!game) return;
+    if (["completed", "aborted", "budget_exhausted", "failed"].includes(game.status)) return;
+    const resumePaused = resuming && game.status === "paused";
+    if (
+      ["paused", "running", "stepping", "queued"].includes(game.status) &&
+      repository.listEvents(game.id).length > 0 &&
+      !resumePaused
+    ) {
+      admissionOpen = false;
+      return;
+    }
+    if (resumePaused) repository.updateGame(game.id, { status: "running", error: null });
+    if (!store.acquire(game.id, owner)) {
+      admissionOpen = false;
+      return;
+    }
+    const renewTimer = setInterval(() => store.renew(game.id, owner), 10_000);
+    try {
+      if (isV2) {
+        await runV2ToCompletion(game.id);
+      } else {
+        legacyOrchestrator!.initializeGame(game);
+        repository.updateGame(game.id, { status: "running" });
+        try {
+          await legacyOrchestrator!.runToCompletion(game.id);
+        } catch (error) {
+          if (repository.getGame(game.id)?.status !== "paused") throw error;
         }
-        if (repository.getGame(game.id)?.status === "paused") admissionOpen = false;
-      } finally {
-        clearInterval(renewTimer);
-        store.release(game.id, owner);
       }
+      if (repository.getGame(game.id)?.status === "paused") admissionOpen = false;
+    } finally {
+      clearInterval(renewTimer);
+      store.release(game.id, owner);
+    }
   };
 
   try {
@@ -123,7 +143,15 @@ export async function runExperiment(
       await mapConcurrent(remainingIndices, experiment.spec.concurrency, runIndex);
     }
     const summary = summarizeExperiment(repository, experimentId, experiment.spec);
-    repository.updateExperiment(experimentId, { status: !admissionOpen || summary.interrupted > 0 || repository.listGames(100,experimentId).length < experiment.spec.runs ? "paused" : "completed", summary });
+    repository.updateExperiment(experimentId, {
+      status:
+        !admissionOpen ||
+        summary.interrupted > 0 ||
+        repository.listGames(100, experimentId).length < experiment.spec.runs
+          ? "paused"
+          : "completed",
+      summary,
+    });
     return summary;
   } catch (error) {
     repository.updateExperiment(experimentId, {
@@ -141,7 +169,9 @@ export function summarizeExperiment(
 ): ExperimentSummary {
   const games = repository.listGames(100, experimentId);
   const completed = games.filter((game) => game.status === "completed");
-  const interrupted = games.filter((game) => ["paused", "aborted", "running", "stepping", "queued", "lobby"].includes(game.status));
+  const interrupted = games.filter((game) =>
+    ["paused", "aborted", "running", "stepping", "queued", "lobby"].includes(game.status),
+  );
   const failedGames = games.filter((game) => game.status === "failed");
   const budgetTruncated = games.filter((game) => game.status === "budget_exhausted");
   const decisionStore = new DecisionStore(repository);
@@ -177,34 +207,46 @@ export function summarizeExperiment(
       if (player.alive) stats.survived += 1;
       survivalByRole[player.role.name] = stats;
     }
-    const publicMessages = events.filter((event) => ["message.public", "speech.public"].includes(event.type));
+    const publicMessages = events.filter((event) =>
+      ["message.public", "speech.public"].includes(event.type),
+    );
     messages += publicMessages.length;
-    followUps += publicMessages.filter((event) => event.payload.followUp === true).length + events.filter(e=>e.type === "discussion.completed" && e.payload.stage === "followup").length;
+    followUps +=
+      publicMessages.filter((event) => event.payload.followUp === true).length +
+      events.filter((e) => e.type === "discussion.completed" && e.payload.stage === "followup")
+        .length;
     const started = events.find((event) => event.type === "game.started");
     const terminal = events.findLast((event) =>
       ["game.ended", "game.budget_exhausted", "game.aborted"].includes(event.type),
     );
-    if (game.config.schemaVersion === "game_config_v2") durations += decisionStore.activeRuntimeMs(game.id);
-    else if (started && terminal) durations += Date.parse(terminal.createdAt) - Date.parse(started.createdAt);
+    if (game.config.schemaVersion === "game_config_v2")
+      durations += decisionStore.activeRuntimeMs(game.id);
+    else if (started && terminal)
+      durations += Date.parse(terminal.createdAt) - Date.parse(started.createdAt);
 
     for (const event of events.filter((candidate) => candidate.type === "vote.cast")) {
       const vote = event.payload.vote as { voterId: string; targetId: string | null };
       if (!vote.targetId) continue;
       validVotes += 1;
-      if (state.players.find((player) => player.id === vote.targetId)?.role.alignment === "werewolf") accurateVotes += 1;
+      if (
+        state.players.find((player) => player.id === vote.targetId)?.role.alignment === "werewolf"
+      )
+        accurateVotes += 1;
     }
-
   }
 
   // Usage includes every attempt, even for incomplete games. Cache and reasoning
   // counters are subsets of input/output and must not be added a second time.
   for (const game of games) {
-    failures += repository.listEvents(game.id).filter((event) => ["model.failure", "decision.attempt_failed"].includes(event.type)).length;
+    failures += repository
+      .listEvents(game.id)
+      .filter((event) => ["model.failure", "decision.attempt_failed"].includes(event.type)).length;
     for (const row of repository.usageForGame(game.id)) {
       inputTokens += row.inputTokens;
       outputTokens += row.outputTokens;
       const pricing = spec.pricingPerMillionTokens[row.model];
-      if (pricing) cost += (row.inputTokens * pricing.input + row.outputTokens * pricing.output) / 1_000_000;
+      if (pricing)
+        cost += (row.inputTokens * pricing.input + row.outputTokens * pricing.output) / 1_000_000;
     }
     if (game.config.schemaVersion !== "game_config_v2") continue;
     for (const attempt of decisionStore.attempts(game.id)) {
@@ -213,12 +255,13 @@ export function summarizeExperiment(
       if (input !== null) inputTokens += input;
       if (output !== null) outputTokens += output;
       const pricing = spec.pricingPerMillionTokens[attempt.model];
-      if (pricing) cost += ((input ?? 0) * pricing.input + (output ?? 0) * pricing.output) / 1_000_000;
+      if (pricing)
+        cost += ((input ?? 0) * pricing.input + (output ?? 0) * pricing.output) / 1_000_000;
     }
   }
 
   const divisor = completed.length || 1;
-  const allAttempts=games.flatMap(game=>decisionStore.attempts(game.id));
+  const allAttempts = games.flatMap((game) => decisionStore.attempts(game.id));
   const base = ExperimentSummarySchema.parse({
     runsRequested: spec.runs,
     runsCompleted: completed.length,
@@ -237,16 +280,30 @@ export function summarizeExperiment(
   });
   return {
     ...base,
-    schemaVersion:"experiment_summary_v2",
+    schemaVersion: "experiment_summary_v2",
     completed: completed.length,
     interrupted: interrupted.length,
     failed: failedGames.length,
     budgetTruncated: budgetTruncated.length,
     validOutcomeDenominator: completed.length,
-    cachedInputTokens:allAttempts.reduce((n,a)=>n+(a.usage.cachedInputTokens ?? 0),0), reasoningTokens:allAttempts.reduce((n,a)=>n+(a.usage.reasoningTokens ?? 0),0),
-    unknownUsageAttempts:allAttempts.filter(a=>a.usage.totalTokens === null).length,totalAttempts:allAttempts.length,
-    estimatedCostIsLowerBound:allAttempts.some(a=>a.usage.inputTokens === null || a.usage.outputTokens === null || !spec.pricingPerMillionTokens[a.model]),
-    factionWinRates:Object.fromEntries(Object.entries(winsByAlignment).map(([faction,wins])=>[faction,wins/divisor])),
-    roleWinRates:Object.fromEntries(Object.entries(survivalByRole).map(([role,stats])=>[role,(winsByRole[role] ?? 0)/(stats.total || 1)])),
+    cachedInputTokens: allAttempts.reduce((n, a) => n + (a.usage.cachedInputTokens ?? 0), 0),
+    reasoningTokens: allAttempts.reduce((n, a) => n + (a.usage.reasoningTokens ?? 0), 0),
+    unknownUsageAttempts: allAttempts.filter((a) => a.usage.totalTokens === null).length,
+    totalAttempts: allAttempts.length,
+    estimatedCostIsLowerBound: allAttempts.some(
+      (a) =>
+        a.usage.inputTokens === null ||
+        a.usage.outputTokens === null ||
+        !spec.pricingPerMillionTokens[a.model],
+    ),
+    factionWinRates: Object.fromEntries(
+      Object.entries(winsByAlignment).map(([faction, wins]) => [faction, wins / divisor]),
+    ),
+    roleWinRates: Object.fromEntries(
+      Object.entries(survivalByRole).map(([role, stats]) => [
+        role,
+        (winsByRole[role] ?? 0) / (stats.total || 1),
+      ]),
+    ),
   };
 }

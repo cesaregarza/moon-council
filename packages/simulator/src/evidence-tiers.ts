@@ -52,7 +52,11 @@ export function tierPayload(
     ? source.data.acts.map((value) => {
         const act = value as Record<string, unknown>;
         const evidence = typeof act.sourceId === "string" ? alias(act.sourceId) : undefined;
-        return { kind: act.kind, targetId: act.targetId, ...(evidence?.startsWith("E") ? { evidence } : {}) };
+        return {
+          kind: act.kind,
+          targetId: act.targetId,
+          ...(evidence?.startsWith("E") ? { evidence } : {}),
+        };
       })
     : [];
   const respondsTo = Array.isArray(source.data.respondsTo)
@@ -64,7 +68,13 @@ export function tierPayload(
 
   if (tier === "digest") {
     const clipped = clip(text, digestChars);
-    return { speakerId, text: clipped, ...(clipped === text ? {} : { abridged: true }), acts, respondsTo };
+    return {
+      speakerId,
+      text: clipped,
+      ...(clipped === text ? {} : { abridged: true }),
+      acts,
+      respondsTo,
+    };
   }
   return {
     speakerId,

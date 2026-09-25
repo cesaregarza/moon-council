@@ -19,7 +19,10 @@ export function selectFollowUp(
   maxPerPlayer: number,
 ): InitiativeCandidate | undefined {
   return candidates
-    .filter((candidate) => candidate.decision.intent === "speak" && candidate.followUpsUsed < maxPerPlayer)
+    .filter(
+      (candidate) =>
+        candidate.decision.intent === "speak" && candidate.followUpsUsed < maxPerPlayer,
+    )
     .sort((left, right) => {
       const urgency = urgencyRank[right.decision.urgency] - urgencyRank[left.decision.urgency];
       if (urgency !== 0) return urgency;
@@ -37,4 +40,3 @@ export function discussionReady(
   const speakers = decisions.filter((decision) => decision.intent === "speak").length;
   return speakers === 0 && ready >= Math.ceil(livingPlayers * quorum);
 }
-

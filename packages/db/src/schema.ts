@@ -1,4 +1,11 @@
-import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 export const roles = sqliteTable(
   "roles",
@@ -27,7 +34,10 @@ export const games = sqliteTable(
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
-  (table) => [index("games_status_idx").on(table.status), index("games_experiment_idx").on(table.experimentId)],
+  (table) => [
+    index("games_status_idx").on(table.status),
+    index("games_experiment_idx").on(table.experimentId),
+  ],
 );
 
 export const events = sqliteTable(
@@ -109,4 +119,3 @@ export const usage = sqliteTable(
   },
   (table) => [index("usage_game_idx").on(table.gameId)],
 );
-

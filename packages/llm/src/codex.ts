@@ -76,7 +76,9 @@ function inheritedCodexEnvironment(): Record<string, string> {
   return environment;
 }
 
-function configuredReasoningEffort(value = process.env.CODEX_REASONING_EFFORT): ModelReasoningEffort {
+function configuredReasoningEffort(
+  value = process.env.CODEX_REASONING_EFFORT,
+): ModelReasoningEffort {
   const effort = (value?.trim() || "medium") as ModelReasoningEffort;
   if (!reasoningEfforts.has(effort)) {
     throw new Error(`Unsupported CODEX_REASONING_EFFORT: ${value}`);
@@ -112,7 +114,10 @@ function codexUsage(value: Usage | null | undefined): UsageV2 {
   };
 }
 
-function combineSignals(first: AbortSignal | undefined, second: AbortSignal | undefined): AbortSignal {
+function combineSignals(
+  first: AbortSignal | undefined,
+  second: AbortSignal | undefined,
+): AbortSignal {
   if (!first) return second!;
   if (!second) return first;
   const controller = new AbortController();
@@ -131,7 +136,10 @@ export class CodexLoginProvider implements DecisionProvider {
   private readonly reasoningEffort: ModelReasoningEffort;
   private readonly tempRoot: string;
   private readonly timeoutMs: number;
-  private readonly sessions = new Map<string,{thread:CodexThreadLike;workingDirectory:string}>();
+  private readonly sessions = new Map<
+    string,
+    { thread: CodexThreadLike; workingDirectory: string }
+  >();
 
   constructor(options: CodexLoginProviderOptions = {}) {
     this.createClient = options.createClient ?? ((codexOptions) => new Codex(codexOptions));
@@ -142,7 +150,11 @@ export class CodexLoginProvider implements DecisionProvider {
     this.timeoutMs = options.timeoutMs ?? configuredTimeout();
   }
 
-  private async startDecisionSession(model:string,prompt:PreparedPrompt,reasoningEffort:ModelReasoningEffort) {
+  private async startDecisionSession(
+    model: string,
+    prompt: PreparedPrompt,
+    reasoningEffort: ModelReasoningEffort,
+  ) {
     const workingDirectory = await mkdtemp(join(this.tempRoot, "werewolf-codex-"));
     const client = this.createClient({
       ...(this.codexPath ? { codexPathOverride: this.codexPath } : {}),
@@ -153,7 +165,14 @@ export class CodexLoginProvider implements DecisionProvider {
         // cannot be overridden. The application, not the CLI transport, owns retries.
         model_provider: "werewolf-login",
         model_providers: {
-          "werewolf-login": { name: "OpenAI", requires_openai_auth: true, wire_api: "responses", request_max_retries: 0, stream_max_retries: 0, supports_websockets: false },
+          "werewolf-login": {
+            name: "OpenAI",
+            requires_openai_auth: true,
+            wire_api: "responses",
+            request_max_retries: 0,
+            stream_max_retries: 0,
+            supports_websockets: false,
+          },
         },
         developer_instructions: `${prompt.instructions}\nDo not call tools or inspect the local system. Return only JSON matching the supplied output schema.`,
         feedback: { enabled: false },
@@ -164,25 +183,38 @@ export class CodexLoginProvider implements DecisionProvider {
         show_raw_agent_reasoning: false,
         web_search: "disabled",
         features: {
-          apps: false, goals: false, hooks: false, memories: false, multi_agent: false,
-          shell_snapshot: false, shell_tool: false, skill_mcp_dependency_install: false,
-          unified_exec: false, web_search: false,
+          apps: false,
+          goals: false,
+          hooks: false,
+          memories: false,
+          multi_agent: false,
+          shell_snapshot: false,
+          shell_tool: false,
+          skill_mcp_dependency_install: false,
+          unified_exec: false,
+          web_search: false,
         },
       },
       configOverrides: ["mcp_servers={}", "plugins={}"],
     });
     const thread = client.startThread({
-      model,sandboxMode:"read-only",workingDirectory,skipGitRepoCheck:true,
-      modelReasoningEffort:reasoningEffort,networkAccessEnabled:false,webSearchMode:"disabled",approvalPolicy:"never",
+      model,
+      sandboxMode: "read-only",
+      workingDirectory,
+      skipGitRepoCheck: true,
+      modelReasoningEffort: reasoningEffort,
+      networkAccessEnabled: false,
+      webSearchMode: "disabled",
+      approvalPolicy: "never",
     });
-    return {thread,workingDirectory};
+    return { thread, workingDirectory };
   }
 
-  async releaseSession(sessionKey:string):Promise<void> {
-    const session=this.sessions.get(sessionKey);
-    if(!session) return;
+  async releaseSession(sessionKey: string): Promise<void> {
+    const session = this.sessions.get(sessionKey);
+    if (!session) return;
     this.sessions.delete(sessionKey);
-    await rm(session.workingDirectory,{recursive:true,force:true}).catch(()=>undefined);
+    await rm(session.workingDirectory, { recursive: true, force: true }).catch(() => undefined);
   }
 
   async decide<T>(request: DecisionRequest<T>): Promise<DecisionResult<T>> {
@@ -196,12 +228,16 @@ export class CodexLoginProvider implements DecisionProvider {
       abortController.abort(new Error("request timeout"));
     }, timeoutMs);
     const signal = combineSignals(request.signal, abortController.signal);
-    let transientSession:{thread:CodexThreadLike;workingDirectory:string}|undefined;
+    let transientSession: { thread: CodexThreadLike; workingDirectory: string } | undefined;
     let usageReported = false;
     const reportUsage = (usage: UsageV2): void => {
       if (usageReported) return;
       usageReported = true;
-      request.onUsage?.(usage, { provider: "codex", model: request.model, outputLimitEnforced: false });
+      request.onUsage?.(usage, {
+        provider: "codex",
+        model: request.model,
+        outputLimitEnforced: false,
+      });
     };
 
     try {
@@ -209,12 +245,15 @@ export class CodexLoginProvider implements DecisionProvider {
       const reasoningEffort = request.reasoningEffort
         ? configuredReasoningEffort(request.reasoningEffort)
         : this.reasoningEffort;
-      const existing=request.sessionKey ? this.sessions.get(request.sessionKey) : undefined;
-      const session=existing ?? await this.startDecisionSession(request.model,prompt,reasoningEffort);
-      if(request.sessionKey && !existing) this.sessions.set(request.sessionKey,session);
-      if(!request.sessionKey) transientSession=session;
-      if(signal.aborted) throw signal.reason ?? new Error("request aborted");
-      const firstInput=[prompt.publicInput,prompt.privateInput,prompt.sharedInput,prompt.input].filter((part):part is string=>Boolean(part)).join("\n");
+      const existing = request.sessionKey ? this.sessions.get(request.sessionKey) : undefined;
+      const session =
+        existing ?? (await this.startDecisionSession(request.model, prompt, reasoningEffort));
+      if (request.sessionKey && !existing) this.sessions.set(request.sessionKey, session);
+      if (!request.sessionKey) transientSession = session;
+      if (signal.aborted) throw signal.reason ?? new Error("request aborted");
+      const firstInput = [prompt.publicInput, prompt.privateInput, prompt.sharedInput, prompt.input]
+        .filter((part): part is string => Boolean(part))
+        .join("\n");
       const turn = await session.thread.run(existing ? prompt.input : firstInput, {
         outputSchema: providerJsonSchema(request.schema) as Record<string, unknown>,
         signal,
@@ -236,12 +275,16 @@ export class CodexLoginProvider implements DecisionProvider {
       };
     } catch (error) {
       reportUsage(unknownUsage());
-      if (timedOut) throw new Error(`Codex decision timed out after ${timeoutMs}ms`, { cause: error });
+      if (timedOut)
+        throw new Error(`Codex decision timed out after ${timeoutMs}ms`, { cause: error });
       if (request.signal?.aborted) throw new Error("Codex decision aborted", { cause: error });
       throw error;
     } finally {
       clearTimeout(timeout);
-      if(transientSession) await rm(transientSession.workingDirectory,{recursive:true,force:true}).catch(()=>undefined);
+      if (transientSession)
+        await rm(transientSession.workingDirectory, { recursive: true, force: true }).catch(
+          () => undefined,
+        );
     }
   }
 }

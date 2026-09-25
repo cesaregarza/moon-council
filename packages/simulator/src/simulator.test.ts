@@ -19,7 +19,16 @@ function repository() {
 }
 
 function gameConfig() {
-  const ids = ["werewolf", "werewolf", "seer", "doctor", "roleblocker", "mayor", "villager", "villager"];
+  const ids = [
+    "werewolf",
+    "werewolf",
+    "seer",
+    "doctor",
+    "roleblocker",
+    "mayor",
+    "villager",
+    "villager",
+  ];
   return GameConfigSchema.parse({
     schemaVersion: "game_config_v1",
     name: "Integration council",
@@ -50,7 +59,9 @@ describe("full simulation", () => {
     const replay = reduceGame(game.id, events);
     expect(replay.phase).toBe("ended");
     expect(events.some((event) => event.type === "message.public")).toBe(true);
-    expect(projectEvents(events, { kind: "public" }).every((event) => event.visibility === "public")).toBe(true);
+    expect(
+      projectEvents(events, { kind: "public" }).every((event) => event.visibility === "public"),
+    ).toBe(true);
     expect(repo.listJournals(game.id)).toHaveProperty("p1");
   }, 20_000);
 
@@ -66,9 +77,16 @@ describe("full simulation", () => {
       pricingPerMillionTokens: {},
     });
     const experiment = repo.createExperiment(spec);
-    const summary = await runExperiment(repo, new FakeDecisionProvider(), experiment.id, "fake-model");
+    const summary = await runExperiment(
+      repo,
+      new FakeDecisionProvider(),
+      experiment.id,
+      "fake-model",
+    );
     expect(summary.runsCompleted + summary.budgetTruncated).toBe(10);
-    expect(Object.values(summary.survivalByRole).reduce((sum, item) => sum + item.total, 0)).toBe(summary.runsCompleted * 8);
+    expect(Object.values(summary.survivalByRole).reduce((sum, item) => sum + item.total, 0)).toBe(
+      summary.runsCompleted * 8,
+    );
     expect(repo.getExperiment(experiment.id)?.status).toBe("completed");
   }, 90_000);
 });

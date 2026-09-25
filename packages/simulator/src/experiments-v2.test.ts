@@ -26,14 +26,23 @@ function createRepository(): LabRepository {
 
 function config() {
   const roleIds = ["werewolf", "seer", "doctor", "villager", "villager"];
-  const seats = roleIds.map((_, index) => ({ id: `p${index + 1}`, name: `Player ${index + 1}`, personality: "test" }));
+  const seats = roleIds.map((_, index) => ({
+    id: `p${index + 1}`,
+    name: `Player ${index + 1}`,
+    personality: "test",
+  }));
   return GameConfigV2Schema.parse({
     schemaVersion: "game_config_v2",
     name: "V2 batch",
     seed: "v2-batch",
     seats,
     roleDeck: roleIds.map((id) => structuredClone(STARTER_ROLES.find((role) => role.id === id)!)),
-    modelSettings: Object.fromEntries(seats.map((seat) => [seat.id, { model: "fake-model", reasoningEffort: "medium", provider: "fake" }])),
+    modelSettings: Object.fromEntries(
+      seats.map((seat) => [
+        seat.id,
+        { model: "fake-model", reasoningEffort: "medium", provider: "fake" },
+      ]),
+    ),
     safety: { maxCycles: 2, maxModelCalls: 50, maxOutputTokens: 200, maxWallClockMs: 60_000 },
   });
 }
@@ -50,40 +59,105 @@ function spec() {
   });
 }
 
-function appendCreated(repository: LabRepository, gameId: string, gameConfig: ReturnType<typeof config>): void {
+function appendCreated(
+  repository: LabRepository,
+  gameId: string,
+  gameConfig: ReturnType<typeof config>,
+): void {
   repository.appendEvent(gameId, createGameCreatedEvent(createGameState(gameId, gameConfig)));
 }
 
 describe("V2 experiment summaries", () => {
-  it("completes ten standard games without duplicate runs and persists outcome denominators",async()=>{
-    const repository=createRepository();
-    const ids=["werewolf","werewolf","seer","doctor","villager","villager","villager","villager"];
-    const seats=ids.map((_,i)=>({id:`p${i+1}`,name:`Player ${i+1}`}));
-    const baseConfig=GameConfigV2Schema.parse({...config(),preset:"standard-8-v2",seats,roleDeck:ids.map(id=>id === "doctor" ? DOCTOR_V2 : STARTER_ROLES.find(r=>r.id===id)!),safety:{maxCycles:8,maxModelCalls:500,maxOutputTokens:600,maxWallClockMs:1_800_000},modelSettings:Object.fromEntries(seats.map(s=>[s.id,{model:"fake",provider:"fake",reasoningEffort:"xhigh"}]))});
-    const experiment=repository.createExperiment(ExperimentSpecV2Schema.parse({...spec(),baseConfig,runs:10,concurrency:3}));
-    const summary=await runExperiment(repository,new FakeDecisionProvider(),experiment.id,"fake");
-    expect(summary.completed+summary.budgetTruncated,JSON.stringify(repository.listGames(50,experiment.id).map(game=>({status:game.status,error:game.error})))).toBe(10);
+  it("completes ten standard games without duplicate runs and persists outcome denominators", async () => {
+    const repository = createRepository();
+    const ids = [
+      "werewolf",
+      "werewolf",
+      "seer",
+      "doctor",
+      "villager",
+      "villager",
+      "villager",
+      "villager",
+    ];
+    const seats = ids.map((_, i) => ({ id: `p${i + 1}`, name: `Player ${i + 1}` }));
+    const baseConfig = GameConfigV2Schema.parse({
+      ...config(),
+      preset: "standard-8-v2",
+      seats,
+      roleDeck: ids.map((id) =>
+        id === "doctor" ? DOCTOR_V2 : STARTER_ROLES.find((r) => r.id === id)!,
+      ),
+      safety: { maxCycles: 8, maxModelCalls: 500, maxOutputTokens: 600, maxWallClockMs: 1_800_000 },
+      modelSettings: Object.fromEntries(
+        seats.map((s) => [s.id, { model: "fake", provider: "fake", reasoningEffort: "xhigh" }]),
+      ),
+    });
+    const experiment = repository.createExperiment(
+      ExperimentSpecV2Schema.parse({ ...spec(), baseConfig, runs: 10, concurrency: 3 }),
+    );
+    const summary = await runExperiment(
+      repository,
+      new FakeDecisionProvider(),
+      experiment.id,
+      "fake",
+    );
+    expect(
+      summary.completed + summary.budgetTruncated,
+      JSON.stringify(
+        repository
+          .listGames(50, experiment.id)
+          .map((game) => ({ status: game.status, error: game.error })),
+      ),
+    ).toBe(10);
     expect(summary.interrupted).toBe(0);
-    expect(repository.listGames(50,experiment.id)).toHaveLength(10);
-    await runExperiment(repository,new FakeDecisionProvider(),experiment.id,"fake");
-    expect(repository.listGames(50,experiment.id)).toHaveLength(10);
-    expect(repository.getExperiment(experiment.id)!.summary).toMatchObject({validOutcomeDenominator:summary.completed,completed:summary.completed});
-  },90_000);
+    expect(repository.listGames(50, experiment.id)).toHaveLength(10);
+    await runExperiment(repository, new FakeDecisionProvider(), experiment.id, "fake");
+    expect(repository.listGames(50, experiment.id)).toHaveLength(10);
+    expect(repository.getExperiment(experiment.id)!.summary).toMatchObject({
+      validOutcomeDenominator: summary.completed,
+      completed: summary.completed,
+    });
+  }, 90_000);
   it("keeps incomplete outcomes separate while aggregating all attempt usage", () => {
     const repository = createRepository();
     const experiment = repository.createExperiment(spec());
-    const complete = repository.createGame({ ...config(), name: "complete", seed: "batch:0" }, experiment.id);
+    const complete = repository.createGame(
+      { ...config(), name: "complete", seed: "batch:0" },
+      experiment.id,
+    );
     appendCreated(repository, complete.id, complete.config as ReturnType<typeof config>);
-    repository.appendEvent(complete.id, { type: "game.started", phase: "setup", day: 0, visibility: "public", payload: { startedAt: "2026-01-01T00:00:00.000Z" } });
-    repository.appendEvent(complete.id, { type: "game.ended", phase: "ended", day: 1, visibility: "public", payload: { winnerAlignments: ["village"], winnerPlayerIds: ["p2"], reason: "test" } });
+    repository.appendEvent(complete.id, {
+      type: "game.started",
+      phase: "setup",
+      day: 0,
+      visibility: "public",
+      payload: { startedAt: "2026-01-01T00:00:00.000Z" },
+    });
+    repository.appendEvent(complete.id, {
+      type: "game.ended",
+      phase: "ended",
+      day: 1,
+      visibility: "public",
+      payload: { winnerAlignments: ["village"], winnerPlayerIds: ["p2"], reason: "test" },
+    });
     repository.updateGame(complete.id, { status: "completed" });
 
-    const paused = repository.createGame({ ...config(), name: "paused", seed: "batch:1" }, experiment.id);
+    const paused = repository.createGame(
+      { ...config(), name: "paused", seed: "batch:1" },
+      experiment.id,
+    );
     appendCreated(repository, paused.id, paused.config as ReturnType<typeof config>);
     repository.updateGame(paused.id, { status: "paused" });
-    const failed = repository.createGame({ ...config(), name: "failed", seed: "batch:2" }, experiment.id);
+    const failed = repository.createGame(
+      { ...config(), name: "failed", seed: "batch:2" },
+      experiment.id,
+    );
     repository.updateGame(failed.id, { status: "failed" });
-    const budget = repository.createGame({ ...config(), name: "budget", seed: "batch:3" }, experiment.id);
+    const budget = repository.createGame(
+      { ...config(), name: "budget", seed: "batch:3" },
+      experiment.id,
+    );
     repository.updateGame(budget.id, { status: "budget_exhausted" });
 
     const store = new DecisionStore(repository);
@@ -104,9 +178,24 @@ describe("V2 experiment summaries", () => {
         phase: "day_vote",
         day: 1,
         self: { id: "p1", name: "Player 1", role: structuredClone(STARTER_ROLES[0]!) },
-        players: [], knownAllies: [], rules: {}, sources: [], legalActions: [], legalTargets: [],
-        journal: { schemaVersion: "journal_v2", version: 0, beliefs: [], hypotheses: [], strategy: "", goals: [], unresolvedQuestions: [], deceptionPlan: null },
-        responseDocket: [], closing: false,
+        players: [],
+        knownAllies: [],
+        rules: {},
+        sources: [],
+        legalActions: [],
+        legalTargets: [],
+        journal: {
+          schemaVersion: "journal_v2",
+          version: 0,
+          beliefs: [],
+          hypotheses: [],
+          strategy: "",
+          goals: [],
+          unresolvedQuestions: [],
+          deceptionPlan: null,
+        },
+        responseDocket: [],
+        closing: false,
       },
       status: "open",
       best: null,
@@ -120,7 +209,14 @@ describe("V2 experiment summaries", () => {
       optional: false,
       request: { instructions: "i", input: "p", schema: {} },
     });
-    attempt.usage = { inputTokens: 10, outputTokens: 5, totalTokens: 15, cachedInputTokens: 4, cacheWriteInputTokens: 2, reasoningTokens: 3 };
+    attempt.usage = {
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+      cachedInputTokens: 4,
+      cacheWriteInputTokens: 2,
+      reasoningTokens: 3,
+    };
     store.updateAttempt(attempt);
 
     const summary = summarizeExperiment(repository, experiment.id, experiment.spec);
@@ -142,7 +238,10 @@ describe("V2 experiment summaries", () => {
   it("uses a stable registered game for a run index instead of creating a duplicate", () => {
     const repository = createRepository();
     const experiment = repository.createExperiment(spec());
-    const game = repository.createGame({ ...config(), name: "run 1", seed: "batch:0" }, experiment.id);
+    const game = repository.createGame(
+      { ...config(), name: "run 1", seed: "batch:0" },
+      experiment.id,
+    );
     const store = new DecisionStore(repository);
     store.atomic(() => store.registerRun(experiment.id, 0, game.id));
 

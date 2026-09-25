@@ -33,13 +33,15 @@ export const STARTER_ROLES: RoleDefinitionV1[] = [
     version: 2,
     name: "Werewolf",
     alignment: "werewolf",
-    description: "Silently point with the pack at night, survive the day, and reach parity with the village.",
+    description:
+      "Silently point with the pack at night, survive the day, and reach parity with the village.",
     knowledge: ["own_role", "alignment_team", "team_channel"],
     actions: [
       {
         id: "pack_kill",
         name: "Pack kill",
-        description: "Unanimously point with every living werewolf at one non-werewolf player to eliminate tonight.",
+        description:
+          "Unanimously point with every living werewolf at one non-werewolf player to eliminate tonight.",
         phase: "night",
         effect: "eliminate",
         target: {
@@ -164,7 +166,8 @@ export const BODYGUARD = RoleDefinitionSchema.parse({
   version: 1,
   name: "Bodyguard",
   alignment: "village",
-  description: "Each night, shield one other living player from elimination. You cannot shield yourself, and you cannot shield the same player on consecutive nights.",
+  description:
+    "Each night, shield one other living player from elimination. You cannot shield yourself, and you cannot shield the same player on consecutive nights.",
   knowledge: ["own_role"],
   actions: [
     {
@@ -183,6 +186,9 @@ export const BODYGUARD = RoleDefinitionSchema.parse({
 
 export function roleById(id: string, version?: number): RoleDefinitionV1 | undefined {
   if (id === "doctor" && version === DOCTOR_V2.version) return structuredClone(DOCTOR_V2);
-  if (id === "bodyguard" && (version === undefined || version === BODYGUARD.version)) return structuredClone(BODYGUARD);
-  return STARTER_ROLES.find((role) => role.id === id && (version === undefined || role.version === version));
+  if (id === "bodyguard" && (version === undefined || version === BODYGUARD.version))
+    return structuredClone(BODYGUARD);
+  return STARTER_ROLES.find(
+    (role) => role.id === id && (version === undefined || role.version === version),
+  );
 }

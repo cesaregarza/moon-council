@@ -19,8 +19,8 @@ export function assessActorChoice(
   };
   const role = packet.self.role;
   const predicate = role.winCondition.predicate;
-  const hasWolfEliminationObjective = predicate.kind === "alignment_eliminated"
-    && predicate.alignment === "werewolf";
+  const hasWolfEliminationObjective =
+    predicate.kind === "alignment_eliminated" && predicate.alignment === "werewolf";
   if (task !== "vote_choice" || !role.winCondition.terminal) return result;
   if (!hasWolfEliminationObjective || role.passives.voteWeight <= 0) return result;
 
@@ -28,13 +28,13 @@ export function assessActorChoice(
   const catalog = packet.rules.roles as { name: string; alignment: string }[] | undefined;
   const counts = packet.rules.roleCounts as Record<string, number> | undefined;
   if (!catalog || !counts) return result;
-  const wolfRoles = new Set(catalog.filter(r => r.alignment === "werewolf").map(r => r.name));
+  const wolfRoles = new Set(catalog.filter((r) => r.alignment === "werewolf").map((r) => r.name));
   // A shared name across alignments makes name-only revealed deaths ambiguous.
-  if (catalog.some(r => r.alignment !== "werewolf" && wolfRoles.has(r.name))) return result;
+  if (catalog.some((r) => r.alignment !== "werewolf" && wolfRoles.has(r.name))) return result;
   const startingWolves = [...wolfRoles].reduce((total, name) => total + (counts[name] ?? 0), 0);
-  const dead = packet.players.filter(player => !player.alive);
-  if (dead.some(player => !player.revealedRole)) return result;
-  const deadWolves = dead.filter(player => wolfRoles.has(player.revealedRole!)).length;
+  const dead = packet.players.filter((player) => !player.alive);
+  if (dead.some((player) => !player.revealedRole)) return result;
+  const deadWolves = dead.filter((player) => wolfRoles.has(player.revealedRole!)).length;
   if (startingWolves - deadWolves !== 1) return result;
 
   const knownWolves = new Set<string>();
@@ -55,9 +55,9 @@ export function assessActorChoice(
   if (choice !== handle) {
     const action = choice === "abstain" ? "abstains" : "targets someone else";
     result.issues.push(
-      `Your own verified inspection identifies ${target} as the sole remaining werewolf. `
-      + `Eliminating all werewolves is your terminal win condition and voting for ${target} is legal. `
-      + `This ballot instead ${action}. Reconsider using your private knowledge, even if it is not publicly known.`,
+      `Your own verified inspection identifies ${target} as the sole remaining werewolf. ` +
+        `Eliminating all werewolves is your terminal win condition and voting for ${target} is legal. ` +
+        `This ballot instead ${action}. Reconsider using your private knowledge, even if it is not publicly known.`,
     );
   }
   return result;
