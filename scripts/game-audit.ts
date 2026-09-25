@@ -116,7 +116,10 @@ export function summarizeJournalWorkflow(events: AuditEvent[], attempts: AuditAt
     const living = [...aliveAt(players, events, before)];
     const missingPlayerIds = living.filter(playerId => !reflections.some(event =>
       event.sequence > speech.sequence && event.sequence < before && event.payload.playerId === playerId &&
-      Array.isArray(event.payload.sourceIds) && event.payload.sourceIds.includes(speech.id),
+      (typeof event.payload.reviewedThroughSequence === "number"
+        ? Number.isSafeInteger(event.payload.reviewedThroughSequence) &&
+          event.payload.reviewedThroughSequence >= speech.sequence && event.payload.reviewedThroughSequence < event.sequence
+        : Array.isArray(event.payload.sourceIds) && event.payload.sourceIds.includes(speech.id)),
     ));
     return {speechId:speech.id!, sequence:speech.sequence, day:speech.day, speakerId:String(speech.payload.playerId),
       nextJevSequence:nextJev?.sequence ?? null, expectedPlayers:living.length, missingPlayerIds,
