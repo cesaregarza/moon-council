@@ -68,6 +68,19 @@ describe("journal workflow audit",()=>{
     expect(stale.gaps).toHaveLength(1);
     expect(stale.gaps[0]).toMatchObject({missingPlayerIds:["p2"],nextJevSequence:4});
   });
+  it("recognizes v4 review watermarks while retaining legacy source-ID coverage",()=>{
+    const watermark=(sequence:number,playerId:string,reviewedThroughSequence:number)=>event(sequence,"journal.refreshed",{playerId,reviewedThroughSequence});
+    const complete=summarizeJournalWorkflow([roster,speech,watermark(2,"p1",1),watermark(3,"p2",1),start],[jev]);
+    expect(complete).toMatchObject({verifiedSpeeches:1,gaps:[]});
+    const mixed=summarizeJournalWorkflow([roster,speech,reflected(2,"p1"),watermark(3,"p2",1),start],[jev]);
+    expect(mixed).toMatchObject({verifiedSpeeches:1,gaps:[]});
+    for(const reviewedThroughSequence of [0,3,Infinity,1.5]){
+      const invalid=summarizeJournalWorkflow([roster,speech,watermark(2,"p1",1),watermark(3,"p2",reviewedThroughSequence),start],[jev]);
+      expect(invalid.gaps[0]).toMatchObject({missingPlayerIds:["p2"]});
+    }
+    const late=summarizeJournalWorkflow([roster,speech,watermark(2,"p1",1),start,watermark(5,"p2",1)],[jev]);
+    expect(late.gaps[0]).toMatchObject({missingPlayerIds:["p2"]});
+  });
   it("counts free-form writes separately from archived listening-note operations",()=>{
     const summary=summarizeJournalWorkflow([event(0,"journal.v2_updated",{patch:[{op:"write_text",mode:"append",text:"A useful note."}]})],[]);
     expect(summary).toMatchObject({proseUpdates:1,attentionUpdates:0});

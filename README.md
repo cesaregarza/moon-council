@@ -190,6 +190,27 @@ For read-only latency/usage summaries and targeted transcript/journal searches, 
 
 For a live or completed game, `npm run game:audit -- --db /native/path/game.db --game GAME_ID --compact` reads SQLite without changing the game. Add `--status` for a concise live progress snapshot without private notebooks. Alongside outcomes and provider timings, `journal` reports reflection counts, listening-note updates, and whether every living player reviewed each speech before the next Jev call. An unfinished reflection batch is pending, not a failure; legacy games without reflection events are marked unobserved.
 
+## Reusable Day 1 bases
+
+For journal experiments, run Day 1 once with `--provider openai --model gpt-6-luna --effort xhigh --decision-engine jev --pause-at-first-night`. Keep the database and output in a private directory under `data/`. At the pause, capture a base with the exact gameplay source revision:
+
+```bash
+mkdir -p data/checkpoints
+python3 scripts/checkpoint.py capture \
+  --db data/pilots/day1/game.db --game GAME_ID \
+  --out data/checkpoints/day1 --source-revision "$(git rev-parse HEAD)"
+python3 scripts/checkpoint.py inspect --base data/checkpoints/day1
+python3 scripts/checkpoint.py fork \
+  --base data/checkpoints/day1 --out data/pilots/experiment-01
+npm run pilot -- --provider openai --model gpt-6-luna --effort xhigh \
+  --decision-engine jev --db data/pilots/experiment-01/game.db \
+  --game GAME_ID --resume --snapshot --out data/pilots/experiment-01
+```
+
+The helper requires Python 3 and an existing output parent. Capture and fork destinations must be new directories. It accepts only a paused, day-first `journal_v4` game before any Night 1 work, with no unresolved decisions or provider calls. Archived workflows cannot be relabeled as current ones.
+
+The base is a consistent SQLite backup with read-only permissions and a SHA-256 manifest. Forks have separate writable databases and preserve all roles, journals, decisions, usage, and frozen configuration. They retain the same game ID, so distinguish experiments by directory and do not combine their databases. Never resume the base itself. Each `fork.json` records the base hash, source revision, event boundary, and inherited usage; subtract that usage when comparing continuation costs. Resuming does not reset safety budgets or change the game's model settings. These files contain private game evidence and remain excluded from publication.
+
 ## Verification
 
 
