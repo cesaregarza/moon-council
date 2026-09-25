@@ -1,7 +1,7 @@
 import importlib.util
-from pathlib import Path
-import unittest
 import os
+import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
@@ -30,6 +30,17 @@ class SnapshotTests(unittest.TestCase):
             ".env.example",
             "packages/llm/src/jev.ts",
             "docs/ACTOR_WORKFLOW.md",
+            "docs/ARCHITECTURE.md",
+            "docs/SPEAKER_AUCTION.md",
+            "docs/RUNNING.md",
+            "docs/REFERENCE.md",
+            "CONTRIBUTING.md",
+            ".editorconfig",
+            ".prettierrc.json",
+            ".prettierignore",
+            ".oxlintrc.json",
+            "requirements-dev.txt",
+            "ruff.toml",
             ".github/workflows/checks.yml",
         ]:
             self.assertTrue(snapshot.allowed(path), path)

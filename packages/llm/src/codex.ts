@@ -10,7 +10,7 @@ import {
   type Usage,
 } from "@openai/codex-sdk";
 import { providerJsonSchema, unknownUsage, type UsageV2 } from "@werewolf/contracts";
-import { z } from "zod";
+
 import { promptFor } from "./prompt";
 import type { DecisionProvider, DecisionRequest, DecisionResult, PreparedPrompt } from "./provider";
 

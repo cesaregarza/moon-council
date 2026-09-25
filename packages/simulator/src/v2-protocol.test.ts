@@ -141,7 +141,6 @@ function opportunity(
   state = reduceGame("game", repository.listEvents("game")),
   kind: DecisionOpportunityV1["kind"] = "vote",
 ): DecisionOpportunityV1 {
-  const events = repository.listEvents(state.gameId);
   const packet = context(state, "p1", kind);
   return {
     id: "decision-test",
@@ -205,7 +204,7 @@ describe("V2 mocked protocol", () => {
         .filter(
           (e) => e.day === 1 && e.type === "discussion.completed" && e.payload.stage === "opening",
         )
-        .map((e) => e.payload.playerId)
+        .map((e) => String(e.payload.playerId))
         .sort(),
     ).toEqual(state.players.map((p) => p.id).sort());
     const expectedBallotOrder = shuffled(
@@ -896,15 +895,13 @@ describe("V2 context and scheduler authorization", () => {
       ...emptyJournalV2(),
       strategy: "s".repeat(600),
       goals: ["g".repeat(120)],
-      beliefs: state.players
-        .slice(1, 7)
-        .map((player) => ({
-          playerId: player.id,
-          probability: 0.5,
-          basis: "inference" as const,
-          note: "n".repeat(120),
-          sources: [],
-        })),
+      beliefs: state.players.slice(1, 7).map((player) => ({
+        playerId: player.id,
+        probability: 0.5,
+        basis: "inference" as const,
+        note: "n".repeat(120),
+        sources: [],
+      })),
     };
     const packet = context(state, "p1", "discussion", journal, speeches);
     expect(decisionRequestV2(packet, "discussion", "gated").tokens).toBeLessThanOrEqual(

@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, max, sql } from "drizzle-orm";
 import {
   StoredExperimentSpecSchema,
-  ExperimentSummarySchema,
   StoredExperimentSummarySchema,
   type StoredExperimentSummary,
   StoredGameConfigSchema,
@@ -10,7 +9,6 @@ import {
   PrivateJournalSchema,
   RoleDefinitionSchema,
   type StoredExperimentSpec,
-  type ExperimentSummaryV1,
   type StoredGameConfig,
   type GameEventV1,
   type PrivateJournalV1,

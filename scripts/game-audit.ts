@@ -234,12 +234,12 @@ export function summarizeGameAudit(
           event.payload.playerId,
       ),
       roleName: String(
-        event.payload.roleName ??
+        (typeof event.payload.roleName === "string" ? event.payload.roleName : undefined) ??
           playerById.get(String(event.payload.playerId))?.role.name ??
           "unknown",
       ),
       alignment: playerById.get(String(event.payload.playerId))?.role.alignment ?? "unknown",
-      cause: String(event.payload.cause ?? "unknown"),
+      cause: typeof event.payload.cause === "string" ? event.payload.cause : "unknown",
     }));
   const eliminatedIds = new Set(eliminations.map((event) => event.playerId));
   const winnerIds = new Set(
@@ -264,7 +264,7 @@ export function summarizeGameAudit(
       ? (event.payload.scores as AuctionScore[])
       : [];
     const selectedPlayerId =
-      event.payload.selectedPlayerId == null ? null : String(event.payload.selectedPlayerId);
+      typeof event.payload.selectedPlayerId === "string" ? event.payload.selectedPlayerId : null;
     const alive = aliveAt(players, events, event.sequence);
     const suspicion = scores.map((score) => {
       const observations = [...alive]
@@ -289,7 +289,7 @@ export function summarizeGameAudit(
     return {
       sequence: event.sequence,
       day: event.day,
-      stage: String(event.payload.stage ?? "unknown"),
+      stage: typeof event.payload.stage === "string" ? event.payload.stage : "unknown",
       round: numberOrNull(event.payload.round),
       selectedPlayerId,
       selectedPlayerName: selectedPlayerId
@@ -737,10 +737,11 @@ function main(): void {
         playerId: String(value.playerId),
         status: String(value.status),
         error: typeof value.error === "string" ? value.error : null,
-        schemaVersion: String(value.schemaVersion ?? "unknown"),
-        provider: String(value.provider ?? "unknown"),
-        model: String(value.model ?? "unknown"),
-        reasoningEffort: String(value.reasoningEffort ?? "unknown"),
+        schemaVersion: typeof value.schemaVersion === "string" ? value.schemaVersion : "unknown",
+        provider: typeof value.provider === "string" ? value.provider : "unknown",
+        model: typeof value.model === "string" ? value.model : "unknown",
+        reasoningEffort:
+          typeof value.reasoningEffort === "string" ? value.reasoningEffort : "unknown",
         latencyMs: numberOrNull(value.latencyMs),
         usage: {
           inputTokens: numberOrNull(usage.inputTokens),

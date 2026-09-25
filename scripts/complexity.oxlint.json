@@ -1,0 +1,6 @@
+{
+  "plugins": [],
+  "categories": { "correctness": "off" },
+  "rules": { "complexity": ["error", 20] },
+  "ignorePatterns": ["**/*.test.ts", "**/*.spec.ts", "**/testing/**", "**/dist/**"]
+}

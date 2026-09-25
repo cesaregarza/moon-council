@@ -47,7 +47,7 @@ export default function App() {
       <GameRoom
         gameId={selectedGame}
         onBack={() => setSelectedGame("")}
-        onChanged={refresh}
+        onChanged={() => void refresh()}
         onClone={(config) => {
           setCloneConfig(config);
           setSelectedGame("");
@@ -64,7 +64,7 @@ export default function App() {
           <span className="brand-sigil">◒</span>
           <div>
             <strong>Moon Council</strong>
-            <small>Werewolf simulation lab</small>
+            <small>Peer multi-agent research</small>
           </div>
         </div>
         <nav>
@@ -199,9 +199,9 @@ export default function App() {
             }}
           />
         )}
-        {tab === "roles" && <RoleLab roles={roles} onSaved={refresh} />}
+        {tab === "roles" && <RoleLab roles={roles} onSaved={() => void refresh()} />}
         {tab === "experiments" && (
-          <ExperimentLab games={games} experiments={experiments} onCreated={refresh} />
+          <ExperimentLab games={games} experiments={experiments} onCreated={() => void refresh()} />
         )}
         {error && <div className="error-banner floating">{error}</div>}
       </main>

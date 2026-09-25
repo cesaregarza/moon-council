@@ -27,6 +27,8 @@ export function isDemotable(source: ContextSourceV2): boolean {
 
 /** Truncate on a codepoint boundary so a digest never splits an astral character. */
 function clip(text: string, chars: number): string {
+  // Evidence budgets count codepoints, not grapheme clusters; preserve archived digest bytes.
+  // oxlint-disable-next-line typescript/no-misused-spread
   const points = [...text];
   return points.length <= chars ? text : `${points.slice(0, chars).join("")}…`;
 }

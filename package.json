@@ -28,13 +28,24 @@
     "test:live:jev": "RUN_LIVE_JEV=1 vitest run packages/llm/src/jev.live.test.ts --maxWorkers=1",
     "cache:probe": "tsx scripts/cache-probe.ts",
     "jev:probe": "tsx scripts/jev-probe.ts",
-    "jev:actor-eval": "tsx scripts/jev-actor-eval.ts"
+    "jev:actor-eval": "tsx scripts/jev-actor-eval.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "oxlint --max-warnings 0",
+    "lint:fix": "oxlint --fix --max-warnings 0",
+    "check": "npm run format:check && npm run lint && npm run complexity && npm run typecheck",
+    "complexity": "tsx scripts/check-complexity.ts",
+    "format:python": "python3 -m ruff format scripts",
+    "lint:python": "python3 -m ruff check scripts && python3 -m ruff format --check scripts"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
     "@types/node": "22.20.2",
     "concurrently": "10.0.5",
     "fast-check": "4.9.0",
+    "oxlint": "1.85.0",
+    "oxlint-tsgolint": "7.0.2003",
+    "prettier": "3.9.9",
     "tsx": "4.23.13",
     "typescript": "7.0.2",
     "vitest": "4.1.11"

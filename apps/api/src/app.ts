@@ -27,7 +27,6 @@ import {
   ensureInitialized,
   observerEvents,
   observerPayload,
-  replaySlice,
 } from "./observer";
 
 const Params = z.object({ id: z.string().min(1) });
@@ -89,12 +88,10 @@ export async function buildApi(
       typeof (error as { statusCode?: unknown }).statusCode === "number"
         ? (error as { statusCode: number }).statusCode
         : 500;
-    return reply
-      .status(status)
-      .send({
-        error: status >= 500 ? "internal_error" : "request_error",
-        message: error instanceof Error ? error.message : String(error),
-      });
+    return reply.status(status).send({
+      error: status >= 500 ? "internal_error" : "request_error",
+      message: error instanceof Error ? error.message : String(error),
+    });
   });
   app.get("/api/v1/health", async () => ({ ok: true, ...describeProviderConfiguration() }));
   app.get("/api/v1/roles", async () => repository.listRoles());
@@ -165,13 +162,11 @@ export async function buildApi(
     const game = repository.getGame(id);
     if (!game) return reply.status(404).send({ error: "not_found" });
     if (game.config.schemaVersion !== "game_config_v2")
-      return reply
-        .status(409)
-        .send({
-          error: "legacy_replay_only",
-          message:
-            "Create a new V2 game using the legacy configuration; original logs remain unchanged.",
-        });
+      return reply.status(409).send({
+        error: "legacy_replay_only",
+        message:
+          "Create a new V2 game using the legacy configuration; original logs remain unchanged.",
+      });
     if (input.action === "acknowledge_semantic_anomaly") {
       if (!input.decisionId || !input.note) {
         return reply.status(400).send({ error: "decisionId_and_note_required" });
@@ -203,7 +198,8 @@ export async function buildApi(
         ? events.findLast(
             (event) =>
               event.type === "game.paused" &&
-              String(event.payload.reason ?? "").startsWith("context_limit:"),
+              typeof event.payload.reason === "string" &&
+              event.payload.reason.startsWith("context_limit:"),
           )
         : events.findLast((event) => event.type === "game.budget_exhausted");
       if (!interrupted) return reply.status(409).send({ error: "missing_limit_event" });

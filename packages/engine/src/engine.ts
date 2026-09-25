@@ -150,7 +150,8 @@ function reduceEvent(state: GameState, event: GameEventV1): GameState {
     case "game.budget_exhausted":
       next.status = "budget_exhausted";
       next.phase = "ended";
-      next.outcomeReason = String(event.payload.reason ?? "budget_exhausted");
+      next.outcomeReason =
+        typeof event.payload.reason === "string" ? event.payload.reason : "budget_exhausted";
       break;
     case "game.budget_extended":
       if (isV2Config(next.config)) {

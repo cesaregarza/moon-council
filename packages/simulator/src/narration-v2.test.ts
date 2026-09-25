@@ -80,7 +80,9 @@ describe("V2 moderator narration", () => {
     expect(calls).toBe(1);
     expect(captured?.contextV2).toBeUndefined();
     expect(captured?.playerId).toBe("moderator");
-    expect((captured?.preparedPrompt as { input: string }).input).toContain("publicRevision");
+    expect((captured?.preparedPrompt as { input: string } | undefined)?.input).toContain(
+      "publicRevision",
+    );
     const attempt = narration.store.attempts(record.id, "announcement:1")[0]!;
     expect(attempt.usage).toEqual(usage);
     expect(attempt.promptVersion).toBe("moderator_prompt_v2.1");

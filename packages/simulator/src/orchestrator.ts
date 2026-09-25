@@ -7,7 +7,6 @@ import {
   type AgentDecisionV1,
   type GameEventV1,
   type InitiativeDecisionSchema as InitiativeSchemaType,
-  type PrivateJournalV1,
   type ProviderUsageV1,
 } from "@werewolf/contracts";
 import { LabRepository, type GameRecord } from "@werewolf/db";
@@ -123,8 +122,10 @@ export class GameOrchestrator {
         const eliminated = resolved
           .filter((event) => event.type === "player.eliminated")
           .map((event) => ({
-            playerName: event.payload.playerName,
-            ...(event.payload.roleName ? { roleName: event.payload.roleName } : {}),
+            playerName: String(event.payload.playerName),
+            ...(typeof event.payload.roleName === "string"
+              ? { roleName: event.payload.roleName }
+              : {}),
           }));
         const text =
           eliminated.length > 0
@@ -791,7 +792,10 @@ export class GameOrchestrator {
   }
 
   private async narrate(state: GameState, packet: Record<string, unknown>): Promise<string> {
-    const fallback = String(packet.fallbackText ?? "The moderator advances the game.");
+    const fallback =
+      typeof packet.fallbackText === "string"
+        ? packet.fallbackText
+        : "The moderator advances the game.";
     if (!state.config.moderatorNarration) return fallback;
     const model = state.config.moderatorModel ?? resolveModeratorModel(this.defaultModel);
     const attempt = await decideWithRepair(this.provider, {

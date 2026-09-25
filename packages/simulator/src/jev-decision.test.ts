@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   providerJsonSchema,
@@ -26,9 +27,45 @@ import { journalCompactionRequest, materializeCompactedJournal } from "./journal
 import { jevBriefing } from "./jev-briefing";
 import { usesJournalWorkflow } from "./jev-actions";
 import { V2GameOrchestrator } from "./orchestrator-v2";
-import { decisionRequestV31, normalizeV31Submission, validateV31Submission } from "./request-v3-1";
+import {
+  decisionRequestV31,
+  normalizeV31Submission,
+  validateV31Submission,
+  v31SubmissionSchema,
+} from "./request-v3-1";
 import type { V3TaskSpec } from "./request-v3";
 import { decisionDetail, decisionRecords, observerPayload } from "../../../apps/api/src/observer";
+
+interface TestJevState {
+  task: { type?: string; REQUEST?: { task: { type: string } } };
+  journal?: string;
+  public?: unknown;
+  facts?: string;
+  verifiedFacts?: string;
+  legalChoices?: Record<string, unknown>;
+  private?: {
+    AUTHORIZED_PRIVATE_STATE: {
+      self: { id: string };
+      knownAllies: { id: string }[];
+      evidence: { type: string }[];
+      journal: { attentionNotes: unknown[] };
+    };
+  };
+}
+const testState = (request: JevRequest) => request.state as TestJevState;
+const taskType = (request: JevRequest) => {
+  const { task } = testState(request);
+  return task.type ?? task.REQUEST!.task.type;
+};
+const speechActs = (event: GameEventV1) =>
+  z
+    .array(
+      z.object({
+        kind: z.string(),
+        targetId: z.string().nullable(),
+      }),
+    )
+    .parse(event.payload.acts);
 
 const connections: DatabaseConnection[] = [];
 afterEach(() => {
@@ -513,9 +550,9 @@ describe("Jev with mandatory LLM journals and free speech", () => {
     const request = JSON.parse(stage.prepared.prompt.input) as JevRequest;
     expect(request.questions.plan).toBeUndefined();
     expect(request.questions.needs_reasoning).toBeUndefined();
-    const submission = stage.toSubmission(answer(request)) as any;
+    const submission = v31SubmissionSchema(packet, task).parse(stage.toSubmission(answer(request)));
     expect(submission).not.toHaveProperty("plan");
-    expect(submission.urge).toBe(0.75);
+    expect(submission).toMatchObject({ urge: 0.75 });
     expect(validateV31Submission(packet, task, submission)).toEqual([]);
     expect(base.normalize(submission)).toMatchObject({
       speakerIntent: { wantsToSpeak: true, urge: 0.75 },
@@ -718,10 +755,10 @@ describe("Jev with mandatory LLM journals and free speech", () => {
       expect(free.preparedPrompt!.instructions).toContain("choose your own topic");
       const scoring = jev.requests.find((r) => r.questions.urge)!;
       if (workflow === "journal_v3")
-        expect((scoring.state as any).journal).toContain("answers to outstanding questions");
+        expect(testState(scoring).journal).toContain("answers to outstanding questions");
       else
         expect(
-          (scoring.state as any).private.AUTHORIZED_PRIVATE_STATE.journal.attentionNotes.length,
+          testState(scoring).private!.AUTHORIZED_PRIVATE_STATE.journal.attentionNotes.length,
         ).toBe(4);
       for (const speech of speeches.filter((e) => !e.payload.closing)) {
         const nextScore = events.find(
@@ -743,12 +780,8 @@ describe("Jev with mandatory LLM journals and free speech", () => {
           true,
         );
       }
-      const accusation = speeches.find((e) =>
-        (e.payload.acts as any[]).some((a) => a.kind === "challenge"),
-      )!;
-      const target = (accusation.payload.acts as any[]).find(
-        (a) => a.kind === "challenge",
-      ).targetId;
+      const accusation = speeches.find((e) => speechActs(e).some((a) => a.kind === "challenge"))!;
+      const target = speechActs(accusation).find((a) => a.kind === "challenge")!.targetId;
       expect(
         llm.requests.some(
           (r) => r.playerId === target && r.contextV2?.responseDocket.includes(accusation.id),
@@ -789,8 +822,8 @@ describe("Jev with mandatory LLM journals and free speech", () => {
           .filter((r) => r.questions.target)
           .every((r) =>
             workflow === "journal_v3"
-              ? (r.state as any).journal
-              : (r.state as any).private.AUTHORIZED_PRIVATE_STATE.journal.attentionNotes,
+              ? testState(r).journal
+              : testState(r).private!.AUTHORIZED_PRIVATE_STATE.journal.attentionNotes,
           ),
       ).toBe(true);
     },
@@ -817,8 +850,8 @@ describe("Jev with mandatory LLM journals and free speech", () => {
       const jev = new AskJevProvider(async (input) => {
         const request = JSON.parse(input) as JevRequest;
         requests.push(request);
-        const state = request.state as any,
-          task = state.task.type ?? state.task.REQUEST.task.type;
+        const state = testState(request),
+          task = taskType(request);
         const choices =
           state.legalChoices ??
           (request.questions.target?.type === "choice" ? request.questions.target.criteria : {});
@@ -833,17 +866,17 @@ describe("Jev with mandatory LLM journals and free speech", () => {
             playerId(a[1]).localeCompare(playerId(b[1])),
           );
           const own = state.private?.AUTHORIZED_PRIVATE_STATE;
-          const first = own && !own.evidence.some((e: any) => e.type === "team.point");
+          const first = own && !own.evidence.some((e) => e.type === "team.point");
           const facts = state.verifiedFacts ?? state.facts;
           target =
             workflow !== "journal_v2"
               ? entries[
-                  facts.includes("Current pack points:")
+                  facts!.includes("Current pack points:")
                     ? 0
-                    : requests.filter((r) => (r.state as any).task.type === "team_point_choice")
+                    : requests.filter((r) => testState(r).task.type === "team_point_choice")
                         .length % 2
                 ]?.[0]
-              : entries[first && own.self.id > own.knownAllies[0]?.id ? 1 : 0]?.[0];
+              : entries[first && own.self.id > own.knownAllies[0]!.id ? 1 : 0]?.[0];
         }
         return JSON.stringify(answer(request, false, target));
       });
@@ -858,9 +891,7 @@ describe("Jev with mandatory LLM journals and free speech", () => {
       expect(repository.getGame(game.id)?.status, repository.getGame(game.id)?.error).toBe(
         "completed",
       );
-      const tasks = requests.map(
-        (r) => (r.state as any).task.type ?? (r.state as any).task.REQUEST.task.type,
-      );
+      const tasks = requests.map((r) => taskType(r));
       expect(tasks).toContain("vote_choice");
       expect(tasks).toContain("night_choice");
       expect(tasks).toContain("team_point_choice");
@@ -883,14 +914,14 @@ describe("Jev with mandatory LLM journals and free speech", () => {
       expect(
         requests.some((r) =>
           JSON.stringify(
-            (r.state as any).public ?? (r.state as any).verifiedFacts ?? (r.state as any).facts,
+            testState(r).public ?? testState(r).verifiedFacts ?? testState(r).facts,
           ).includes("ballots"),
         ),
       ).toBe(true);
       expect(
         requests.some((r) =>
           JSON.stringify(
-            (r.state as any).private ?? (r.state as any).verifiedFacts ?? (r.state as any).facts,
+            testState(r).private ?? testState(r).verifiedFacts ?? testState(r).facts,
           ).includes(workflow !== "journal_v2" ? "Current pack points" : "team.point"),
         ),
       ).toBe(true);

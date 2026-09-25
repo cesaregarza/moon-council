@@ -5,7 +5,7 @@ import {
   type DecisionOpportunityV1,
 } from "@werewolf/contracts";
 import { DecisionStore, LabRepository, openDatabase, type DatabaseConnection } from "@werewolf/db";
-import { createGameState, reduceGame } from "@werewolf/engine";
+import { reduceGame } from "@werewolf/engine";
 import {
   AskJevProvider,
   FakeDecisionProvider,
@@ -132,7 +132,10 @@ describe("v4 review regressions", () => {
             packet,
             {
               type: "journal_update",
-              revision: String(packet.rules.journalRevision ?? ""),
+              revision:
+                typeof packet.rules.journalRevision === "string"
+                  ? packet.rules.journalRevision
+                  : "",
               sourceIds: [],
             },
             true,

@@ -213,7 +213,11 @@ function printRows(title: string, rows: Array<Record<string, unknown>>, columns:
           const value = row[column];
           if (column.endsWith("Tokens") && typeof value === "number") return compact(value);
           if (column === "cachePercent" && typeof value === "number") return percent(value);
-          return String(value ?? "");
+          return value == null
+            ? ""
+            : typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+              ? String(value)
+              : JSON.stringify(value);
         })
         .join("\t"),
     );

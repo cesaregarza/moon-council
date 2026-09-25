@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { GameEventV1 } from "@werewolf/contracts";
 import {
   api,
@@ -11,21 +11,25 @@ import { formatCompactCount } from "../format";
 
 interface Props {
   gameId: string;
-  onBack(): void;
-  onChanged(): void;
-  onClone?(config: ObserverGamePayload["game"]["config"]): void;
+  onBack: () => void;
+  onChanged: () => void;
+  onClone?: (config: ObserverGamePayload["game"]["config"]) => void;
+}
+
+function displayText(value: unknown): string {
+  return typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
 }
 
 type Player = ObserverGamePayload["state"]["players"][number];
 function playerName(id: unknown, players: Player[]) {
-  return players.find((player) => player.id === id)?.name ?? String(id ?? "");
+  return players.find((player) => player.id === id)?.name ?? displayText(id ?? "");
 }
 function eventText(event: GameEventV1, players: Player[]): string {
   const payload = event.payload;
   switch (event.type) {
     case "speech.public":
     case "message.public":
-      return String(payload.text ?? "");
+      return displayText(payload.text ?? "");
     case "team.point":
     case "team.pointed":
       return `${playerName(payload.playerId, players)} points at ${playerName(payload.targetId, players)}.`;
@@ -34,39 +38,39 @@ function eventText(event: GameEventV1, players: Player[]): string {
     case "team.consensus_failed":
       return "The pack did not agree in time. No kill is attempted.";
     case "moderator.announcement":
-      return String(payload.text ?? "");
+      return displayText(payload.text ?? "");
     case "player.eliminated":
-      return `${String(payload.playerName ?? "A player")} was eliminated${payload.roleName ? ` · ${String(payload.roleName)}` : ""}.`;
+      return `${displayText(payload.playerName ?? "A player")} was eliminated${payload.roleName ? ` · ${displayText(payload.roleName)}` : ""}.`;
     case "vote.resolved":
       return payload.tied
         ? "The vote is tied. Nobody is eliminated."
         : `The council selected ${playerName(payload.targetId, players) || "nobody"}.`;
     case "game.ended":
-      return `Game over · ${String(payload.reason ?? "completed")}`;
+      return `Game over · ${displayText(payload.reason ?? "completed")}`;
     case "game.budget_exhausted":
-      return `Budget limit reached · ${String(payload.reason ?? "")}`;
+      return `Budget limit reached · ${displayText(payload.reason ?? "")}`;
     case "game.paused":
-      return `Simulation paused · ${String(payload.reason ?? "")}`;
+      return `Simulation paused · ${displayText(payload.reason ?? "")}`;
     case "phase.changed":
-      return `${String(payload.to ?? "next phase").replaceAll("_", " ")} begins.`;
+      return `${displayText(payload.to ?? "next phase").replaceAll("_", " ")} begins.`;
     case "model.failure":
       return `Model fallback for ${playerName(payload.playerId, players)}.`;
     case "discussion.pass":
       return `${playerName(payload.playerId, players)} passes.`;
     case "team.agreement_frozen":
       return payload.targetId
-        ? `The pack agreed on ${playerName(payload.targetId, players)} (${String(payload.reason ?? "unanimous")}).`
-        : `The pack failed to agree (${String(payload.reason ?? "no agreement")}). No kill is attempted.`;
+        ? `The pack agreed on ${playerName(payload.targetId, players)} (${displayText(payload.reason ?? "unanimous")}).`
+        : `The pack failed to agree (${displayText(payload.reason ?? "no agreement")}). No kill is attempted.`;
     case "night.action_submitted": {
       const action = payload.action as
         { actorId?: unknown; actionId?: unknown; targetIds?: unknown } | undefined;
       const targets = Array.isArray(action?.targetIds)
         ? action.targetIds.map((id) => playerName(id, players)).join(", ")
         : "";
-      return `${playerName(action?.actorId, players)} submits ${String(action?.actionId ?? "an action").replaceAll("_", " ")}${targets ? ` on ${targets}` : ""}.`;
+      return `${playerName(action?.actorId, players)} submits ${displayText(action?.actionId ?? "an action").replaceAll("_", " ")}${targets ? ` on ${targets}` : ""}.`;
     }
     case "inspection.delivered":
-      return `${playerName(payload.actorId, players)} learns ${playerName(payload.targetId, players)} is ${String(payload.result ?? "unknown")}.`;
+      return `${playerName(payload.actorId, players)} learns ${playerName(payload.targetId, players)} is ${displayText(payload.result ?? "unknown")}.`;
     case "night.resolved": {
       const eliminated = Array.isArray(payload.eliminatedPlayerIds)
         ? payload.eliminatedPlayerIds.map((id) => playerName(id, players))
@@ -133,7 +137,7 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
   const [busy, setBusy] = useState(false);
   const fetchRevision = useRef(0);
 
-  async function refresh(): Promise<ObserverGamePayload | undefined> {
+  const refresh = useCallback(async (): Promise<ObserverGamePayload | undefined> => {
     const revision = ++fetchRevision.current;
     try {
       const next = await api.game(gameId, {
@@ -152,7 +156,7 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
       setError(reason instanceof Error ? reason.message : String(reason));
       return undefined;
     }
-  }
+  }, [gameId, perspective, selectedPlayer, teamId, replaySequence]);
 
   useEffect(() => {
     if (perspective === "player" && !selectedPlayer) return;
@@ -184,7 +188,7 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
       if (interval) clearInterval(interval);
       if (refreshTimer) clearTimeout(refreshTimer);
     };
-  }, [gameId, perspective, selectedPlayer, teamId, replaySequence]);
+  }, [gameId, perspective, selectedPlayer, teamId, replaySequence, refresh]);
 
   useEffect(() => {
     let cancelled = false;
@@ -204,7 +208,9 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
       .then((items) => {
         if (cancelled) return;
         setOpportunities(items);
-        if (!items.some((item) => item.id === selectedDecision)) setSelectedDecision("");
+        setSelectedDecision((selected) =>
+          items.some((item) => item.id === selected) ? selected : "",
+        );
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
     return () => {
@@ -243,8 +249,7 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
     payload?.events?.length,
   ]);
 
-  const allEvents = payload?.events ?? payload?.state.events ?? [];
-  const events = useMemo(() => allEvents, [allEvents]);
+  const events = payload?.events ?? payload?.state.events ?? [];
   // Night events are moderator/team scoped, so they only appear in perspectives authorised
   // to see them; omitting them here hid the entire night from the moderator view.
   const transcript = events.filter((event) =>
@@ -284,7 +289,7 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
   const isTerminal = ["completed", "aborted", "budget_exhausted", "failed"].includes(
     payload?.game.status ?? "",
   );
-  const maxSequence = Math.max(liveMaxSequence, allEvents.at(-1)?.sequence ?? 0);
+  const maxSequence = Math.max(liveMaxSequence, events.at(-1)?.sequence ?? 0);
 
   async function control(body: Record<string, unknown>) {
     setBusy(true);
@@ -348,35 +353,35 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
           <button
             disabled={busy || isTerminal || payload.game.status === "running"}
             onClick={() =>
-              control({ action: payload.game.status === "lobby" ? "start" : "resume" })
+              void control({ action: payload.game.status === "lobby" ? "start" : "resume" })
             }
           >
             {payload.game.status === "lobby" ? "▶ Run game" : "▶ Resume"}
           </button>
         )}
         {!payload.game.legacyReplayOnly && (
-          <button disabled={busy || isTerminal} onClick={() => control({ action: "step" })}>
+          <button disabled={busy || isTerminal} onClick={() => void control({ action: "step" })}>
             ↦ Step phase
           </button>
         )}
         {!payload.game.legacyReplayOnly && (
           <button
             disabled={busy || isTerminal}
-            onClick={() => control({ action: "step_decision" })}
+            onClick={() => void control({ action: "step_decision" })}
           >
             ↦ Step decision
           </button>
         )}
         <button
           disabled={busy || isTerminal || payload.game.legacyReplayOnly}
-          onClick={() => control({ action: "pause" })}
+          onClick={() => void control({ action: "pause" })}
         >
           Ⅱ Pause
         </button>
         <button
           className="danger"
           disabled={busy || isTerminal || payload.game.legacyReplayOnly}
-          onClick={() => control({ action: "abort" })}
+          onClick={() => void control({ action: "abort" })}
         >
           Abort
         </button>
@@ -386,7 +391,7 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
             <select
               value={payload.game.speedMs ?? 0}
               onChange={(event) =>
-                control({ action: "speed", speedMs: Number(event.target.value) })
+                void control({ action: "speed", speedMs: Number(event.target.value) })
               }
             >
               <option value={0}>Immediate</option>
@@ -498,7 +503,7 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
             <div className="journal">
               <div className="eyebrow">Private journal · {selected.name}</div>
               <p style={{ whiteSpace: "pre-wrap" }}>
-                {String(
+                {displayText(
                   (recordValue(journalRecord, "text") ?? recordValue(journalRecord, "strategy")) ||
                     "No private strategy recorded yet.",
                 )}
@@ -694,8 +699,8 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
                         : "source count unavailable"}
                     </p>
                     <div className="packet-tags">
-                      <span>{String(recordValue(packet, "phase") ?? "phase")}</span>
-                      <span>{String(recordValue(packet, "day") ?? "day")}</span>
+                      <span>{displayText(recordValue(packet, "phase") ?? "phase")}</span>
+                      <span>{displayText(recordValue(packet, "day") ?? "day")}</span>
                       <span>
                         {Array.isArray(recordValue(packet, "legalActions"))
                           ? `${(recordValue(packet, "legalActions") as unknown[]).length} legal actions`
@@ -714,7 +719,7 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
                     {best ? (
                       <>
                         <p className="decision-summary">
-                          {String(recordValue(best, "summary") ?? "No summary")}
+                          {displayText(recordValue(best, "summary") ?? "No summary")}
                         </p>
                         <div className="decision-facts">
                           <span>
@@ -816,7 +821,9 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
                   {decisionDetail.events.map((event) => (
                     <span key={event.id} className="attempt-chip">
                       {event.type} ·{" "}
-                      {String(event.payload.verdict ?? event.payload.continuation ?? "recorded")}
+                      {displayText(
+                        event.payload.verdict ?? event.payload.continuation ?? "recorded",
+                      )}
                     </span>
                   ))}
                 </div>

@@ -25,3 +25,6 @@ data/
 *.orig
 *.pem
 *.key
+
+.venv/
+.ruff_cache/

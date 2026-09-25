@@ -1,9 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  emptyJournalV2,
-  type DecisionOpportunityV1,
-  type PlayerContextV2,
-} from "@werewolf/contracts";
+import { type DecisionOpportunityV1, type PlayerContextV2 } from "@werewolf/contracts";
 import { LabRepository, DecisionStore, openDatabase, type DatabaseConnection } from "@werewolf/db";
 import { AskJevProvider, FakeDecisionProvider, type JevRequest } from "@werewolf/llm";
 import {
@@ -12,7 +8,7 @@ import {
   actorFixtures,
   refreshFixtureBrief,
 } from "./testing/actor-fixtures";
-import { actorBriefing, actorChoices, prepareActorJevAction } from "./jev-actor";
+import { actorBriefing, prepareActorJevAction } from "./jev-actor";
 import { assessActorChoice } from "./jev-semantics";
 import { DecisionExecutorV2, type ExecuteDecisionOptions } from "./decisions-v2";
 import { decisionRequestV31, normalizeV31Submission, validateV31Submission } from "./request-v3-1";
@@ -256,9 +252,9 @@ describe("actor perspective Jev workflow", () => {
       provider(["abstain", target], requests),
     ).execute(options);
     expect(requests).toHaveLength(2);
-    expect((requests[1]!.state as any).reconsideration.issues[0]).toContain(
-      "sole remaining werewolf",
-    );
+    expect(
+      (requests[1]!.state as { reconsideration: { issues: string[] } }).reconsideration.issues[0],
+    ).toContain("sole remaining werewolf");
     expect(
       store.get<DecisionOpportunityV1>(game.id, `decision:${op.id}`)?.bestSubmission,
     ).toMatchObject({ mode: "direct", choiceHandles: [target] });

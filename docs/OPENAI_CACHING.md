@@ -38,10 +38,13 @@ attempt ledger.
 
 ## Notebook compaction
 
-New `journal_v3` games keep free-form journals with a 16,000 estimated-token ceiling and a 32,000
-context budget. Routine reflections append concise prose or replace the journal to consolidate it.
-Size is UTF-8 prose bytes / 3, rounded up; bookkeeping does not consume this journal budget. The
-larger budget is not a target to fill.
+Current Jev games use `journal_v4`: free-form journals plus current action/attention briefs. They
+keep journals with a 16,000 estimated-token ceiling and a 32,000 context budget. Routine reflections
+append concise prose or replace the journal to consolidate it. Prose size is UTF-8 bytes / 3,
+rounded up. The v4 aggregate also charges the serialized current decision brief; journal storage
+metadata is excluded. The larger budget is not a target to fill. Compaction preserves the brief, its
+owner, and its evidence revision exactly. See [the actor workflow](ACTOR_WORKFLOW.md) for brief
+limits and freshness checks.
 
 When an update exceeds the limit, its complete candidate is checkpointed without acknowledging the
 reflection. The configured player LLM summarizes the prose toward a soft 75% target, retaining
@@ -70,6 +73,18 @@ V3.1/V3.2 use at most four explicit write boundaries on GPT-5.6 and later:
 | L2              | Durable public outcomes: ballots, eliminations, role reveals and moderator announcements                                 | A new or corrected durable outcome                                          |
 | L3              | Current public view, including the rolling speech window, phase/day and alive roster                                     | New speech, window movement or phase changes                                |
 | Uncached suffix | This player's authorized private facts, notebook, selected evidence, response docket, immediate task and repair feedback | Player or decision changes                                                  |
+
+```mermaid
+flowchart TD
+    L0["L0: common behavior and response schema"] --> L1["L1: frozen public game rules"]
+    L1 --> L2["L2: durable public outcomes"]
+    L2 --> L3["L3: current public view and rolling speech window"]
+    L3 --> Private["Private suffix: own facts, journal, task, repair feedback"]
+```
+
+A cache match depends on the preceding prefix: changing L1 prevents reuse of the old L2/L3 prefix,
+while changing only the private suffix leaves all four shared prefixes intact. These are request
+layout layers, not independently addressable application caches.
 
 Each boundary remains within the API's four-write limit. The earlier per-record layout marked so
 many endpoints that only its last four could be written, crowding out the immutable boundaries. It

@@ -1,6 +1,13 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { parseArgs } from "node:util";
+import { z } from "zod";
+import {
+  EvaluationRows,
+  HoldoutReport,
+  ReflectionReport,
+  type EvaluationRow,
+} from "./lib/actor-report";
 import { actorEvaluationCases } from "./jev-actor-eval";
 
 const { values } = parseArgs({
@@ -20,32 +27,26 @@ if (values.help)
 else if (values.holdouts || values.reflection) {
   if (!values.holdouts || !values.reflection || !values.out)
     throw new Error("Supply --holdouts REPORT.json --reflection REPORT.json --out NEW_REPORT.json");
-  const held = JSON.parse(await readFile(values.holdouts, "utf8"));
-  const reflection = JSON.parse(await readFile(values.reflection, "utf8"));
+  const held = HoldoutReport.parse(JSON.parse(await readFile(values.holdouts, "utf8")));
+  const reflection = ReflectionReport.parse(JSON.parse(await readFile(values.reflection, "utf8")));
   if (held.results.length !== 8 || !reflection.luna || reflection.results.length)
     throw new Error("Expected eight paired outcomes and one separate reflection receipt");
   const summarize = (workflow: string) => {
-    const rows = held.results.filter((row: any) => row.workflow === workflow);
-    const attempts = rows.flatMap((row: any) => row.attempts);
+    const rows = held.results.filter((row) => row.workflow === workflow);
+    const attempts = rows.flatMap((row) => row.attempts);
     return {
       cases: rows.length,
-      firstChoicePasses: rows.filter((row: any) => row.choices[0]?.passes).length,
-      failures: rows.filter((row: any) => !row.choices[0]?.passes).map((row: any) => row.label),
-      modelVersions: [...new Set(attempts.map((attempt: any) => attempt.model))],
-      inputTokens: attempts.reduce(
-        (total: number, attempt: any) => total + (attempt.usage.inputTokens ?? 0),
-        0,
-      ),
-      latencyMs: attempts.reduce(
-        (total: number, attempt: any) => total + (attempt.latencyMs ?? 0),
-        0,
-      ),
+      firstChoicePasses: rows.filter((row) => row.choices[0]?.passes).length,
+      failures: rows.filter((row) => !row.choices[0]?.passes).map((row) => row.label),
+      modelVersions: [...new Set(attempts.map((attempt) => attempt.model))],
+      inputTokens: attempts.reduce((total, attempt) => total + (attempt.usage.inputTokens ?? 0), 0),
+      latencyMs: attempts.reduce((total, attempt) => total + (attempt.latencyMs ?? 0), 0),
       measuredAttempts: attempts.length,
       semanticReconsiderations: rows.reduce(
-        (total: number, row: any) => total + row.semanticReconsiderationsMeasured,
+        (total, row) => total + row.semanticReconsiderationsMeasured,
         0,
       ),
-      nonJevCalls: rows.reduce((total: number, row: any) => total + row.addedLlmCallsMeasured, 0),
+      nonJevCalls: rows.reduce((total, row) => total + row.addedLlmCallsMeasured, 0),
     };
   };
   const summary = {
@@ -78,18 +79,19 @@ else if (values.holdouts || values.reflection) {
     if (resolve(path).startsWith("/mnt/")) throw new Error("Use native Linux paths");
   const current = actorEvaluationCases();
   const load = async (directory: string, verify: boolean) => {
-    const results = JSON.parse(await readFile(join(directory, "results.json"), "utf8")) as Record<
-      string,
-      any
-    >[];
+    const results = EvaluationRows.parse(
+      JSON.parse(await readFile(join(directory, "results.json"), "utf8")),
+    );
+    if (new Set(results.map((row) => row.label)).size !== results.length)
+      throw new Error("Duplicate case label");
     if (results.length !== current.length) throw new Error("Incomplete scenario set");
     return Promise.all(
       results.map(async (row) => {
         const fixture = current.find((c) => c.label === row.label);
         if (!fixture) throw new Error("Unknown case label");
-        const input = JSON.parse(
-          await readFile(join(directory, `${row.label}.input.json`), "utf8"),
-        );
+        const input = z
+          .looseObject({ request: z.unknown() })
+          .parse(JSON.parse(await readFile(join(directory, `${row.label}.input.json`), "utf8")));
         if (verify && JSON.stringify(input.request) !== JSON.stringify(fixture.request))
           throw new Error(`Revised prompt changed: ${row.label}`);
         return { ...row, input };
@@ -98,13 +100,13 @@ else if (values.holdouts || values.reflection) {
   };
   const baseline = await load(values.baseline, false),
     revised = await load(values.revised, true);
-  const summarize = (rows: Record<string, any>[]) => ({
+  const summarize = (rows: EvaluationRow[]) => ({
     cases: rows.length,
     passed: rows.filter((r) => r.passed).length,
     failures: rows.filter((r) => !r.passed).map((r) => r.label),
     invalidOrTransportErrors: rows.filter((r) => r.error).length,
     models: [...new Set(rows.map((r) => r.response?.model))],
-    inputTokens: rows.reduce((n, r) => n + (r.response?.usage.input_tokens ?? 0), 0),
+    inputTokens: rows.reduce((n, r) => n + (r.response?.usage?.input_tokens ?? 0), 0),
     latencyMs: rows.reduce((n, r) => n + r.latencyMs, 0),
     byConstruction: { retries: 0, addedLlmCalls: 0 },
   });

@@ -2,12 +2,12 @@
 """Capture an immutable Day 1 base and fork independent, writable pilot databases."""
 
 import argparse
-from contextlib import closing
 import hashlib
 import json
 import re
 import shutil
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 SCHEMA = "moon_council_day1_base_v1"

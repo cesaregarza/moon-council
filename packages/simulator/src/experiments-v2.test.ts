@@ -2,7 +2,6 @@ import {
   ExperimentSpecV2Schema,
   GameConfigV2Schema,
   type DecisionOpportunityV1,
-  type GameEventV1,
 } from "@werewolf/contracts";
 import { DecisionStore, LabRepository, openDatabase, type DatabaseConnection } from "@werewolf/db";
 import { createGameCreatedEvent, createGameState, STARTER_ROLES } from "@werewolf/engine";

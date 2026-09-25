@@ -5,13 +5,11 @@ import type {
   DecisionReportV2,
   DecisionReportWithSpeakerIntentV1,
   DiscussionBidV3,
-  DiscussionPlanV3,
   GameConfigV2,
   GameEventV1,
   ListenerBidV3,
   SpeakerIntentV1,
   SpeechSubmissionV3,
-  TargetChoiceSubmissionV3,
 } from "@werewolf/contracts";
 import { DecisionStore, LabRepository } from "@werewolf/db";
 import {

@@ -122,7 +122,7 @@ describe("HTTP control surface", () => {
     });
     expect(
       (
-        built.repository.listEvents(gameId).find((event) => event.type === "game.created")?.payload
+        built.repository.listEvents(gameId).find((event) => event.type === "game.created")!.payload
           .config as { maxTotalTokens: number }
       ).maxTotalTokens,
     ).toBe(2_000_000);
@@ -294,7 +294,7 @@ describe("HTTP control surface", () => {
     });
     expect(
       (
-        built.repository.listEvents(id).find((event) => event.type === "game.created")?.payload
+        built.repository.listEvents(id).find((event) => event.type === "game.created")!.payload
           .config as { maxTotalTokens: number }
       ).maxTotalTokens,
     ).toBe(1_000);

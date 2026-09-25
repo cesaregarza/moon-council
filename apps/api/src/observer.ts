@@ -1,5 +1,4 @@
 import {
-  emptyJournalV2,
   type DecisionOpportunityV1,
   type GameEventV1,
   type PrivateJournalV1,
@@ -106,8 +105,8 @@ export function replaySlice(
   viewer: Viewer,
   at?: number,
 ): GameEventV1[] {
-  let all = repository.listEvents(id);
   const game = repository.getGame(id)!;
+  let all = repository.listEvents(id);
   if (!all.length && game.config.schemaVersion === "game_config_v1") {
     // An unstarted legacy lobby has no historical events. Project setup in memory only.
     const setup = createGameCreatedEvent(createGameState(id, game.config));
@@ -134,7 +133,6 @@ export function observerEvents(
   viewer: Viewer,
   at?: number,
 ): GameEventV1[] {
-  const game = repository.getGame(id)!;
   const events = replaySlice(repository, id, viewer, at).filter((e) =>
     allowed(repository, id, viewer, e),
   );

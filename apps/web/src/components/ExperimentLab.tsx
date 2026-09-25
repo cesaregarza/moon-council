@@ -6,7 +6,7 @@ import { formatCompactCount } from "../format";
 interface Props {
   games: GameListItem[];
   experiments: ExperimentRecord[];
-  onCreated(): void;
+  onCreated: () => void;
 }
 
 export function ExperimentLab({ games, experiments, onCreated }: Props) {
@@ -111,7 +111,7 @@ export function ExperimentLab({ games, experiments, onCreated }: Props) {
             Unknown usage or missing rates makes the cost estimate a lower bound.
           </p>
         </details>
-        <button className="primary wide" onClick={create}>
+        <button className="primary wide" onClick={() => void create()}>
           Queue experiment
         </button>
       </div>
@@ -197,12 +197,12 @@ export function ExperimentLab({ games, experiments, onCreated }: Props) {
             )}
             {experiment.error && <div className="error-banner">{experiment.error}</div>}
             {experiment.status === "paused" && (
-              <button onClick={() => control(experiment.id, "resume")}>
+              <button onClick={() => void control(experiment.id, "resume")}>
                 Resume unresolved runs
               </button>
             )}
             {["running", "queued"].includes(experiment.status) && (
-              <button onClick={() => control(experiment.id, "pause")}>Pause batch</button>
+              <button onClick={() => void control(experiment.id, "pause")}>Pause batch</button>
             )}
           </article>
         ))}

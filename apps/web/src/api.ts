@@ -107,7 +107,7 @@ export interface DecisionOpportunity {
   viewId: string;
   baseJournalVersion: number;
   packet?: Record<string, unknown>;
-  status: "open" | "pending" | "committed" | "paused" | string;
+  status: string;
   best?: Record<string, unknown> | null;
   recovery: number;
   createdAt: string;
@@ -179,10 +179,9 @@ export interface ProviderHealth {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: { "content-type": "application/json", ...init?.headers },
-  });
+  const headers = new Headers(init?.headers);
+  if (!headers.has("content-type")) headers.set("content-type", "application/json");
+  const response = await fetch(path, { ...init, headers });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error(body.message ?? body.error ?? `Request failed with ${response.status}`);

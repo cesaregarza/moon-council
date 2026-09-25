@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GameConfigSchema, type GameEventV1, type RoleDefinitionV1 } from "@werewolf/contracts";
+import { GameConfigSchema, type GameEventV1 } from "@werewolf/contracts";
 import {
   STARTER_ROLES,
   checkWinners,

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
   ExperimentSummarySchema,
-  type ExperimentSummaryV1,
   type StoredExperimentSpec,
   type StoredGameConfig,
   type ExperimentSummaryV2,

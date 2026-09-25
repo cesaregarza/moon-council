@@ -32,14 +32,6 @@ function v2Candidates(context: PlayerContextV2, kind: ActionProposalV2["kind"]):
     .slice(0, 16);
 }
 
-function sourceText(source: ContextSourceV2): string {
-  try {
-    return JSON.stringify(source.data);
-  } catch {
-    return "";
-  }
-}
-
 function evidenceTarget(
   context: PlayerContextV2,
   candidates: string[],
@@ -166,14 +158,12 @@ function fakeV2Report(request: DecisionRequest<unknown>): DecisionReportV2 {
     const speech = context.closing
       ? {
           text: "I dispute the existing case; uncertainty is not evidence of alignment.",
-          acts: context.responseDocket
-            .slice(0, 1)
-            .map((sourceId) => ({
-              kind: "reply" as const,
-              targetId: null,
-              claim: "Please distinguish an uncertain inference from a verified result.",
-              sourceId,
-            })),
+          acts: context.responseDocket.slice(0, 1).map((sourceId) => ({
+            kind: "reply" as const,
+            targetId: null,
+            claim: "Please distinguish an uncertain inference from a verified result.",
+            sourceId,
+          })),
           respondsTo: context.responseDocket.slice(0, 6),
         }
       : (seer.speech ?? {

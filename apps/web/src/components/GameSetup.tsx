@@ -5,7 +5,7 @@ import { api } from "../api";
 
 interface Props {
   roles: RoleDefinitionV1[];
-  onCreated(gameId: string): void;
+  onCreated: (gameId: string) => void;
   initialConfig?: StoredGameConfig;
 }
 
@@ -570,7 +570,11 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
             />
             <span>Reveal roles on death</span>
           </label>
-          <button className="primary" disabled={busy || latestRoles.length === 0} onClick={create}>
+          <button
+            className="primary"
+            disabled={busy || latestRoles.length === 0}
+            onClick={() => void create()}
+          >
             {busy ? "Preparing…" : initialConfig ? "Clone simulation" : "Create V3.1 simulation"}
           </button>
         </div>

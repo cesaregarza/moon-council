@@ -4,7 +4,7 @@ import { api } from "../api";
 
 interface Props {
   roles: RoleDefinitionV1[];
-  onSaved(): void;
+  onSaved: () => void;
 }
 
 export function RoleLab({ roles, onSaved }: Props) {
@@ -60,7 +60,7 @@ export function RoleLab({ roles, onSaved }: Props) {
             <div className="eyebrow">Restricted role_v1 AST</div>
             <h2>Role workshop</h2>
           </div>
-          <button className="primary" onClick={save}>
+          <button className="primary" onClick={() => void save()}>
             Save new version
           </button>
         </div>
