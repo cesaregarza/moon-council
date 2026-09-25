@@ -77,12 +77,13 @@ export class DecisionExecutorV2 {
     const game = this.repository.getGame(op.gameId)!;
     if (game.config.schemaVersion !== "game_config_v2") throw new Error("V2 execution requires V2 config");
     const config = game.config;
-    if(config.decisionEngine.workflow==="journal_v4" && usesJev(op,config)) {
+    if (config.decisionEngine.workflow === "journal_v4" && usesJev(op, config)) {
       if (op.jevState?.semanticRejected) {
         throw new DecisionPausedError("semantic review exhausted; acknowledge the recorded anomaly explicitly before resuming");
       }
-      if(!currentDecisionBrief(op.packet) || op.playerId!==op.packet.self.id) {
-        op.status="paused";this.store.save(op);
+      if (!currentDecisionBrief(op.packet) || op.playerId !== op.packet.self.id) {
+        op.status = "paused";
+        this.store.save(op);
         throw new DecisionPausedError("invalid actor brief in persisted decision; refusing direct execution");
       }
     }
@@ -217,15 +218,19 @@ export class DecisionExecutorV2 {
         const assessment = stage?.assess?.(rawSubmission);
         if (assessment?.issues.length) {
           const exhausted = Boolean(op.jevState?.semanticIssues);
-          const next: DecisionOpportunityV1 = { ...op, jevState: {
-            stage: "decide",
-            evaluation: op.jevState?.evaluation ?? rawSubmission,
-            semanticIssues: assessment.issues,
-            semanticRejected: exhausted,
-            ...(exhausted ? {
-              semanticFinal: { attemptId: attempt.id, report, submission },
-            } : {}),
-          }, status: exhausted ? "paused" : "open" };
+          const next: DecisionOpportunityV1 = {
+            ...op,
+            status: exhausted ? "paused" : "open",
+            jevState: {
+              stage: "decide",
+              evaluation: op.jevState?.evaluation ?? rawSubmission,
+              semanticIssues: assessment.issues,
+              semanticRejected: exhausted,
+              ...(exhausted ? {
+                semanticFinal: { attemptId: attempt.id, report, submission },
+              } : {}),
+            },
+          };
           attempt.status = "valid";
           this.store.atomic(() => {
             const current = this.store.get<DecisionOpportunityV1>(op.gameId, `decision:${op.id}`);

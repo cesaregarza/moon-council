@@ -28,7 +28,8 @@ describe.skipIf(process.platform==="win32")("Jev subprocess lifecycle",()=>{
     let live=true;
     for(let n=0;n<30&&live;n++) {
       try {const stat=await readFile(`/proc/${pid}/stat`,"utf8");live=stat.split(") ")[1]![0]!=="Z";}
-      catch(error) {if((error as NodeJS.ErrnoException).code==="ENOENT")live=false;else throw error;}
+      // A process can disappear before open (ENOENT) or between open/read (ESRCH).
+      catch(error) {if(["ENOENT","ESRCH"].includes((error as NodeJS.ErrnoException).code??""))live=false;else throw error;}
       if(live) await new Promise(resolve=>setTimeout(resolve,20));
     }
     try {expect(live).toBe(false);} finally {if(live)process.kill(pid,"SIGKILL");}
