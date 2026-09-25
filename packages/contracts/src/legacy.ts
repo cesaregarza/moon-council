@@ -84,7 +84,10 @@ export const RoleDefinitionSchema = z.object({
   passives: z
     .object({
       voteWeight: z.number().int().min(1).max(5).default(1),
-      teamChannel: z.string().regex(/^[a-z][a-z0-9_-]*$/).optional(),
+      teamChannel: z
+        .string()
+        .regex(/^[a-z][a-z0-9_-]*$/)
+        .optional(),
     })
     .default({ voteWeight: 1 }),
   winCondition: z.object({
@@ -110,7 +113,11 @@ export const SafetyLimitsSchema = z.object({
 });
 
 export const DiscussionPolicySchema = z.object({
-  readyQuorum: z.number().min(0.5).max(1).default(2 / 3),
+  readyQuorum: z
+    .number()
+    .min(0.5)
+    .max(1)
+    .default(2 / 3),
   maxFollowUpsPerPlayer: z.number().int().min(0).max(8).default(2),
   maxFollowUpSlotsFactor: z.number().min(0).max(2).default(0.5),
 });
@@ -125,19 +132,34 @@ export const GameConfigSchema = z
     revealRolesOnDeath: z.boolean().default(true),
     moderatorModel: z.string().min(1).optional(),
     moderatorNarration: z.boolean().default(false),
-    discussion: DiscussionPolicySchema.default({ readyQuorum: 2 / 3, maxFollowUpsPerPlayer: 2, maxFollowUpSlotsFactor: 0.5 }),
-    safety: SafetyLimitsSchema.default({ maxCycles: 8, maxModelCalls: 500, maxOutputTokens: 600, maxWallClockMs: 1_800_000 }),
+    discussion: DiscussionPolicySchema.default({
+      readyQuorum: 2 / 3,
+      maxFollowUpsPerPlayer: 2,
+      maxFollowUpSlotsFactor: 0.5,
+    }),
+    safety: SafetyLimitsSchema.default({
+      maxCycles: 8,
+      maxModelCalls: 500,
+      maxOutputTokens: 600,
+      maxWallClockMs: 1_800_000,
+    }),
     speedMs: z.number().int().min(0).max(30_000).default(500),
   })
   .superRefine((value, context) => {
     if (value.seats.length !== value.roleDeck.length) {
-      context.addIssue({ code: "custom", message: "roleDeck must contain exactly one role per seat" });
+      context.addIssue({
+        code: "custom",
+        message: "roleDeck must contain exactly one role per seat",
+      });
     }
     if (!value.roleDeck.some((role) => role.alignment === "werewolf")) {
       context.addIssue({ code: "custom", message: "roleDeck must contain at least one werewolf" });
     }
     if (!value.roleDeck.some((role) => role.alignment === "village")) {
-      context.addIssue({ code: "custom", message: "roleDeck must contain at least one village role" });
+      context.addIssue({
+        code: "custom",
+        message: "roleDeck must contain at least one village role",
+      });
     }
   });
 export type GameConfigV1 = z.infer<typeof GameConfigSchema>;
@@ -153,8 +175,17 @@ export const CreateGameRequestSchema = z.object({
   revealRolesOnDeath: z.boolean().default(true),
   moderatorModel: z.string().optional(),
   moderatorNarration: z.boolean().default(false),
-  discussion: DiscussionPolicySchema.default({ readyQuorum: 2 / 3, maxFollowUpsPerPlayer: 2, maxFollowUpSlotsFactor: 0.5 }),
-  safety: SafetyLimitsSchema.default({ maxCycles: 8, maxModelCalls: 500, maxOutputTokens: 600, maxWallClockMs: 1_800_000 }),
+  discussion: DiscussionPolicySchema.default({
+    readyQuorum: 2 / 3,
+    maxFollowUpsPerPlayer: 2,
+    maxFollowUpSlotsFactor: 0.5,
+  }),
+  safety: SafetyLimitsSchema.default({
+    maxCycles: 8,
+    maxModelCalls: 500,
+    maxOutputTokens: 600,
+    maxWallClockMs: 1_800_000,
+  }),
   speedMs: z.number().int().min(0).max(30_000).default(500),
 });
 export type CreateGameRequestV1 = z.infer<typeof CreateGameRequestSchema>;
@@ -239,7 +270,12 @@ export const PlayerViewSchema = z.object({
   }),
   knownAllies: z.array(z.object({ id: z.string(), name: z.string() })),
   players: z.array(
-    z.object({ id: z.string(), name: z.string(), alive: z.boolean(), revealedRole: z.string().optional() }),
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      alive: z.boolean(),
+      revealedRole: z.string().optional(),
+    }),
   ),
   publicEvents: z.array(GameEventSchema),
   teamEvents: z.array(GameEventSchema),
@@ -256,10 +292,12 @@ export const ExperimentSpecSchema = z.object({
   runs: z.number().int().min(1).max(50),
   concurrency: z.number().int().min(1).max(3).default(1),
   baseSeed: z.string().min(1),
-  pricingPerMillionTokens: z.record(
-    z.string(),
-    z.object({ input: z.number().nonnegative(), output: z.number().nonnegative() }),
-  ).default({}),
+  pricingPerMillionTokens: z
+    .record(
+      z.string(),
+      z.object({ input: z.number().nonnegative(), output: z.number().nonnegative() }),
+    )
+    .default({}),
 });
 export type ExperimentSpecV1 = z.infer<typeof ExperimentSpecSchema>;
 
@@ -268,7 +306,10 @@ export const ExperimentSummarySchema = z.object({
   runsCompleted: z.number().int(),
   winsByAlignment: z.record(z.string(), z.number().int()),
   winsByRole: z.record(z.string(), z.number().int()),
-  survivalByRole: z.record(z.string(), z.object({ survived: z.number().int(), total: z.number().int() })),
+  survivalByRole: z.record(
+    z.string(),
+    z.object({ survived: z.number().int(), total: z.number().int() }),
+  ),
   voteAccuracy: z.number().min(0).max(1),
   averageCycles: z.number(),
   averageMessages: z.number(),

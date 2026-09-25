@@ -4,7 +4,7 @@ import { api } from "../api";
 
 interface Props {
   roles: RoleDefinitionV1[];
-  onSaved(): void;
+  onSaved: () => void;
 }
 
 export function RoleLab({ roles, onSaved }: Props) {
@@ -40,7 +40,11 @@ export function RoleLab({ roles, onSaved }: Props) {
         <h2>Roles</h2>
         {roles.map((role) => (
           <button
-            className={selected?.id === role.id && selected.version === role.version ? "role-link active" : "role-link"}
+            className={
+              selected?.id === role.id && selected.version === role.version
+                ? "role-link active"
+                : "role-link"
+            }
             key={`${role.id}:${role.version}`}
             onClick={() => setSelected(role)}
           >
@@ -56,11 +60,25 @@ export function RoleLab({ roles, onSaved }: Props) {
             <div className="eyebrow">Restricted role_v1 AST</div>
             <h2>Role workshop</h2>
           </div>
-          <button className="primary" onClick={save}>Save new version</button>
+          <button className="primary" onClick={() => void save()}>
+            Save new version
+          </button>
         </div>
-        <p className="muted">Descriptions influence play, but only validated actions, effects, targets, passives, and predicates influence rules.</p>
-        <textarea className="code-editor" spellCheck={false} value={source} onChange={(event) => setSource(event.target.value)} />
-        {message && <div className={message.startsWith("Saved") ? "success-banner" : "error-banner"}>{message}</div>}
+        <p className="muted">
+          Descriptions influence play, but only validated actions, effects, targets, passives, and
+          predicates influence rules.
+        </p>
+        <textarea
+          className="code-editor"
+          spellCheck={false}
+          value={source}
+          onChange={(event) => setSource(event.target.value)}
+        />
+        {message && (
+          <div className={message.startsWith("Saved") ? "success-banner" : "error-banner"}>
+            {message}
+          </div>
+        )}
       </div>
     </section>
   );

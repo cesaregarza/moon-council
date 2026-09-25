@@ -17,7 +17,9 @@ export interface DatabaseConnection {
   close(): void;
 }
 
-export function resolveDatabasePath(configured = process.env.DATABASE_URL ?? "./data/werewolf.db"): string {
+export function resolveDatabasePath(
+  configured = process.env.DATABASE_URL ?? "./data/werewolf.db",
+): string {
   const normalized = configured.startsWith("file:") ? configured.slice(5) : configured;
   if (normalized === ":memory:") return normalized;
   return isAbsolute(normalized) ? normalized : resolve(repositoryRoot, normalized);
@@ -34,4 +36,3 @@ export function openDatabase(configured?: string): DatabaseConnection {
   migrate(db, { migrationsFolder });
   return { db, sqlite, path, close: () => sqlite.close() };
 }
-

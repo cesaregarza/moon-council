@@ -40,7 +40,9 @@ let cached: { path: string; mtimeMs: number; credentials: CodexCredentials } | u
  * Re-reads auth.json whenever the CLI rewrites it, so a background token refresh is picked
  * up without restarting the runner.
  */
-export async function loadCodexCredentials(path = join(codexHome(), "auth.json")): Promise<CodexCredentials> {
+export async function loadCodexCredentials(
+  path = join(codexHome(), "auth.json"),
+): Promise<CodexCredentials> {
   const { mtimeMs } = await stat(path).catch(() => {
     throw new Error(`Codex credentials not found at ${path}; run \`codex login\``);
   });
@@ -48,8 +50,10 @@ export async function loadCodexCredentials(path = join(codexHome(), "auth.json")
   const parsed = JSON.parse(await readFile(path, "utf8")) as { tokens?: Record<string, unknown> };
   const accessToken = parsed.tokens?.access_token;
   const accountId = parsed.tokens?.account_id;
-  if (typeof accessToken !== "string" || !accessToken) throw new Error(`No access_token in ${path}; run \`codex login\``);
-  if (typeof accountId !== "string" || !accountId) throw new Error(`No account_id in ${path}; run \`codex login\``);
+  if (typeof accessToken !== "string" || !accessToken)
+    throw new Error(`No access_token in ${path}; run \`codex login\``);
+  if (typeof accountId !== "string" || !accountId)
+    throw new Error(`No account_id in ${path}; run \`codex login\``);
   const credentials = { accessToken, accountId };
   cached = { path, mtimeMs, credentials };
   return credentials;
@@ -60,7 +64,9 @@ function numberOrNull(value: unknown): number | null {
 }
 
 function nested(value: unknown, key: string): number | null {
-  return value && typeof value === "object" ? numberOrNull((value as Record<string, unknown>)[key]) : null;
+  return value && typeof value === "object"
+    ? numberOrNull((value as Record<string, unknown>)[key])
+    : null;
 }
 
 function responsesUsage(value: unknown): UsageV2 {
@@ -81,12 +87,14 @@ function outputText(response: Record<string, unknown>): string {
   if (!Array.isArray(output)) return "";
   const parts: string[] = [];
   for (const item of output) {
-    const content = item && typeof item === "object" ? (item as Record<string, unknown>).content : undefined;
+    const content =
+      item && typeof item === "object" ? (item as Record<string, unknown>).content : undefined;
     if (!Array.isArray(content)) continue;
     for (const chunk of content) {
       if (!chunk || typeof chunk !== "object") continue;
       const { type, text } = chunk as { type?: unknown; text?: unknown };
-      if (typeof text === "string" && (type === undefined || type === "output_text")) parts.push(text);
+      if (typeof text === "string" && (type === undefined || type === "output_text"))
+        parts.push(text);
     }
   }
   return parts.join("");
@@ -125,7 +133,9 @@ function layeredInput(prompt: PreparedPrompt): unknown[] {
  * Consumes the SSE body and returns the terminal response object. The backend rejects
  * non-streaming requests, so this is the only available shape.
  */
-async function readStreamedResponse(body: ReadableStream<Uint8Array>): Promise<Record<string, unknown>> {
+async function readStreamedResponse(
+  body: ReadableStream<Uint8Array>,
+): Promise<Record<string, unknown>> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -148,8 +158,10 @@ async function readStreamedResponse(body: ReadableStream<Uint8Array>): Promise<R
       } catch {
         continue;
       }
-      if (event.type === "response.completed") completed = event.response as Record<string, unknown>;
-      if (event.type === "response.failed" || event.type === "error") failure = JSON.stringify(event).slice(0, 400);
+      if (event.type === "response.completed")
+        completed = event.response as Record<string, unknown>;
+      if (event.type === "response.failed" || event.type === "error")
+        failure = JSON.stringify(event).slice(0, 400);
     }
   }
   if (failure) throw new Error(`Codex direct stream reported failure: ${failure}`);
@@ -171,7 +183,11 @@ export class CodexDirectProvider implements DecisionProvider {
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: CodexDirectProviderOptions = {}) {
-    this.baseUrl = (options.baseUrl ?? process.env.CODEX_DIRECT_BASE_URL?.trim() ?? DEFAULT_BASE_URL).replace(/\/$/, "");
+    this.baseUrl = (
+      options.baseUrl ??
+      process.env.CODEX_DIRECT_BASE_URL?.trim() ??
+      DEFAULT_BASE_URL
+    ).replace(/\/$/, "");
     this.timeoutMs = options.timeoutMs ?? Number(process.env.CODEX_TIMEOUT_MS ?? 120_000);
     this.loadCredentials = options.loadCredentials ?? (() => loadCodexCredentials());
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -184,7 +200,11 @@ export class CodexDirectProvider implements DecisionProvider {
     const reportUsage = (usage: UsageV2): void => {
       if (usageReported) return;
       usageReported = true;
-      request.onUsage?.(usage, { provider: "codex_direct", model: request.model, outputLimitEnforced: true });
+      request.onUsage?.(usage, {
+        provider: "codex_direct",
+        model: request.model,
+        outputLimitEnforced: true,
+      });
     };
 
     const timeoutMs = request.timeoutMs ?? this.timeoutMs;
@@ -234,7 +254,9 @@ export class CodexDirectProvider implements DecisionProvider {
       if (!response.ok) {
         const detail = (await response.text().catch(() => "")).slice(0, 400);
         if (response.status === 401 || response.status === 403) {
-          throw new Error(`Codex direct auth rejected (${response.status}); refresh with \`codex login\`: ${detail}`);
+          throw new Error(
+            `Codex direct auth rejected (${response.status}); refresh with \`codex login\`: ${detail}`,
+          );
         }
         throw new Error(`Codex direct request failed (${response.status}): ${detail}`);
       }
@@ -259,8 +281,10 @@ export class CodexDirectProvider implements DecisionProvider {
       };
     } catch (error) {
       reportUsage(unknownUsage());
-      if (timedOut) throw new Error(`Codex direct decision timed out after ${timeoutMs}ms`, { cause: error });
-      if (request.signal?.aborted) throw new Error("Codex direct decision aborted", { cause: error });
+      if (timedOut)
+        throw new Error(`Codex direct decision timed out after ${timeoutMs}ms`, { cause: error });
+      if (request.signal?.aborted)
+        throw new Error("Codex direct decision aborted", { cause: error });
       throw error;
     } finally {
       clearTimeout(timeout);

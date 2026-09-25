@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react", "oxc"],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "typescript/no-explicit-any": "error",
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "react/set-state-in-effect": "off"
+  },
+  "ignorePatterns": ["**/dist/**", "data/**", "research/**"],
+  "options": {
+    "typeAware": true
+  }
+}

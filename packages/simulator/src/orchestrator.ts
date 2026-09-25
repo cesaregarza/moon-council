@@ -7,7 +7,6 @@ import {
   type AgentDecisionV1,
   type GameEventV1,
   type InitiativeDecisionSchema as InitiativeSchemaType,
-  type PrivateJournalV1,
   type ProviderUsageV1,
 } from "@werewolf/contracts";
 import { LabRepository, type GameRecord } from "@werewolf/db";
@@ -53,7 +52,8 @@ export class GameOrchestrator {
   ) {}
 
   initializeGame(game: GameRecord): GameState {
-    if (game.config.schemaVersion === "game_config_v2") return new V2GameOrchestrator(this.repository, this.provider).initialize(game.id);
+    if (game.config.schemaVersion === "game_config_v2")
+      return new V2GameOrchestrator(this.repository, this.provider).initialize(game.id);
     const existing = this.repository.listEvents(game.id);
     if (existing.length > 0) return reduceGame(game.id, existing);
     const state = createGameState(game.id, game.config);
@@ -72,7 +72,8 @@ export class GameOrchestrator {
   async runGameStep(gameId: string): Promise<void> {
     const game = this.repository.getGame(gameId);
     if (!game) throw new Error(`Unknown game ${gameId}`);
-    if (game.config.schemaVersion === "game_config_v2") return new V2GameOrchestrator(this.repository, this.provider).runGameStep(gameId);
+    if (game.config.schemaVersion === "game_config_v2")
+      return new V2GameOrchestrator(this.repository, this.provider).runGameStep(gameId);
     if (!["queued", "running", "stepping", "lobby"].includes(game.status)) return;
     this.initializeGame(game);
     const failures = new Set<string>();
@@ -91,7 +92,9 @@ export class GameOrchestrator {
           });
         }
         this.repository.appendEvent(gameId, transition(this.state(gameId), "night_team", 1));
-        this.repository.updateGame(gameId, { status: game.status === "stepping" ? "stepping" : "running" });
+        this.repository.updateGame(gameId, {
+          status: game.status === "stepping" ? "stepping" : "running",
+        });
         return;
       }
 
@@ -119,16 +122,25 @@ export class GameOrchestrator {
         const eliminated = resolved
           .filter((event) => event.type === "player.eliminated")
           .map((event) => ({
-            playerName: event.payload.playerName,
-            ...(event.payload.roleName ? { roleName: event.payload.roleName } : {}),
+            playerName: String(event.payload.playerName),
+            ...(typeof event.payload.roleName === "string"
+              ? { roleName: event.payload.roleName }
+              : {}),
           }));
         const text =
           eliminated.length > 0
             ? eliminated
-                .map((player) => `${player.playerName} was eliminated overnight${player.roleName ? ` and was ${player.roleName}` : ""}.`)
+                .map(
+                  (player) =>
+                    `${player.playerName} was eliminated overnight${player.roleName ? ` and was ${player.roleName}` : ""}.`,
+                )
                 .join(" ")
             : "Dawn breaks. Nobody was eliminated overnight.";
-        const narration = await this.narrate(state, { kind: "night_result", eliminated, fallbackText: text });
+        const narration = await this.narrate(state, {
+          kind: "night_result",
+          eliminated,
+          fallbackText: text,
+        });
         this.repository.appendEvent(gameId, {
           type: "moderator.announcement",
           phase: "day_announcement",
@@ -157,7 +169,9 @@ export class GameOrchestrator {
         this.ensureNoProviderOutage(failures);
         state = this.state(gameId);
         const result = resolveVote(state);
-        const target = result.targetId ? state.players.find((player) => player.id === result.targetId) : undefined;
+        const target = result.targetId
+          ? state.players.find((player) => player.id === result.targetId)
+          : undefined;
         this.repository.appendEvent(gameId, {
           type: "vote.resolved",
           phase: "day_resolution",
@@ -206,7 +220,10 @@ export class GameOrchestrator {
           visibility: "public",
           payload: { reason: error.message },
         });
-        this.repository.updateGame(gameId, { status: "budget_exhausted", outcome: { reason: error.message } });
+        this.repository.updateGame(gameId, {
+          status: "budget_exhausted",
+          outcome: { reason: error.message },
+        });
         return;
       }
       if (error instanceof ProviderOutageError) {
@@ -228,7 +245,8 @@ export class GameOrchestrator {
   async runToCompletion(gameId: string): Promise<void> {
     for (let step = 0; step < 100; step += 1) {
       const game = this.repository.getGame(gameId);
-      if (!game || ["completed", "aborted", "budget_exhausted", "failed"].includes(game.status)) return;
+      if (!game || ["completed", "aborted", "budget_exhausted", "failed"].includes(game.status))
+        return;
       if (game.status === "paused") throw new Error(`Game ${gameId} paused during batch execution`);
       this.repository.updateGame(gameId, { status: "running" });
       await this.runGameStep(gameId);
@@ -248,7 +266,10 @@ export class GameOrchestrator {
     if (state.modelCalls >= state.config.safety.maxModelCalls) {
       throw new BudgetExhaustedError("maximum model calls reached");
     }
-    if (state.startedAt && Date.now() - Date.parse(state.startedAt) >= state.config.safety.maxWallClockMs) {
+    if (
+      state.startedAt &&
+      Date.now() - Date.parse(state.startedAt) >= state.config.safety.maxWallClockMs
+    ) {
       throw new BudgetExhaustedError("maximum wall-clock duration reached");
     }
   }
@@ -273,7 +294,12 @@ export class GameOrchestrator {
     this.assertBudget(state);
     const player = state.players.find((candidate) => candidate.id === playerId);
     if (!player?.alive) return undefined;
-    const view = projectPlayer(state, this.events(gameId), playerId, this.repository.getJournal(gameId, playerId));
+    const view = projectPlayer(
+      state,
+      this.events(gameId),
+      playerId,
+      this.repository.getJournal(gameId, playerId),
+    );
     if (availableActionIds) {
       const allowed = new Set(availableActionIds);
       view.availableActions = view.availableActions.filter((action) => allowed.has(action.id));
@@ -388,7 +414,9 @@ export class GameOrchestrator {
       let turns = priorPoints.length;
       while (!consensusTarget && turns < maxTurns) {
         const playerId = order[turns % order.length]!;
-        const player = this.state(state.gameId).players.find((candidate) => candidate.id === playerId);
+        const player = this.state(state.gameId).players.find(
+          (candidate) => candidate.id === playerId,
+        );
         const teamAction = player?.role.actions.find(
           (action) => action.effect === "eliminate" && action.teamAggregation !== "none",
         );
@@ -417,7 +445,9 @@ export class GameOrchestrator {
         turns += 1;
         if (!decision) continue;
         latestPoints.set(playerId, decision.targetId);
-        const target = this.state(state.gameId).players.find((candidate) => candidate.id === decision.targetId);
+        const target = this.state(state.gameId).players.find(
+          (candidate) => candidate.id === decision.targetId,
+        );
         this.repository.appendEvent(state.gameId, {
           type: "team.pointed",
           phase: "night_team",
@@ -436,7 +466,9 @@ export class GameOrchestrator {
         consensusTarget = agreedTarget();
       }
       if (consensusTarget) {
-        const target = this.state(state.gameId).players.find((candidate) => candidate.id === consensusTarget);
+        const target = this.state(state.gameId).players.find(
+          (candidate) => candidate.id === consensusTarget,
+        );
         this.repository.appendEvent(state.gameId, {
           type: "team.consensus_reached",
           phase: "night_team",
@@ -532,7 +564,12 @@ export class GameOrchestrator {
           phase: "night_actions",
           day: state.day,
           visibility: "moderator",
-          payload: { team, reason: "consensus_action_rejected", accepted, required: playerIds.length },
+          payload: {
+            team,
+            reason: "consensus_action_rejected",
+            accepted,
+            required: playerIds.length,
+          },
         });
       }
     }
@@ -619,14 +656,26 @@ export class GameOrchestrator {
         });
         continue;
       }
-      const speech = await this.askPlayer(state.gameId, playerId, "speech", "speech", SpeechDecisionSchema, failures);
+      const speech = await this.askPlayer(
+        state.gameId,
+        playerId,
+        "speech",
+        "speech",
+        SpeechDecisionSchema,
+        failures,
+      );
       if (!speech) continue;
       const event = this.repository.appendEvent(state.gameId, {
         type: "message.public",
         phase: "day_discussion",
         day: state.day,
         visibility: "public",
-        payload: { playerId, text: speech.text, followUp: false, replyToEventId: speech.replyToEventId },
+        payload: {
+          playerId,
+          text: speech.text,
+          followUp: false,
+          replyToEventId: speech.replyToEventId,
+        },
       });
       lastSpeaker = playerId;
       lastSpoke.set(playerId, event.sequence);
@@ -651,9 +700,16 @@ export class GameOrchestrator {
         })),
       );
       const available = decisions.filter(
-        (item): item is { player: (typeof living)[number]; decision: InitiativeDecision } => Boolean(item.decision),
+        (item): item is { player: (typeof living)[number]; decision: InitiativeDecision } =>
+          Boolean(item.decision),
       );
-      if (discussionReady(available.map((item) => item.decision), living.length, state.config.discussion.readyQuorum)) {
+      if (
+        discussionReady(
+          available.map((item) => item.decision),
+          living.length,
+          state.config.discussion.readyQuorum,
+        )
+      ) {
         break;
       }
       const candidates: InitiativeCandidate[] = available.map(({ player, decision }) => ({
@@ -736,7 +792,10 @@ export class GameOrchestrator {
   }
 
   private async narrate(state: GameState, packet: Record<string, unknown>): Promise<string> {
-    const fallback = String(packet.fallbackText ?? "The moderator advances the game.");
+    const fallback =
+      typeof packet.fallbackText === "string"
+        ? packet.fallbackText
+        : "The moderator advances the game.";
     if (!state.config.moderatorNarration) return fallback;
     const model = state.config.moderatorModel ?? resolveModeratorModel(this.defaultModel);
     const attempt = await decideWithRepair(this.provider, {
@@ -752,10 +811,22 @@ export class GameOrchestrator {
       phase: state.phase,
       day: state.day,
       visibility: "moderator",
-      payload: { playerId: "moderator", kind: "narration", model, attempts: attempt.attempts, success: Boolean(attempt.result) },
+      payload: {
+        playerId: "moderator",
+        kind: "narration",
+        model,
+        attempts: attempt.attempts,
+        success: Boolean(attempt.result),
+      },
     });
     if (!attempt.result) return fallback;
-    this.recordUsage(state.gameId, undefined, attempt.result.provider, attempt.result.model, attempt.result.usage);
+    this.recordUsage(
+      state.gameId,
+      undefined,
+      attempt.result.provider,
+      attempt.result.model,
+      attempt.result.usage,
+    );
     return attempt.result.data.text;
   }
 

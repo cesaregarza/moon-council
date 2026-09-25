@@ -32,4 +32,3 @@ export function seededChoice<T>(items: readonly T[], seed: string): T | undefine
   if (items.length === 0) return undefined;
   return items[Math.floor(createRandom(seed)() * items.length)];
 }
-

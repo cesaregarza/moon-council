@@ -1,5 +1,9 @@
 import { access } from "node:fs/promises";
-import { InitiativeDecisionSchema, SpeechDecisionSchema, TeamPointDecisionSchema } from "@werewolf/contracts";
+import {
+  InitiativeDecisionSchema,
+  SpeechDecisionSchema,
+  TeamPointDecisionSchema,
+} from "@werewolf/contracts";
 import type { CodexOptions, ThreadOptions, TurnOptions } from "@openai/codex-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -60,8 +64,15 @@ describe("Codex login provider", () => {
     });
     expect(clientOptions?.env).toEqual({ HOME: "/safe-home", PATH: "/usr/bin" });
     expect(clientOptions?.config).toMatchObject({
-      model_provider:"werewolf-login",
-      model_providers:{"werewolf-login":{name:"OpenAI",requires_openai_auth:true,request_max_retries:0,stream_max_retries:0}},
+      model_provider: "werewolf-login",
+      model_providers: {
+        "werewolf-login": {
+          name: "OpenAI",
+          requires_openai_auth: true,
+          request_max_retries: 0,
+          stream_max_retries: 0,
+        },
+      },
       history: { persistence: "none" },
       features: { apps: false, multi_agent: false, shell_tool: false, unified_exec: false },
     });
@@ -94,7 +105,11 @@ describe("Codex login provider", () => {
       for (const child of Object.values(node)) assertStrictObjects(child);
     };
 
-    for (const schema of [InitiativeDecisionSchema, SpeechDecisionSchema, TeamPointDecisionSchema]) {
+    for (const schema of [
+      InitiativeDecisionSchema,
+      SpeechDecisionSchema,
+      TeamPointDecisionSchema,
+    ]) {
       assertStrictObjects(z.toJSONSchema(schema, { target: "draft-7" }));
     }
     const initiative = z.toJSONSchema(InitiativeDecisionSchema, { target: "draft-7" }) as {
@@ -104,13 +119,29 @@ describe("Codex login provider", () => {
     expect(JSON.stringify(initiative.properties.topic)).toContain('"null"');
   });
 
-  it("renders V3.1 public, private, and task layers in that order",async()=>{
-    let delivered="";
-    const provider=new CodexLoginProvider({
-      environment:{HOME:"/safe-home",PATH:"/usr/bin"},
-      createClient:()=>({startThread:()=>({run:async(input)=>{delivered=input;return {finalResponse:'{"answer":"ok"}',usage:null};}})}),
+  it("renders V3.1 public, private, and task layers in that order", async () => {
+    let delivered = "";
+    const provider = new CodexLoginProvider({
+      environment: { HOME: "/safe-home", PATH: "/usr/bin" },
+      createClient: () => ({
+        startThread: () => ({
+          run: async (input) => {
+            delivered = input;
+            return { finalResponse: '{"answer":"ok"}', usage: null };
+          },
+        }),
+      }),
     });
-    await provider.decide({...request,kind:"decision_v3_1",preparedPrompt:{instructions:"L0 rules",publicInput:"L1 public",privateInput:"L2 private",input:"L3 task"}});
+    await provider.decide({
+      ...request,
+      kind: "decision_v3_1",
+      preparedPrompt: {
+        instructions: "L0 rules",
+        publicInput: "L1 public",
+        privateInput: "L2 private",
+        input: "L3 task",
+      },
+    });
     expect(delivered).toBe("L1 public\nL2 private\nL3 task");
   });
 
@@ -121,7 +152,9 @@ describe("Codex login provider", () => {
         startThread: () => ({
           run: (_input, options) =>
             new Promise((_resolve, reject) => {
-              options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+              options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+                once: true,
+              });
             }),
         }),
       }),

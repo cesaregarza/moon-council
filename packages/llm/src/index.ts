@@ -15,7 +15,9 @@ export * from "./prompt";
 export * from "./provider";
 export * from "./jev";
 
-export function createDecisionProvider(kind: DecisionProviderKind = selectedProviderKind()): DecisionProvider {
+export function createDecisionProvider(
+  kind: DecisionProviderKind = selectedProviderKind(),
+): DecisionProvider {
   if (kind === "codex") return new CodexLoginProvider();
   if (kind === "codex_direct") return new CodexDirectProvider();
   if (kind === "openai") return new OpenAIResponsesProvider();

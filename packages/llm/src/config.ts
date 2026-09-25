@@ -23,8 +23,11 @@ export interface ProviderConfiguration {
   statusDetail: string;
 }
 
-export function selectedProviderKind(value = process.env.LLM_PROVIDER ?? "fake"): DecisionProviderKind {
-  if (DecisionProviderKinds.includes(value as DecisionProviderKind)) return value as DecisionProviderKind;
+export function selectedProviderKind(
+  value = process.env.LLM_PROVIDER ?? "fake",
+): DecisionProviderKind {
+  if (DecisionProviderKinds.includes(value as DecisionProviderKind))
+    return value as DecisionProviderKind;
   throw new Error(`Unsupported LLM_PROVIDER: ${value}`);
 }
 
@@ -43,12 +46,18 @@ export function resolveDefaultModel(kind = selectedProviderKind()): string {
 
 export function resolveModeratorModel(defaultModel: string, kind = selectedProviderKind()): string {
   if (usesCodexLogin(kind)) {
-    return process.env.CODEX_MODERATOR_MODEL?.trim() || process.env.OPENAI_MODERATOR_MODEL?.trim() || defaultModel;
+    return (
+      process.env.CODEX_MODERATOR_MODEL?.trim() ||
+      process.env.OPENAI_MODERATOR_MODEL?.trim() ||
+      defaultModel
+    );
   }
   return process.env.OPENAI_MODERATOR_MODEL?.trim() || defaultModel;
 }
 
-export function describeProviderConfiguration(kind = selectedProviderKind()): ProviderConfiguration {
+export function describeProviderConfiguration(
+  kind = selectedProviderKind(),
+): ProviderConfiguration {
   if (kind === "fake") {
     return {
       provider: kind,
@@ -69,7 +78,10 @@ export function describeProviderConfiguration(kind = selectedProviderKind()): Pr
     };
   }
   const ready = Boolean(process.env.CODEX_MODEL?.trim() || process.env.OPENAI_MODEL?.trim());
-  const transport = kind === "codex_direct" ? "Codex login direct Responses transport" : "Codex login mode configured";
+  const transport =
+    kind === "codex_direct"
+      ? "Codex login direct Responses transport"
+      : "Codex login mode configured";
   return {
     provider: kind,
     providerReady: ready,

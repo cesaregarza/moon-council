@@ -27,6 +27,8 @@ export function isDemotable(source: ContextSourceV2): boolean {
 
 /** Truncate on a codepoint boundary so a digest never splits an astral character. */
 function clip(text: string, chars: number): string {
+  // Evidence budgets count codepoints, not grapheme clusters; preserve archived digest bytes.
+  // oxlint-disable-next-line typescript/no-misused-spread
   const points = [...text];
   return points.length <= chars ? text : `${points.slice(0, chars).join("")}…`;
 }
@@ -52,7 +54,11 @@ export function tierPayload(
     ? source.data.acts.map((value) => {
         const act = value as Record<string, unknown>;
         const evidence = typeof act.sourceId === "string" ? alias(act.sourceId) : undefined;
-        return { kind: act.kind, targetId: act.targetId, ...(evidence?.startsWith("E") ? { evidence } : {}) };
+        return {
+          kind: act.kind,
+          targetId: act.targetId,
+          ...(evidence?.startsWith("E") ? { evidence } : {}),
+        };
       })
     : [];
   const respondsTo = Array.isArray(source.data.respondsTo)
@@ -64,7 +70,13 @@ export function tierPayload(
 
   if (tier === "digest") {
     const clipped = clip(text, digestChars);
-    return { speakerId, text: clipped, ...(clipped === text ? {} : { abridged: true }), acts, respondsTo };
+    return {
+      speakerId,
+      text: clipped,
+      ...(clipped === text ? {} : { abridged: true }),
+      acts,
+      respondsTo,
+    };
   }
   return {
     speakerId,

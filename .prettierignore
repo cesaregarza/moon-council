@@ -1,0 +1,10 @@
+node_modules/
+dist/
+apps/web/dist/
+data/
+research/
+package-lock.json
+docs/*EVALUATION.json
+
+.venv/
+.ruff_cache/

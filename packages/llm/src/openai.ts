@@ -31,7 +31,10 @@ function openAiUsage(value: unknown): UsageV2 {
   };
 }
 
-function combineSignals(first: AbortSignal | undefined, second: AbortSignal | undefined): {
+function combineSignals(
+  first: AbortSignal | undefined,
+  second: AbortSignal | undefined,
+): {
   signal: AbortSignal | undefined;
   cleanup: () => void;
 } {
@@ -39,12 +42,19 @@ function combineSignals(first: AbortSignal | undefined, second: AbortSignal | un
   if (!second) return { signal: first, cleanup: () => undefined };
   const controller = new AbortController();
   const abort = (source: AbortSignal) => controller.abort(source.reason);
-  const onFirst = () => abort(first), onSecond = () => abort(second);
+  const onFirst = () => abort(first),
+    onSecond = () => abort(second);
   first.addEventListener("abort", onFirst, { once: true });
   second.addEventListener("abort", onSecond, { once: true });
   if (first.aborted) abort(first);
   else if (second.aborted) abort(second);
-  return { signal: controller.signal, cleanup: () => { first.removeEventListener("abort", onFirst); second.removeEventListener("abort", onSecond); } };
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      first.removeEventListener("abort", onFirst);
+      second.removeEventListener("abort", onSecond);
+    },
+  };
 }
 
 export class OpenAIResponsesProvider implements DecisionProvider {
@@ -61,14 +71,20 @@ export class OpenAIResponsesProvider implements DecisionProvider {
     const initialBody = openAIRequest(request);
     const group = cacheComparisonGroup(request, initialBody);
     const baseline = group ? this.comparisons.get(group) : undefined;
-    const comparisonId = request.cacheComparisonResponseId ?? (baseline && Date.now() - baseline.at < 30 * 60_000 ? baseline.id : undefined);
+    const comparisonId =
+      request.cacheComparisonResponseId ??
+      (baseline && Date.now() - baseline.at < 30 * 60_000 ? baseline.id : undefined);
     const body = comparisonId ? openAIRequest(request, comparisonId) : initialBody;
     let responseModel = request.model;
     let usageReported = false;
     const reportUsage = (usage: UsageV2): void => {
       if (usageReported) return;
       usageReported = true;
-      request.onUsage?.(usage, { provider: "openai", model: responseModel, outputLimitEnforced: request.maxOutputTokens !== null });
+      request.onUsage?.(usage, {
+        provider: "openai",
+        model: responseModel,
+        outputLimitEnforced: request.maxOutputTokens !== null,
+      });
     };
     let timedOut = false;
     const timeoutController = request.timeoutMs ? new AbortController() : undefined;
@@ -83,17 +99,16 @@ export class OpenAIResponsesProvider implements DecisionProvider {
     try {
       if (request.signal?.aborted) throw new Error("request aborted");
       request.onProviderRequest?.(body as unknown as Record<string, unknown>);
-      const response = await this.client.responses.create(
-        body,
-        {
-          ...(combined.signal ? { signal: combined.signal } : {}),
-          ...(request.timeoutMs ? { timeout: request.timeoutMs } : {}),
-        },
-      );
+      const response = await this.client.responses.create(body, {
+        ...(combined.signal ? { signal: combined.signal } : {}),
+        ...(request.timeoutMs ? { timeout: request.timeoutMs } : {}),
+      });
       responseModel = response.model || request.model;
       request.onProviderMetadata?.({
-        responseId: response.id ?? null, status: response.status ?? null,
-        model: responseModel, serviceTier: response.service_tier ?? null,
+        responseId: response.id ?? null,
+        status: response.status ?? null,
+        model: responseModel,
+        serviceTier: response.service_tier ?? null,
         cacheLayout: body.prompt_cache_options ? "openai_layers_v2" : "implicit",
         cacheDiagnostics: response.prompt_cache_diagnostics ?? null,
         incompleteReason: response.incomplete_details?.reason ?? null,
@@ -101,15 +116,21 @@ export class OpenAIResponsesProvider implements DecisionProvider {
       if (group && response.status === "completed" && response.id) {
         this.comparisons.delete(group);
         this.comparisons.set(group, { id: response.id, at: Date.now() });
-        if (this.comparisons.size > 128) this.comparisons.delete(this.comparisons.keys().next().value!);
+        if (this.comparisons.size > 128)
+          this.comparisons.delete(this.comparisons.keys().next().value!);
       }
       const usage = openAiUsage(response.usage);
       reportUsage(usage);
       if (response.output_text) request.onRawResponse?.(response.output_text);
-      if (response.status !== "completed") throw new Error(`OpenAI response ${response.status}: ${response.incomplete_details?.reason ?? "no completed result"}`);
+      if (response.status !== "completed")
+        throw new Error(
+          `OpenAI response ${response.status}: ${response.incomplete_details?.reason ?? "no completed result"}`,
+        );
       if (!response.output_text) throw new Error("OpenAI response did not contain output_text");
       const parsed = JSON.parse(response.output_text);
-      const data = request.schema.parse(request.apiResponseFormat ? request.apiResponseFormat.decode(parsed) : parsed);
+      const data = request.schema.parse(
+        request.apiResponseFormat ? request.apiResponseFormat.decode(parsed) : parsed,
+      );
       return {
         data,
         provider: "openai",
@@ -122,7 +143,8 @@ export class OpenAIResponsesProvider implements DecisionProvider {
       };
     } catch (error) {
       reportUsage(unknownUsage());
-      if (timedOut) throw new Error(`OpenAI decision timed out after ${request.timeoutMs}ms`, { cause: error });
+      if (timedOut)
+        throw new Error(`OpenAI decision timed out after ${request.timeoutMs}ms`, { cause: error });
       if (request.signal?.aborted) throw new Error("OpenAI decision aborted", { cause: error });
       throw error;
     } finally {

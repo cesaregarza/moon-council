@@ -29,9 +29,14 @@ export interface PreparedPrompt {
   sharedInput?: string;
   /** The changing episode suffix. */
   input: string;
-  cache?: {mode:"explicit";ttl:"30m";stablePrefix:string;boundary?:"instructions"|"public"};
+  cache?: {
+    mode: "explicit";
+    ttl: "30m";
+    stablePrefix: string;
+    boundary?: "instructions" | "public";
+  };
   /** Moderator-only construction diagnostics persisted with the attempt. */
-  layerHashes?: {l0:string;l1:string|null;l2:string|null;l3:string;schema?:string};
+  layerHashes?: { l0: string; l1: string | null; l2: string | null; l3: string; schema?: string };
 }
 
 /** Stable API wire schema; the original task schema still validates the decoded result. */
@@ -68,7 +73,10 @@ export interface DecisionRequest<T> {
   cacheComparisonResponseId?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
-  onUsage?: (usage: UsageV2, metadata: { provider: string; model: string; outputLimitEnforced: boolean }) => void;
+  onUsage?: (
+    usage: UsageV2,
+    metadata: { provider: string; model: string; outputLimitEnforced: boolean },
+  ) => void;
   /** Persist the explicit final response before parsing so malformed output remains auditable. */
   onRawResponse?: (response: string) => void;
   /** Exact provider body, excluding authentication; contains authorized private game data. */
@@ -110,7 +118,11 @@ export async function decideWithRepair<T>(
       });
       const parsed = request.schema.safeParse(result.data);
       if (!parsed.success) {
-        errors.push(parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join(", "));
+        errors.push(
+          parsed.error.issues
+            .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+            .join(", "),
+        );
         continue;
       }
       const domainErrors = validate?.(parsed.data) ?? [];
@@ -118,7 +130,12 @@ export async function decideWithRepair<T>(
         errors.push(...domainErrors);
         continue;
       }
-      return { result: { ...result, data: parsed.data }, errors, attempts: attempt, providerFailure: false };
+      return {
+        result: { ...result, data: parsed.data },
+        errors,
+        attempts: attempt,
+        providerFailure: false,
+      };
     } catch (error) {
       providerFailure = true;
       errors.push(error instanceof Error ? error.message : String(error));

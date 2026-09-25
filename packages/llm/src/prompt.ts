@@ -12,10 +12,17 @@ export function buildPrompt<T>(request: DecisionRequest<T>): PreparedPrompt {
     return {
       instructions:
         "You narrate a Werewolf game from a disclosure-safe packet. Never add facts, roles, causes, or outcomes not present in the packet. Return only the requested JSON.",
-      input: JSON.stringify({ task: "Narrate this approved moderator disclosure.", packet: request.disclosurePacket }),
+      input: JSON.stringify({
+        task: "Narrate this approved moderator disclosure.",
+        packet: request.disclosurePacket,
+      }),
     };
   }
-  if (request.kind === "decision_v2" || request.kind === "decision_v3" || request.kind === "decision_v3_1") {
+  if (
+    request.kind === "decision_v2" ||
+    request.kind === "decision_v3" ||
+    request.kind === "decision_v3_1"
+  ) {
     return {
       instructions: `${common}\nReturn only the requested DecisionReportV2 JSON. Use only the authorized context and legal targets; do not expose hidden reasoning.`,
       input: JSON.stringify({

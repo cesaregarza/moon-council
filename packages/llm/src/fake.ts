@@ -22,60 +22,101 @@ type Vote = z.infer<typeof VoteDecisionSchema>;
 
 function v2Candidates(context: PlayerContextV2, kind: ActionProposalV2["kind"]): string[] {
   const allies = new Set(context.knownAllies.map((player) => player.id));
-  const legal = context.legalTargets.length > 0 ? context.legalTargets : context.players.filter((player) => player.alive).map((player) => player.id);
+  const legal =
+    context.legalTargets.length > 0
+      ? context.legalTargets
+      : context.players.filter((player) => player.alive).map((player) => player.id);
   return [...new Set(legal)]
     .filter((id) => id !== context.self.id && (kind !== "team_point" || !allies.has(id)))
     .sort()
     .slice(0, 16);
 }
 
-function sourceText(source: ContextSourceV2): string {
-  try {
-    return JSON.stringify(source.data);
-  } catch {
-    return "";
-  }
-}
-
-function evidenceTarget(context: PlayerContextV2, candidates: string[]): { targetId?: string; source?: ContextSourceV2 } {
+function evidenceTarget(
+  context: PlayerContextV2,
+  candidates: string[],
+): { targetId?: string; source?: ContextSourceV2 } {
   for (const source of [...context.sources].reverse()) {
-    if (source.type === "team.point" && typeof source.data.targetId === "string" && candidates.includes(source.data.targetId)) return { targetId:source.data.targetId,source };
-    if (source.type === "inspection.delivered" && source.data.result === "werewolf" && typeof source.data.targetId === "string" && candidates.includes(source.data.targetId)) return { targetId:source.data.targetId,source };
+    if (
+      source.type === "team.point" &&
+      typeof source.data.targetId === "string" &&
+      candidates.includes(source.data.targetId)
+    )
+      return { targetId: source.data.targetId, source };
+    if (
+      source.type === "inspection.delivered" &&
+      source.data.result === "werewolf" &&
+      typeof source.data.targetId === "string" &&
+      candidates.includes(source.data.targetId)
+    )
+      return { targetId: source.data.targetId, source };
     if (source.type === "speech.public") {
-      const acts=source.data.acts as {kind:string;targetId:string|null;claim:string}[] ?? [];
-      const claim=acts.find(a=>a.kind === "result_claim" && a.claim.includes("werewolf") && a.targetId && candidates.includes(a.targetId));
-      if(claim?.targetId) return {targetId:claim.targetId,source};
+      const acts =
+        (source.data.acts as { kind: string; targetId: string | null; claim: string }[]) ?? [];
+      const claim = acts.find(
+        (a) =>
+          a.kind === "result_claim" &&
+          a.claim.includes("werewolf") &&
+          a.targetId &&
+          candidates.includes(a.targetId),
+      );
+      if (claim?.targetId) return { targetId: claim.targetId, source };
     }
   }
   return {};
 }
 
-function targetChoice(context: PlayerContextV2, kind: ActionProposalV2["kind"], ids?: string[]): { mode: "direct" | "uniform"; playerIds: string[] } | null {
+function targetChoice(
+  context: PlayerContextV2,
+  kind: ActionProposalV2["kind"],
+  ids?: string[],
+): { mode: "direct" | "uniform"; playerIds: string[] } | null {
   const available = ids
-    ? [...new Set(ids)].filter((id) => context.legalTargets.length === 0 || context.legalTargets.includes(id))
+    ? [...new Set(ids)].filter(
+        (id) => context.legalTargets.length === 0 || context.legalTargets.includes(id),
+      )
     : v2Candidates(context, kind);
   const candidates = available
-    .filter((id) => (kind === "night_action" || id !== context.self.id) && (kind !== "team_point" || !context.knownAllies.some((ally) => ally.id === id)))
+    .filter(
+      (id) =>
+        (kind === "night_action" || id !== context.self.id) &&
+        (kind !== "team_point" || !context.knownAllies.some((ally) => ally.id === id)),
+    )
     .sort()
     .slice(0, 16);
   if (candidates.length === 0) return null;
   const evidence = evidenceTarget(context, candidates);
-  return evidence.targetId ? { mode: "direct", playerIds: [evidence.targetId] } : { mode: "uniform", playerIds: candidates };
+  return evidence.targetId
+    ? { mode: "direct", playerIds: [evidence.targetId] }
+    : { mode: "uniform", playerIds: candidates };
 }
 
-function seerSpeech(context: PlayerContextV2): { speech: { text: string; acts: [{ kind: "result_claim"; targetId: string; claim: string; sourceId: string | null }]; respondsTo: string[] } | null; source?: ContextSourceV2 } {
+function seerSpeech(context: PlayerContextV2): {
+  speech: {
+    text: string;
+    acts: [{ kind: "result_claim"; targetId: string; claim: string; sourceId: string | null }];
+    respondsTo: string[];
+  } | null;
+  source?: ContextSourceV2;
+} {
   if (context.self.role.id !== "seer") return { speech: null };
   for (const source of context.sources) {
     if (source.id.length === 0 || source.id.length > 120) continue;
     if (source.type !== "inspection.delivered" || source.scope !== "player") continue;
     const data = source.data;
     const targetId = typeof data.targetId === "string" ? data.targetId : undefined;
-    const result = [data.alignment, data.result, data.role].find((value): value is string => typeof value === "string");
+    const result = [data.alignment, data.result, data.role].find(
+      (value): value is string => typeof value === "string",
+    );
     if (!targetId || !result || !context.players.some((player) => player.id === targetId)) continue;
     const targetName = context.players.find((player) => player.id === targetId)?.name ?? targetId;
     const claim = `I inspected ${targetName}: ${result}.`;
     return {
-      speech: { text: claim, acts: [{ kind: "result_claim", targetId, claim, sourceId: source.id }], respondsTo: [] },
+      speech: {
+        text: claim,
+        acts: [{ kind: "result_claim", targetId, claim, sourceId: source.id }],
+        respondsTo: [],
+      },
       source,
     };
   }
@@ -89,7 +130,14 @@ function fakeV2Report(request: DecisionRequest<unknown>): DecisionReportV2 {
     return {
       observations: [],
       inferences: [],
-      alternatives: [{ id: "pass", description: "Pass because no authorized context was supplied.", advantage: "Preserves legal play.", drawback: "Produces no new information." }],
+      alternatives: [
+        {
+          id: "pass",
+          description: "Pass because no authorized context was supplied.",
+          advantage: "Preserves legal play.",
+          drawback: "Produces no new information.",
+        },
+      ],
       selectedAlternativeId: "pass",
       proposal: { kind: "pass", reason: "No authorized context was supplied." },
       confidence: 0.5,
@@ -107,17 +155,33 @@ function fakeV2Report(request: DecisionRequest<unknown>): DecisionReportV2 {
   let proposal: ActionProposalV2;
   let selectedAlternativeId = "uniform";
   if (kind === "discussion") {
-    const speech = context.closing ? {text:"I dispute the existing case; uncertainty is not evidence of alignment.",acts:context.responseDocket.slice(0,1).map(sourceId=>({kind:"reply" as const,targetId:null,claim:"Please distinguish an uncertain inference from a verified result.",sourceId})),respondsTo:context.responseDocket.slice(0,6)} : seer.speech ?? ({
-      text: "I do not have a decisive authorized result yet; compare the claims carefully.",
-      acts: [],
-      respondsTo: [],
-    });
+    const speech = context.closing
+      ? {
+          text: "I dispute the existing case; uncertainty is not evidence of alignment.",
+          acts: context.responseDocket.slice(0, 1).map((sourceId) => ({
+            kind: "reply" as const,
+            targetId: null,
+            claim: "Please distinguish an uncertain inference from a verified result.",
+            sourceId,
+          })),
+          respondsTo: context.responseDocket.slice(0, 6),
+        }
+      : (seer.speech ?? {
+          text: "I do not have a decisive authorized result yet; compare the claims carefully.",
+          acts: [],
+          respondsTo: [],
+        });
     proposal = {
       kind: "discussion",
       speech,
       ready: context.closing,
       interests: speech ? ["claims"] : [],
-      silenceCase: speech ? null : { speechAlternative: "Stay quiet and preserve information.", advantage: "Avoids unsupported claims." },
+      silenceCase: speech
+        ? null
+        : {
+            speechAlternative: "Stay quiet and preserve information.",
+            advantage: "Avoids unsupported claims.",
+          },
     };
     selectedAlternativeId = speech ? "speak" : "silence";
   } else if (kind === "night_action") {
@@ -142,37 +206,95 @@ function fakeV2Report(request: DecisionRequest<unknown>): DecisionReportV2 {
   } else if (kind === "vote") {
     const targets = targetChoice(context, kind);
     proposal = { kind, targets };
-    selectedAlternativeId = targets ? (targets.mode === "direct" ? "direct" : "uniform") : "abstain";
+    selectedAlternativeId = targets
+      ? targets.mode === "direct"
+        ? "direct"
+        : "uniform"
+      : "abstain";
   } else {
     proposal = { kind: "pass", reason: "Unsupported proposal kind; pass safely." };
     selectedAlternativeId = "pass";
   }
 
-  const alternatives = proposal.kind === "pass"
-    ? [{ id: "pass", description: "Pass safely.", advantage: "Remains within the legal action set.", drawback: "Gives up an opportunity to act." }]
-    : proposal.kind === "discussion"
+  const alternatives =
+    proposal.kind === "pass"
       ? [
-          { id: "speak", description: "Make a concise authorized public statement.", advantage: "Adds accountable evidence to the discussion.", drawback: "May reveal my information strategy." },
-          { id: "silence", description: "Stay quiet and compare claims.", advantage: "Preserves uncertainty and information.", drawback: "Contributes less public evidence." },
+          {
+            id: "pass",
+            description: "Pass safely.",
+            advantage: "Remains within the legal action set.",
+            drawback: "Gives up an opportunity to act.",
+          },
         ]
-      : [
-          { id: "direct", description: "Choose the target supported by authorized evidence.", advantage: "Acts on a concrete clue.", drawback: "The clue may be incomplete." },
-          { id: "uniform", description: "Choose uniformly among legal targets.", advantage: "Avoids inventing unsupported certainty.", drawback: "May miss a strong but unrecognized clue." },
-        ];
+      : proposal.kind === "discussion"
+        ? [
+            {
+              id: "speak",
+              description: "Make a concise authorized public statement.",
+              advantage: "Adds accountable evidence to the discussion.",
+              drawback: "May reveal my information strategy.",
+            },
+            {
+              id: "silence",
+              description: "Stay quiet and compare claims.",
+              advantage: "Preserves uncertainty and information.",
+              drawback: "Contributes less public evidence.",
+            },
+          ]
+        : [
+            {
+              id: "direct",
+              description: "Choose the target supported by authorized evidence.",
+              advantage: "Acts on a concrete clue.",
+              drawback: "The clue may be incomplete.",
+            },
+            {
+              id: "uniform",
+              description: "Choose uniformly among legal targets.",
+              advantage: "Avoids inventing unsupported certainty.",
+              drawback: "May miss a strong but unrecognized clue.",
+            },
+          ];
   const journalPatch = [
     {
       op: "set_strategy" as const,
-      strategy: context.journal.strategy || "Compare authorized claims and preserve uncertainty where evidence is absent.",
+      strategy:
+        context.journal.strategy ||
+        "Compare authorized claims and preserve uncertainty where evidence is absent.",
       goals: context.journal.goals.slice(0, 4),
     },
-    ...(seer.source ? [{ op: "set_questions" as const, questions: [`Will ${seer.source.id} change the public case?`] }] : []),
+    ...(seer.source
+      ? [
+          {
+            op: "set_questions" as const,
+            questions: [`Will ${seer.source.id} change the public case?`],
+          },
+        ]
+      : []),
   ];
-  const listenerAuction=kind==="discussion"&&context.rules.speakerSelection==="listener_auction";
-  const speakerIntent=listenerAuction?{
-    wantsToSpeak:Boolean(proposal.kind==="discussion"&&proposal.speech),
-    urge:proposal.kind==="discussion"&&proposal.speech?((hashSeed(`${context.self.id}:${context.day}:${context.sources.at(-1)?.id??"initial"}`)%81)+20)/100:0,
-    willingnessToListen:context.players.filter(player=>player.alive&&player.id!==context.self.id).map(player=>({playerId:player.id,willingness:((hashSeed(`${context.self.id}:listen:${player.id}:${context.day}`)%81)+20)/100})),
-  }:undefined;
+  const listenerAuction =
+    kind === "discussion" && context.rules.speakerSelection === "listener_auction";
+  const speakerIntent = listenerAuction
+    ? {
+        wantsToSpeak: Boolean(proposal.kind === "discussion" && proposal.speech),
+        urge:
+          proposal.kind === "discussion" && proposal.speech
+            ? ((hashSeed(
+                `${context.self.id}:${context.day}:${context.sources.at(-1)?.id ?? "initial"}`,
+              ) %
+                81) +
+                20) /
+              100
+            : 0,
+        willingnessToListen: context.players
+          .filter((player) => player.alive && player.id !== context.self.id)
+          .map((player) => ({
+            playerId: player.id,
+            willingness:
+              ((hashSeed(`${context.self.id}:listen:${player.id}:${context.day}`) % 81) + 20) / 100,
+          })),
+      }
+    : undefined;
   return {
     observations,
     inferences: [],
@@ -180,52 +302,245 @@ function fakeV2Report(request: DecisionRequest<unknown>): DecisionReportV2 {
     selectedAlternativeId,
     proposal,
     confidence: seer.source ? 0.84 : 0.5,
-    summary: seer.speech?.text ?? (proposal.kind === "pass" ? proposal.reason : "Use only authorized evidence and legal targets."),
+    summary:
+      seer.speech?.text ??
+      (proposal.kind === "pass"
+        ? proposal.reason
+        : "Use only authorized evidence and legal targets."),
     journalPatch,
-    control: { kind: request.commitOnly ? "commit" : context.closing ? "commit" : "continue", question: context.closing ? null : `Compare ${alternatives[0]!.id} versus ${alternatives[1]?.id ?? alternatives[0]!.id}: does the current evidence justify the narrower choice?`, reason: context.closing ? null : "compare_alternative" },
-    ...(speakerIntent?{speakerIntent}:{}),
+    control: {
+      kind: request.commitOnly ? "commit" : context.closing ? "commit" : "continue",
+      question: context.closing
+        ? null
+        : `Compare ${alternatives[0]!.id} versus ${alternatives[1]?.id ?? alternatives[0]!.id}: does the current evidence justify the narrower choice?`,
+      reason: context.closing ? null : "compare_alternative",
+    },
+    ...(speakerIntent ? { speakerIntent } : {}),
   };
 }
 
-function fakeV3Submission(request:DecisionRequest<unknown>):unknown {
-  const context=request.contextV2!;
-  const legacy=JSON.parse(request.preparedPrompt?.sharedInput??"{}").AUTHORIZED_PLAYER_BRIEFING as {task:Record<string,unknown>;legalChoices?:Record<string,{playerId:string;name:string}>;view:{responseDocket:string[]}}|undefined;
-  const privateState=JSON.parse(request.preparedPrompt?.privateInput??"{}").AUTHORIZED_PRIVATE_STATE as {legalChoices?:Record<string,{playerId:string;name:string}>;responseDocket?:string[]}|undefined;
-  const episode=JSON.parse(request.preparedPrompt?.input??"{}").REQUEST as {task?:Record<string,unknown>}|undefined;
-  const briefing=legacy??{task:episode?.task??{},legalChoices:privateState?.legalChoices,view:{responseDocket:privateState?.responseDocket??[]}};
-  const task=briefing.task;
-  const memory=["journal_v3","journal_v4"].includes(String(context.rules.jevWorkflow))?{journalUpdate:null,...(context.rules.jevWorkflow==="journal_v4"?{decisionBrief:null}:{})}:{beliefs:[],hypotheses:[],strategyUpdate:null,questionsUpdate:null,deceptionUpdate:null};
-  const stable=request.kind==="decision_v3_1";
-  const listen=Object.fromEntries(context.players.filter(player=>stable||player.alive&&player.id!==context.self.id).map(player=>[player.id,player.id===context.self.id||!player.alive?null:((hashSeed(`${context.self.id}:listen:${player.id}:${context.day}`)%81)+20)/100]));
-  if(task.type==="journal_update"&&["journal_v3","journal_v4"].includes(String(context.rules.jevWorkflow)))return {memory:{...(context.rules.jevWorkflow==="journal_v4"?{decisionBrief:{action:"Use my verified private results and current evidence to advance my role objective. Public doubts do not erase my private knowledge.",attention:"Listen to unanswered accusations and genuinely new claims; avoid repeated arguments."}}:{}),journalUpdate:{mode:"append",text:`Compare new claims and votes with prior evidence. Listen to ${context.players.filter(p=>p.alive&&p.id!==context.self.id).map(p=>p.name).join(", ")} for new evidence and answers to outstanding questions.`}},rationale:"Reflect on the delivered evidence before the next decision."};
-  if(task.type==="journal_update")return {memory:{...memory,attentionUpdate:context.players.filter(p=>p.alive&&p.id!==context.self.id).map(p=>({playerId:p.id,note:"Listen for new evidence and answers to outstanding questions.",evidence:[]})),strategyUpdate:{strategy:"Compare new claims and votes with prior evidence.",goals:[]}},rationale:"Reflect on the delivered evidence before the next decision."};
-  if(task.type==="discussion_free_speech"){
-    const ref=briefing.view.responseDocket[0];
-    const target=context.players.find(p=>p.alive&&p.id!==context.self.id)!;
-    const seer=seerSpeech(context).speech;
-    return {text:seer?.text??(ref?"I dispute the accusation; please compare the actual evidence.":`${target.name}, what concrete observation supports your current read?`),acts:seer?seer.acts.map(a=>({kind:a.kind,targetId:a.targetId,claim:a.claim,evidence:null})):[{kind:ref?"reply":"challenge",targetId:ref?null:target.id,claim:ref?"I dispute the accusation.":"Please explain your current read.",evidence:ref??null}],respondsTo:ref?[ref]:[],rationale:"Choose my own contribution from the current briefing.",memory};
+function fakeV3Submission(request: DecisionRequest<unknown>): unknown {
+  const context = request.contextV2!;
+  const legacy = JSON.parse(request.preparedPrompt?.sharedInput ?? "{}")
+    .AUTHORIZED_PLAYER_BRIEFING as
+    | {
+        task: Record<string, unknown>;
+        legalChoices?: Record<string, { playerId: string; name: string }>;
+        view: { responseDocket: string[] };
+      }
+    | undefined;
+  const privateState = JSON.parse(request.preparedPrompt?.privateInput ?? "{}")
+    .AUTHORIZED_PRIVATE_STATE as
+    | {
+        legalChoices?: Record<string, { playerId: string; name: string }>;
+        responseDocket?: string[];
+      }
+    | undefined;
+  const episode = JSON.parse(request.preparedPrompt?.input ?? "{}").REQUEST as
+    { task?: Record<string, unknown> } | undefined;
+  const briefing = legacy ?? {
+    task: episode?.task ?? {},
+    legalChoices: privateState?.legalChoices,
+    view: { responseDocket: privateState?.responseDocket ?? [] },
+  };
+  const task = briefing.task;
+  const memory = ["journal_v3", "journal_v4"].includes(String(context.rules.jevWorkflow))
+    ? {
+        journalUpdate: null,
+        ...(context.rules.jevWorkflow === "journal_v4" ? { decisionBrief: null } : {}),
+      }
+    : {
+        beliefs: [],
+        hypotheses: [],
+        strategyUpdate: null,
+        questionsUpdate: null,
+        deceptionUpdate: null,
+      };
+  const stable = request.kind === "decision_v3_1";
+  const listen = Object.fromEntries(
+    context.players
+      .filter((player) => stable || (player.alive && player.id !== context.self.id))
+      .map((player) => [
+        player.id,
+        player.id === context.self.id || !player.alive
+          ? null
+          : ((hashSeed(`${context.self.id}:listen:${player.id}:${context.day}`) % 81) + 20) / 100,
+      ]),
+  );
+  if (
+    task.type === "journal_update" &&
+    ["journal_v3", "journal_v4"].includes(String(context.rules.jevWorkflow))
+  )
+    return {
+      memory: {
+        ...(context.rules.jevWorkflow === "journal_v4"
+          ? {
+              decisionBrief: {
+                action:
+                  "Use my verified private results and current evidence to advance my role objective. Public doubts do not erase my private knowledge.",
+                attention:
+                  "Listen to unanswered accusations and genuinely new claims; avoid repeated arguments.",
+              },
+            }
+          : {}),
+        journalUpdate: {
+          mode: "append",
+          text: `Compare new claims and votes with prior evidence. Listen to ${context.players
+            .filter((p) => p.alive && p.id !== context.self.id)
+            .map((p) => p.name)
+            .join(", ")} for new evidence and answers to outstanding questions.`,
+        },
+      },
+      rationale: "Reflect on the delivered evidence before the next decision.",
+    };
+  if (task.type === "journal_update")
+    return {
+      memory: {
+        ...memory,
+        attentionUpdate: context.players
+          .filter((p) => p.alive && p.id !== context.self.id)
+          .map((p) => ({
+            playerId: p.id,
+            note: "Listen for new evidence and answers to outstanding questions.",
+            evidence: [],
+          })),
+        strategyUpdate: {
+          strategy: "Compare new claims and votes with prior evidence.",
+          goals: [],
+        },
+      },
+      rationale: "Reflect on the delivered evidence before the next decision.",
+    };
+  if (task.type === "discussion_free_speech") {
+    const ref = briefing.view.responseDocket[0];
+    const target = context.players.find((p) => p.alive && p.id !== context.self.id)!;
+    const seer = seerSpeech(context).speech;
+    return {
+      text:
+        seer?.text ??
+        (ref
+          ? "I dispute the accusation; please compare the actual evidence."
+          : `${target.name}, what concrete observation supports your current read?`),
+      acts: seer
+        ? seer.acts.map((a) => ({
+            kind: a.kind,
+            targetId: a.targetId,
+            claim: a.claim,
+            evidence: null,
+          }))
+        : [
+            {
+              kind: ref ? "reply" : "challenge",
+              targetId: ref ? null : target.id,
+              claim: ref ? "I dispute the accusation." : "Please explain your current read.",
+              evidence: ref ?? null,
+            },
+          ],
+      respondsTo: ref ? [ref] : [],
+      rationale: "Choose my own contribution from the current briefing.",
+      memory,
+    };
   }
-  if(task.type==="discussion_bid"){
-    const target=context.players.find(player=>player.alive&&player.id!==context.self.id)?.id??null;
-    return {urge:((hashSeed(`${context.self.id}:${context.day}:${context.sources.at(-1)?.id??"initial"}`)%61)+40)/100,ready:context.sources.filter(source=>source.type==="speech.public").length>=4,plan:{kind:"challenge",targetId:target,respondsTo:[],point:"Ask for one specific read that distinguishes the leading possibilities."},listen,memory,rationale:"A specific question can create a useful public commitment."};
+  if (task.type === "discussion_bid") {
+    const target =
+      context.players.find((player) => player.alive && player.id !== context.self.id)?.id ?? null;
+    return {
+      urge:
+        ((hashSeed(`${context.self.id}:${context.day}:${context.sources.at(-1)?.id ?? "initial"}`) %
+          61) +
+          40) /
+        100,
+      ready: context.sources.filter((source) => source.type === "speech.public").length >= 4,
+      plan: {
+        kind: "challenge",
+        targetId: target,
+        respondsTo: [],
+        point: "Ask for one specific read that distinguishes the leading possibilities.",
+      },
+      listen,
+      memory,
+      rationale: "A specific question can create a useful public commitment.",
+    };
   }
-  if(task.type==="discussion_listen")return {ready:context.sources.filter(source=>source.type==="speech.public").length>=4,listen,memory,rationale:"I am listening for claims that distinguish alignments."};
-  if(task.type==="discussion_speech"){
-    const plan=task.plan as {kind:"accusation"|"challenge"|"role_claim"|"result_claim"|"reply";targetId:string|null;respondsTo:string[];point:string};
-    const name=context.players.find(player=>player.id===plan.targetId)?.name??plan.targetId??"the table";
-    return {text:`${name}, ${plan.point}`,acts:[{kind:plan.kind,targetId:plan.targetId,claim:plan.point,evidence:plan.respondsTo[0]??null}],respondsTo:plan.respondsTo,rationale:"This follows the selected contribution plan.",memory};
+  if (task.type === "discussion_listen")
+    return {
+      ready: context.sources.filter((source) => source.type === "speech.public").length >= 4,
+      listen,
+      memory,
+      rationale: "I am listening for claims that distinguish alignments.",
+    };
+  if (task.type === "discussion_speech") {
+    const plan = task.plan as {
+      kind: "accusation" | "challenge" | "role_claim" | "result_claim" | "reply";
+      targetId: string | null;
+      respondsTo: string[];
+      point: string;
+    };
+    const name =
+      context.players.find((player) => player.id === plan.targetId)?.name ??
+      plan.targetId ??
+      "the table";
+    return {
+      text: `${name}, ${plan.point}`,
+      acts: [
+        {
+          kind: plan.kind,
+          targetId: plan.targetId,
+          claim: plan.point,
+          evidence: plan.respondsTo[0] ?? null,
+        },
+      ],
+      respondsTo: plan.respondsTo,
+      rationale: "This follows the selected contribution plan.",
+      memory,
+    };
   }
-  if(task.type==="closing_response"){
-    const ref=briefing.view.responseDocket[0];
-    return ref?{text:"I dispute the current case; please separate tentative inference from verified fact.",acts:[{kind:"reply",targetId:null,claim:"The accusation remains uncertain.",evidence:ref}],respondsTo:[ref],rationale:"Answer the frozen accusation before voting.",memory}:{text:null,acts:[],respondsTo:[],rationale:"No response obligation remains.",memory};
+  if (task.type === "closing_response") {
+    const ref = briefing.view.responseDocket[0];
+    return ref
+      ? {
+          text: "I dispute the current case; please separate tentative inference from verified fact.",
+          acts: [
+            {
+              kind: "reply",
+              targetId: null,
+              claim: "The accusation remains uncertain.",
+              evidence: ref,
+            },
+          ],
+          respondsTo: [ref],
+          rationale: "Answer the frozen accusation before voting.",
+          memory,
+        }
+      : {
+          text: null,
+          acts: [],
+          respondsTo: [],
+          rationale: "No response obligation remains.",
+          memory,
+        };
   }
-  const handles=Object.keys(briefing.legalChoices??{}).sort();
-  const chosen=handles.length?handles[hashSeed(`${context.self.id}:${context.day}:${String(task.type)}`)%handles.length]!:undefined;
-  return {mode:chosen?"direct":task.type==="vote_choice"?"abstain":"direct",choiceHandles:chosen?[chosen]:[],rationale:"Choose one current legal option using the authorized view.",evidence:[],memory,reconsiderationQuestion:null};
+  const handles = Object.keys(briefing.legalChoices ?? {}).sort();
+  const chosen = handles.length
+    ? handles[hashSeed(`${context.self.id}:${context.day}:${String(task.type)}`) % handles.length]!
+    : undefined;
+  return {
+    mode: chosen ? "direct" : task.type === "vote_choice" ? "abstain" : "direct",
+    choiceHandles: chosen ? [chosen] : [],
+    rationale: "Choose one current legal option using the authorized view.",
+    evidence: [],
+    memory,
+    reconsiderationQuestion: null,
+  };
 }
 
 function journal(request: DecisionRequest<unknown>, targetId?: string): PrivateJournalV1 {
-  const existing = request.view?.journal ?? { beliefs: [], goals: [], strategy: "", unresolvedQuestions: [] };
+  const existing = request.view?.journal ?? {
+    beliefs: [],
+    goals: [],
+    strategy: "",
+    unresolvedQuestions: [],
+  };
   const beliefs = targetId
     ? [
         ...existing.beliefs.filter((belief) => belief.playerId !== targetId),
@@ -235,7 +550,8 @@ function journal(request: DecisionRequest<unknown>, targetId?: string): PrivateJ
   return {
     beliefs,
     goals: [`Help ${request.view?.self.role.alignment ?? "my side"} reach its win condition.`],
-    strategy: "Track claims, pressure inconsistencies, and keep my role information compartmentalized.",
+    strategy:
+      "Track claims, pressure inconsistencies, and keep my role information compartmentalized.",
     unresolvedQuestions: targetId ? [`Is ${targetId} coordinating with another player?`] : [],
   };
 }
@@ -252,22 +568,53 @@ function candidates(request: DecisionRequest<unknown>): string[] {
 
 function choose(request: DecisionRequest<unknown>, values: string[]): string | undefined {
   if (values.length === 0) return undefined;
-  const offset = hashSeed(`${request.view?.gameId}:${request.view?.day}:${request.playerId}:${request.kind}`) % values.length;
+  const offset =
+    hashSeed(`${request.view?.gameId}:${request.view?.day}:${request.playerId}:${request.kind}`) %
+    values.length;
   return values[offset];
 }
 
 export class FakeDecisionProvider implements DecisionProvider {
   async decide<T>(request: DecisionRequest<T>): Promise<DecisionResult<T>> {
-    if (request.kind === "jev") throw new Error("Use an injected Jev test provider for typed Jev requests");
-    if(request.kind==="decision_v3"||request.kind==="decision_v3_1"){
-      const data=request.schema.parse(fakeV3Submission(request as DecisionRequest<unknown>));
-      const usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningTokens:0};
-      request.onUsage?.(usage,{provider:"fake",model:request.model,outputLimitEnforced:true});request.onRawResponse?.(JSON.stringify(data));
-      return {data:data as T,provider:"fake",model:request.model,usage:{inputTokens:0,outputTokens:0,totalTokens:0}};
+    if (request.kind === "jev")
+      throw new Error("Use an injected Jev test provider for typed Jev requests");
+    if (request.kind === "decision_v3" || request.kind === "decision_v3_1") {
+      const data = request.schema.parse(fakeV3Submission(request as DecisionRequest<unknown>));
+      const usage = {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        reasoningTokens: 0,
+      };
+      request.onUsage?.(usage, {
+        provider: "fake",
+        model: request.model,
+        outputLimitEnforced: true,
+      });
+      request.onRawResponse?.(JSON.stringify(data));
+      return {
+        data: data as T,
+        provider: "fake",
+        model: request.model,
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      };
     }
     if (request.kind === "decision_v2") {
-      const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningTokens: 0 };
-      request.onUsage?.(usage, { provider: "fake", model: request.model, outputLimitEnforced: true });
+      const usage = {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        reasoningTokens: 0,
+      };
+      request.onUsage?.(usage, {
+        provider: "fake",
+        model: request.model,
+        outputLimitEnforced: true,
+      });
       request.onRawResponse?.(JSON.stringify(fakeV2Report(request as DecisionRequest<unknown>)));
       return {
         data: request.schema.parse(fakeV2Report(request as DecisionRequest<unknown>)),
@@ -281,8 +628,10 @@ export class FakeDecisionProvider implements DecisionProvider {
     let data: Initiative | Speech | TeamPoint | NightAction | Vote | { text: string };
     switch (request.kind) {
       case "initiative": {
-        const transcriptLength = request.view?.publicEvents.filter((event) => event.type === "message.public").length ?? 0;
-        const wantsToSpeak = (hashSeed(`${request.playerId}:${transcriptLength}`) + transcriptLength) % 3 === 0;
+        const transcriptLength =
+          request.view?.publicEvents.filter((event) => event.type === "message.public").length ?? 0;
+        const wantsToSpeak =
+          (hashSeed(`${request.playerId}:${transcriptLength}`) + transcriptLength) % 3 === 0;
         data = {
           kind: "initiative",
           intent: wantsToSpeak ? "speak" : transcriptLength > 2 ? "ready_to_vote" : "pass",
@@ -307,7 +656,8 @@ export class FakeDecisionProvider implements DecisionProvider {
         const priorPoint = [...(request.view?.teamEvents ?? [])]
           .reverse()
           .find((event) => event.type === "team.pointed")?.payload.targetId;
-        const pointTarget = typeof priorPoint === "string" && choices.includes(priorPoint) ? priorPoint : target;
+        const pointTarget =
+          typeof priorPoint === "string" && choices.includes(priorPoint) ? priorPoint : target;
         data = {
           kind: "team_point",
           targetId: pointTarget ?? "",
@@ -318,7 +668,8 @@ export class FakeDecisionProvider implements DecisionProvider {
       case "night_action": {
         const action = request.view?.availableActions[0];
         let actionTarget = target;
-        if (action?.target.allowSelf && action.effect === "protect") actionTarget = request.view?.self.id;
+        if (action?.target.allowSelf && action.effect === "protect")
+          actionTarget = request.view?.self.id;
         data = {
           kind: "night_action",
           actionId: action?.id ?? "pass",
@@ -331,10 +682,19 @@ export class FakeDecisionProvider implements DecisionProvider {
         data = { kind: "vote", targetId: target ?? null, journal: journal(request, target) };
         break;
       case "narration":
-        data = { text: `The moderator announces: ${JSON.stringify(request.disclosurePacket ?? {})}` };
+        data = {
+          text: `The moderator announces: ${JSON.stringify(request.disclosurePacket ?? {})}`,
+        };
         break;
     }
-    const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningTokens: 0 };
+    const usage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      reasoningTokens: 0,
+    };
     request.onUsage?.(usage, { provider: "fake", model: request.model, outputLimitEnforced: true });
     request.onRawResponse?.(JSON.stringify(data));
     return {

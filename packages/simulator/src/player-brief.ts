@@ -13,8 +13,8 @@ export const JOURNAL_EVIDENCE_TYPES = new Set([
 /** Hash authorized evidence before rendering. Phase and pack changes need no reflection. */
 export function journalEvidenceRevision(sources: ContextSourceV2[]): string {
   const ids = sources
-    .filter(source => JOURNAL_EVIDENCE_TYPES.has(source.type))
-    .map(source => source.id);
+    .filter((source) => JOURNAL_EVIDENCE_TYPES.has(source.type))
+    .map((source) => source.id);
   return createHash("sha256").update(JSON.stringify(ids)).digest("hex");
 }
 

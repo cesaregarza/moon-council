@@ -11,19 +11,37 @@ describe("bounded initiative scheduler", () => {
         playerId: "recent",
         lastSpokeAt: 10,
         followUpsUsed: 0,
-        decision: { kind: "initiative", intent: "speak", urgency: "high", journal, ...nullableContext },
+        decision: {
+          kind: "initiative",
+          intent: "speak",
+          urgency: "high",
+          journal,
+          ...nullableContext,
+        },
       },
       {
         playerId: "waiting",
         lastSpokeAt: 1,
         followUpsUsed: 0,
-        decision: { kind: "initiative", intent: "speak", urgency: "high", journal, ...nullableContext },
+        decision: {
+          kind: "initiative",
+          intent: "speak",
+          urgency: "high",
+          journal,
+          ...nullableContext,
+        },
       },
       {
         playerId: "low",
         lastSpokeAt: 0,
         followUpsUsed: 0,
-        decision: { kind: "initiative", intent: "speak", urgency: "low", journal, ...nullableContext },
+        decision: {
+          kind: "initiative",
+          intent: "speak",
+          urgency: "low",
+          journal,
+          ...nullableContext,
+        },
       },
     ];
     expect(selectFollowUp(candidates, "seed", 2)?.playerId).toBe("waiting");
@@ -35,15 +53,33 @@ describe("bounded initiative scheduler", () => {
         playerId: "capped",
         lastSpokeAt: 0,
         followUpsUsed: 2,
-        decision: { kind: "initiative", intent: "speak", urgency: "high", journal, ...nullableContext },
+        decision: {
+          kind: "initiative",
+          intent: "speak",
+          urgency: "high",
+          journal,
+          ...nullableContext,
+        },
       },
     ];
     expect(selectFollowUp(capped, "seed", 2)).toBeUndefined();
     expect(
       discussionReady(
         [
-          { kind: "initiative", intent: "ready_to_vote", urgency: "low", journal, ...nullableContext },
-          { kind: "initiative", intent: "ready_to_vote", urgency: "low", journal, ...nullableContext },
+          {
+            kind: "initiative",
+            intent: "ready_to_vote",
+            urgency: "low",
+            journal,
+            ...nullableContext,
+          },
+          {
+            kind: "initiative",
+            intent: "ready_to_vote",
+            urgency: "low",
+            journal,
+            ...nullableContext,
+          },
           { kind: "initiative", intent: "pass", urgency: "low", journal, ...nullableContext },
         ],
         3,
