@@ -54,6 +54,8 @@ OPENAI_REASONING_EFFORT=xhigh
 OPENAI_MODERATOR_MODEL=optional_separate_model_id
 ```
 
+Default live games have no total-token ceiling; they are still bounded by 500 model calls, 30 minutes of active runtime, and 8 day/night cycles.
+
 The API key remains in the API/runner environment and is never sent to the browser or stored in SQLite. OpenAI requests use the Responses API with `store: false` and strict JSON-schema output. The application reconstructs every turn from its own filtered state.
 
 Alternatively, use the ChatGPT account already signed in to Codex. The project-local CLI comes from the official Codex SDK, so login and status checks use the same compatible runtime as the game provider:

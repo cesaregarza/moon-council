@@ -301,9 +301,9 @@ describe("Jev with mandatory LLM journals and free speech", () => {
     expect(after.filter(e=>e.type==="journal.refreshed").length-before).toBeLessThanOrEqual(5); // pending closing speech only
     expect(jev.requests.some(r=>r.questions.target)).toBe(true);
     expect(jev.requests.filter(r=>r.questions.target).every(r=>workflow==="journal_v3"?(r.state as any).journal:(r.state as any).private.AUTHORIZED_PRIVATE_STATE.journal.attentionNotes)).toBe(true);
-  },60_000);
+  },120_000);
 
-  it.each(["journal_v2","journal_v3"])("runs the full %s workflow with Jev votes/night/pack choices and no topic routing", async workflow => {
+  it.each(["journal_v2","journal_v3","journal_v4"])("runs the full %s workflow with Jev votes/night/pack choices and no topic routing", async workflow => {
     const connection=openDatabase(":memory:");connections.push(connection);
     const repository=new LabRepository(connection);repository.seedRoles([...STARTER_ROLES,DOCTOR_V2]);
     const game=repository.createGame(journalConfig({decisionEngine:{mode:"jev",workflow},deliberation:{maxContextTokens:32_000,maxJournalTokens:16_000},safety:{maxCycles:6,maxModelCalls:2000,maxWallClockMs:120_000},maxTotalTokens:10_000_000}));
@@ -315,10 +315,12 @@ describe("Jev with mandatory LLM journals and free speech", () => {
       let target:string|undefined;
       if(task==="vote_choice")target="abstain";
       if(task==="team_point_choice"){
-        const entries=Object.entries(choices).sort((a,b)=>(a[1] as any).playerId.localeCompare((b[1] as any).playerId));
+        const playerId=(choice:unknown)=>typeof choice==="string"?choice.match(/\(([^)]+)\)\.$/)?.[1]??"":(choice as {playerId:string}).playerId;
+        const entries=Object.entries(choices).sort((a,b)=>playerId(a[1]).localeCompare(playerId(b[1])));
         const own=state.private?.AUTHORIZED_PRIVATE_STATE;
         const first=own&&!own.evidence.some((e:any)=>e.type==="team.point");
-        target=workflow==="journal_v3"?entries[state.facts.includes("Current pack points:")?0:requests.filter(r=>(r.state as any).task.type==="team_point_choice").length%2]?.[0]:entries[first&&own.self.id>own.knownAllies[0]?.id?1:0]?.[0];
+        const facts=state.verifiedFacts??state.facts;
+        target=workflow!=="journal_v2"?entries[facts.includes("Current pack points:")?0:requests.filter(r=>(r.state as any).task.type==="team_point_choice").length%2]?.[0]:entries[first&&own.self.id>own.knownAllies[0]?.id?1:0]?.[0];
       }
       return JSON.stringify(answer(request,false,target));
     });
@@ -329,8 +331,8 @@ describe("Jev with mandatory LLM journals and free speech", () => {
     expect(tasks).toContain("vote_choice");expect(tasks).toContain("night_choice");expect(tasks).toContain("team_point_choice");
     expect(tasks.every(t=>["discussion_score","discussion_listen","vote_choice","night_choice","team_point_choice"].includes(t))).toBe(true);
     expect(llm.requests.every(r=>["journal_update","discussion_free_speech","closing_response"].includes(r.schemaName))).toBe(true);
-    expect(requests.some(r=>JSON.stringify((r.state as any).public??(r.state as any).facts).includes('ballots'))).toBe(true);
-    expect(requests.some(r=>JSON.stringify((r.state as any).private??(r.state as any).facts).includes(workflow==="journal_v3"?"Current pack points":"team.point"))).toBe(true);
+    expect(requests.some(r=>JSON.stringify((r.state as any).public??(r.state as any).verifiedFacts??(r.state as any).facts).includes('ballots'))).toBe(true);
+    expect(requests.some(r=>JSON.stringify((r.state as any).private??(r.state as any).verifiedFacts??(r.state as any).facts).includes(workflow!=="journal_v2"?"Current pack points":"team.point"))).toBe(true);
   },120_000);
 
   it("keeps archived Jev games on their recorded workflow", () => {

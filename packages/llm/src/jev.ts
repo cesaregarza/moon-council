@@ -51,15 +51,25 @@ export const runAskJev: AskJevRunner = (input, { signal, timeoutMs }) => new Pro
   for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "TYPESAFE_API_KEY", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "LANG"]) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
-  const child = spawn(process.env.ASK_JEV_BIN?.trim() || "ask-jev", ["--timeout", String(timeoutMs / 1000)], { shell: false, stdio: ["pipe", "pipe", "pipe"], env });
+  const child = spawn(process.env.ASK_JEV_BIN?.trim() || "ask-jev", ["--timeout", String(Math.max(1, Math.ceil(timeoutMs / 1000)))], { detached: process.platform !== "win32", shell: false, stdio: ["pipe", "pipe", "pipe"], env });
   let size = 0, stderrSize = 0, settled = false;
+  let stdinFailed = false;
+  const killProcessTree = () => {
+    if (!child.pid) return;
+    try {
+      if (process.platform === "win32") child.kill("SIGKILL");
+      else process.kill(-child.pid, "SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") child.kill("SIGKILL");
+    }
+  };
   const chunks: Buffer[] = [];
   const finish = (error?: Error) => {
     if (settled) return;
     settled = true;
     clearTimeout(timer);
     signal?.removeEventListener("abort", abort);
-    if (error) { child.kill("SIGKILL"); reject(error); }
+    if (error) { killProcessTree(); reject(error); }
     else resolve(Buffer.concat(chunks).toString("utf8"));
   };
   const abort = () => finish(new Error("Jev request aborted"));
@@ -73,8 +83,13 @@ export const runAskJev: AskJevRunner = (input, { signal, timeoutMs }) => new Pro
   });
   // Drain stderr but never copy supplied context or credentials into an application error.
   child.stderr.on("data", (chunk: Buffer) => { stderrSize += chunk.length; if (stderrSize > MAX_BYTES) finish(new Error("Jev stderr exceeds 1 MiB")); });
-  child.stdin.on("error", () => finish(new Error("Could not send the request to ask-jev")));
-  child.on("close", code => finish(code === 0 ? undefined : new Error(`ask-jev failed (exit ${code}); check CLI credentials, service access, and its private request log`)));
+  // EPIPE commonly precedes a useful nonzero exit. Drain/await close so we retain
+  // that exit code; the deadline still bounds a child that never exits.
+  child.stdin.on("error", () => { stdinFailed = true; });
+  child.on("close", code => {
+    if (code !== 0) finish(new Error(`ask-jev failed (exit ${code}); check CLI credentials, service access, and its private request log`));
+    else finish(stdinFailed ? new Error("Could not send the complete request to ask-jev (exit 0)") : undefined);
+  });
   child.stdin.end(input);
 });
 

@@ -67,6 +67,9 @@ const CreateDiscussionPolicyV2Schema = DiscussionPolicySchema.extend({
 export const SafetyLimitsV2Schema = SafetyLimitsSchema.extend({
   maxOutputTokens: z.number().int().min(100).max(32_768).default(600),
 });
+// Worst-case JSON escaping costs six bytes per brief character. This includes
+// bounded owner/revision metadata and at least 1,000 estimated prose tokens.
+export const MIN_ACTOR_JOURNAL_TOKENS = 16_000;
 export const GameConfigV2Schema = z.object({ ...GameConfigSchema.shape,
   schemaVersion: z.literal("game_config_v2"),
   safety: SafetyLimitsV2Schema.default(SafetyLimitsV2Schema.parse({})),
@@ -81,6 +84,14 @@ export const GameConfigV2Schema = z.object({ ...GameConfigSchema.shape,
 }).superRefine((value, ctx) => {
   if (value.decisionEngine.mode === "jev" && !["agent_v3_1", "agent_v3_2"].includes(value.protocolVersion)) ctx.addIssue({code:"custom",message:"Jev decisions require the V3.1 or V3.2 handle protocol"});
   if (value.decisionEngine.mode === "jev" && value.decisionEngine.workflow !== "legacy_v1" && value.discussion.speakerSelection !== "listener_auction") ctx.addIssue({code:"custom",message:"The journal Jev workflow requires listener auctions"});
+  if (value.decisionEngine.mode === "jev" && value.decisionEngine.workflow === "journal_v4"
+      && value.deliberation.maxJournalTokens < MIN_ACTOR_JOURNAL_TOKENS) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["deliberation", "maxJournalTokens"],
+      message: `journal_v4 requires at least ${MIN_ACTOR_JOURNAL_TOKENS} journal tokens for the maximum current brief and prose headroom`,
+    });
+  }
   const roster=PRESET_ROSTERS[value.preset];
   if(roster) {
     const expected=roster.map(id=>`${id}:${rosterRoleVersion(id)}`).sort();
@@ -134,7 +145,7 @@ const Refs = z.array(SourceId).max(6);
 export const BeliefV2Schema = z.strictObject({ playerId: Id, probability: z.number().min(0).max(1), basis: z.enum(["prior", "inference", "authorized_fact"]), note: Brief, sources: Refs });
 export const HypothesisV2Schema = z.strictObject({ id: Id, statement: Brief, confidence: z.number().min(0).max(1), sources: Refs });
 export const DecisionBriefTextSchema = z.strictObject({ action: z.string().trim().min(1).max(4000), attention: z.string().trim().min(1).max(3000) });
-export const DecisionBriefSchema = DecisionBriefTextSchema.extend({ playerId: Id, evidenceRevision: z.string().min(1) });
+export const DecisionBriefSchema = DecisionBriefTextSchema.extend({ playerId: Id, evidenceRevision: z.string().length(64) });
 export const PrivateJournalV2Schema = z.strictObject({
   schemaVersion: z.literal("journal_v2"), version: z.number().int().nonnegative(),
   /** Free-form journal; legacy fields remain readable for archived games. */
@@ -266,7 +277,15 @@ export interface DecisionOpportunityV1 {
   /** Overflow is a durable intermediate stage; only a validated replacement may commit. */
   journalCompaction?: { candidate: PrivateJournalV2; sourceReport: DecisionReportV2; sourceSubmission: unknown; sourceAttemptId: string; result?: PrivateJournalV2; attemptId?: string };
   /** Intermediate reasoning is durable but never a committed action. */
-  jevState?: { stage: "reason" | "decide"; evaluation: unknown; reasoning?: unknown; semanticIssues?: string[]; semanticRejected?: boolean };
+  jevState?: {
+    stage: "reason" | "decide";
+    evaluation: unknown;
+    reasoning?: unknown;
+    semanticIssues?: string[];
+    semanticRejected?: boolean;
+    semanticFinal?: { attemptId: string; report: DecisionReportV2; submission: unknown };
+    semanticAcknowledgment?: { note: string; at: string };
+  };
 }
 export interface PrivateDeliberationTurnV1 { decisionId: string; playerId: string; turnIndex: number; recovery: number; report: DecisionReportV2; viewId: string }
 export interface UsageV2 { inputTokens: number | null; outputTokens: number | null; totalTokens: number | null; cachedInputTokens: number | null; cacheWriteInputTokens: number | null; reasoningTokens: number | null }

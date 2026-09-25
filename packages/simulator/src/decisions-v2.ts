@@ -78,10 +78,12 @@ export class DecisionExecutorV2 {
     if (game.config.schemaVersion !== "game_config_v2") throw new Error("V2 execution requires V2 config");
     const config = game.config;
     if(config.decisionEngine.workflow==="journal_v4" && usesJev(op,config)) {
-      if(op.jevState?.semanticRejected) throw new DecisionPausedError("semantic review exhausted; inspect the recorded decision and supersede it explicitly before resuming");
+      if (op.jevState?.semanticRejected) {
+        throw new DecisionPausedError("semantic review exhausted; acknowledge the recorded anomaly explicitly before resuming");
+      }
       if(!currentDecisionBrief(op.packet) || op.playerId!==op.packet.self.id) {
         op.status="paused";this.store.save(op);
-        throw new DecisionPausedError("missing or stale actor brief; refresh the journal and supersede this decision");
+        throw new DecisionPausedError("invalid actor brief in persisted decision; refusing direct execution");
       }
     }
     const policy = config.deliberation;
@@ -120,7 +122,28 @@ export class DecisionExecutorV2 {
       const commitOnly=finalCall || initialCommitOnly(op.packet,op.kind,policy.mode) || optional && this.optionalCallsUsed(op)+1>=allowance;
       const legacy=decisionRequestV2(op.packet,op.kind,policy.mode,commitOnly,op.best,feedback ?? null);
       const compacting=op.journalCompaction&&!op.journalCompaction.result;
-      const basePrepared=compacting?journalCompactionRequest(op.journalCompaction!,policy.maxJournalTokens,config.safety.maxOutputTokens,feedback??null,this.store.attempts(op.gameId,op.id).findLast(a=>a.schemaVersion.startsWith("journal_compaction_v")&&a.status==="invalid")?.response):options.requestForAttempt?.(commitOnly,op.best,feedback??null)??{...legacy,maxOutputTokens:config.safety.maxOutputTokens,promptVersion:"player_prompt_v2.2",schemaVersion:"private_decision_v2.stable",schemaName:"private_decision_v2",normalize:(submission:unknown)=>canonicalizeReportReferences(legacy.schema.parse(submission) as DecisionReportV2,op.packet)};
+      let basePrepared: ReturnType<NonNullable<ExecuteDecisionOptions["requestForAttempt"]>>;
+      if (compacting) {
+        const previousDraft = this.store.attempts(op.gameId, op.id).findLast(attempt =>
+          attempt.schemaVersion.startsWith("journal_compaction_v") && attempt.status === "invalid");
+        basePrepared = journalCompactionRequest(
+          op.journalCompaction!, policy.maxJournalTokens, config.safety.maxOutputTokens,
+          feedback ?? null, previousDraft?.response,
+        );
+      } else if (options.requestForAttempt) {
+        basePrepared = options.requestForAttempt(commitOnly, op.best, feedback ?? null);
+      } else {
+        basePrepared = {
+          ...legacy,
+          maxOutputTokens: config.safety.maxOutputTokens,
+          promptVersion: "player_prompt_v2.2",
+          schemaVersion: "private_decision_v2.stable",
+          schemaName: "private_decision_v2",
+          normalize: submission => canonicalizeReportReferences(
+            legacy.schema.parse(submission) as DecisionReportV2, op.packet,
+          ),
+        };
+      }
       const hybrid = !compacting && usesJev(op, config);
       const stage = hybrid ? prepareJevStage(op, config, basePrepared, usesJournalWorkflow(config) ? false : this.allowJevReasoning(op, config, maxAttempts - index, options.mandatoryRemaining, start)) : undefined;
       const prepared = stage?.prepared ?? basePrepared;
@@ -191,24 +214,36 @@ export class DecisionExecutorV2 {
           const repairErrors=errors.includes("citations must reference delivered source IDs")?[...errors,`allowed citation aliases: ${citationAliasIds(op.packet).join(", ")}`]:errors;
           this.log(op,"decision.report_rejected",{report,errors:repairErrors,attemptId:attempt.id});throw new Error(repairErrors.join("; "));
         }
-        const assessment=stage?.assess?.(rawSubmission);
-        if(assessment) {
-          this.log(op,"decision.semantic_assessed",{attemptId:attempt.id,...assessment,transportValid:true});
-          if(assessment.issues.length) {
-            const exhausted=Boolean(op.jevState?.semanticIssues);
-            op.jevState={stage:"decide",evaluation:op.jevState?.evaluation??rawSubmission,semanticIssues:assessment.issues,semanticRejected:exhausted};
-            op.status=exhausted?"paused":"open";
-            attempt.status="valid";
-            this.store.atomic(()=>{
-              const current=this.store.get<DecisionOpportunityV1>(op.gameId,`decision:${op.id}`);
-              if(current?.recovery!==op.recovery||current?.status==="committed")throw new DecisionPausedError("execution episode superseded");
-              this.store.updateAttempt(attempt);this.store.save(op);
-              this.log(op,"decision.jev_stage",{attemptId:attempt.id,stage:"decide",checkpoint:op.jevState});
-            });
-            if(exhausted)throw new DecisionPausedError("semantic contradiction persisted after one reconsideration; no action committed");
-            optional=true;feedback=undefined;
-            continue;
+        const assessment = stage?.assess?.(rawSubmission);
+        if (assessment?.issues.length) {
+          const exhausted = Boolean(op.jevState?.semanticIssues);
+          const next: DecisionOpportunityV1 = { ...op, jevState: {
+            stage: "decide",
+            evaluation: op.jevState?.evaluation ?? rawSubmission,
+            semanticIssues: assessment.issues,
+            semanticRejected: exhausted,
+            ...(exhausted ? {
+              semanticFinal: { attemptId: attempt.id, report, submission },
+            } : {}),
+          }, status: exhausted ? "paused" : "open" };
+          attempt.status = "valid";
+          this.store.atomic(() => {
+            const current = this.store.get<DecisionOpportunityV1>(op.gameId, `decision:${op.id}`);
+            if (current?.recovery !== op.recovery || current?.status === "committed") {
+              throw new DecisionPausedError("execution episode superseded");
+            }
+            this.store.updateAttempt(attempt);
+            this.store.save(next);
+            this.log(next, "decision.semantic_assessed", { attemptId: attempt.id, ...assessment, transportValid: true });
+            this.log(next, "decision.jev_stage", { attemptId: attempt.id, stage: "decide", checkpoint: next.jevState });
+          });
+          op = next;
+          if (exhausted) {
+            throw new DecisionPausedError("semantic contradiction persisted after one reconsideration; acknowledge the recorded anomaly to commit it");
           }
+          optional = true;
+          feedback = undefined;
+          continue;
         }
         const checkpoint = stage?.checkpoint(rawSubmission);
         if (checkpoint) {
@@ -237,6 +272,9 @@ export class DecisionExecutorV2 {
           const current=this.store.get<DecisionOpportunityV1>(op.gameId,`decision:${op.id}`);
           if(current?.recovery !== op.recovery || current?.status === "committed") throw new DecisionPausedError("execution episode superseded");
           this.store.updateAttempt(attempt); this.store.save(op);
+          if (assessment?.applicable) {
+            this.log(op, "decision.semantic_assessed", { attemptId: attempt.id, ...assessment, transportValid: true });
+          }
           this.log(op, "decision.reported", { report,submission:op.bestSubmission,taskType:op.taskType,recovery: op.recovery, turnIndex: index, viewId: op.viewId, continuation: verdict, attemptId: attempt.id });
         });
         assertV2Budget(this.store, op.gameId, config, Date.now() - start, false);
@@ -256,6 +294,9 @@ export class DecisionExecutorV2 {
     }
     if (op.best && options.validateCurrent()) { op.status = "pending"; this.store.save(op); return options.deferCommit ? false : commit(); }
     op.status = "paused"; this.store.save(op);
+    if (op.jevState?.semanticIssues && !op.jevState.semanticRejected) {
+      throw new DecisionPausedError("semantic reconsideration is pending; episode call budget exhausted; resume to complete the recorded review");
+    }
     throw new DecisionPausedError("exhausted decision retries without a valid proposal; no action fabricated");
   }
   private allowJevReasoning(op: DecisionOpportunityV1, config: GameConfigV2, remaining: number, mandatory: number, start: number): boolean {

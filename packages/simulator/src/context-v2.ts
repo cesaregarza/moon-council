@@ -110,7 +110,9 @@ export function buildContextV2(state: GameState, events: GameEventV1[], playerId
   ];
   packet.rules.roles = [...new Map(config.roleDeck.map(r=>[`${r.id}:${r.version}`,r])).values()].sort((a,b)=>a.id.localeCompare(b.id)).map(r=>({id:r.id,version:r.version,name:r.name,alignment:r.alignment,actions:r.actions,passives:r.passives,winCondition:r.winCondition}));
   let all = authorizedSources(state, events, playerId);
-  if(config.decisionEngine.workflow === "journal_v4") packet.rules.journalRevision = journalEvidenceRevision(all);
+  if (config.decisionEngine.mode === "jev" && config.decisionEngine.workflow === "journal_v4") {
+    packet.rules.journalRevision = journalEvidenceRevision(all);
+  }
   // Set by the V3.2 ladder so the measured request can walk tiers back down; a no-op
   // under every other protocol.
   let applyTiers = () => undefined as void;

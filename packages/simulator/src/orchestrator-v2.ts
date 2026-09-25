@@ -1,4 +1,4 @@
-import { JOURNAL_EVIDENCE_TYPES } from "./player-brief";
+import { JOURNAL_EVIDENCE_TYPES, journalEvidenceRevision } from "./player-brief";
 import type { ActionProposalV2, DecisionOpportunityV1, DecisionReportV2, DecisionReportWithSpeakerIntentV1, DiscussionBidV3, DiscussionPlanV3, GameConfigV2, GameEventV1, ListenerBidV3, SpeakerIntentV1, SpeechSubmissionV3, TargetChoiceSubmissionV3 } from "@werewolf/contracts";
 import { DecisionStore, LabRepository } from "@werewolf/db";
 import { checkWinners, createGameCreatedEvent, createGameState, reduceGame, resolveNight, resolveVote, seededChoice, shuffled, transition, validateNightAction, type EngineEventInput, type GameState } from "@werewolf/engine";
@@ -342,23 +342,32 @@ export class V2GameOrchestrator {
   /** All living seats reflect on new speech/results before any subsequent scoring or action. */
   private async refreshJournals(state: GameState, events: GameEventV1[]): Promise<boolean> {
     const meaningful = JOURNAL_EVIDENCE_TYPES;
-    const at = events.at(-1)!.sequence, dockets = responseDockets(state, events);
+    const at = events.at(-1)!.sequence;
+    const dockets = responseDockets(state, events);
+    const sequenceById = new Map(events.map(event => [event.id, event.sequence]));
+    const actorWorkflow = this.config(state).decisionEngine.workflow === "journal_v4";
     const pending = state.players.filter(p => p.alive).flatMap(player => {
       const sources = authorizedSources(state, events, player.id).filter(s => meaningful.has(s.type));
-      const revision = contentHash(sources.map(s => s.id));
+      const revision = journalEvidenceRevision(sources);
       const previous = events.findLast(e => e.type === "journal.refreshed" && e.payload.playerId === player.id);
       const brief = this.store.journal(state.gameId, player.id).decisionBrief;
       const currentBrief = this.config(state).decisionEngine.workflow !== "journal_v4" || brief?.playerId === player.id && brief.evidenceRevision === revision;
       if (previous?.payload.revision === revision && currentBrief) return [];
       const reviewed = new Set((previous?.payload.sourceIds as string[] | undefined) ?? []);
-      return [{ playerId: player.id, revision, sourceIds: sources.map(s => s.id), newIds: sources.filter(s => !reviewed.has(s.id)).map(s => s.id) }];
+      const reviewedThrough = previous?.payload.reviewedThroughSequence;
+      const newIds = sources.filter(source => typeof reviewedThrough === "number"
+        ? (sequenceById.get(source.id) ?? Infinity) > reviewedThrough
+        : !reviewed.has(source.id)).map(source => source.id);
+      return [{ playerId: player.id, revision, sourceIds: sources.map(source => source.id), newIds }];
     });
     if (!pending.length) return false;
-    return this.parallel(pending, this.config(state).discussion.maxParallelDecisions, item => this.decide(
+    await this.parallel(pending, this.config(state).discussion.maxParallelDecisions, item => this.decide(
       state, item.playerId, "pass", `journal:${item.playerId}:${item.revision}`, dockets[item.playerId]??[], false, at,
-      () => [{ type: "journal.refreshed", phase: state.phase, day: state.day, visibility: "player", audienceIds: [item.playerId], payload: { playerId: item.playerId, revision: item.revision, sourceIds: item.sourceIds } }],
+      () => [{ type: "journal.refreshed", phase: state.phase, day: state.day, visibility: "player", audienceIds: [item.playerId], payload: { playerId: item.playerId, revision: item.revision, ...(actorWorkflow ? { reviewedThroughSequence: at } : { sourceIds: item.sourceIds }) } }],
       false, { type: "journal_update", revision: item.revision, sourceIds: item.newIds },
     ));
+    // Pending work consumes this advance even if an operator paused mid-reflection.
+    return true;
   }
   private async auctionDiscussionV3(state:GameState,events:GameEventV1[],plan:NonNullable<ReturnType<typeof discussionAuctionPlan>>):Promise<boolean>{
     const config=this.config(state),at=events.at(-1)!.sequence,revision=publicRevision(events),base=`auction-v3:${plan.stage}:${plan.round}:${revision}`;
