@@ -1,3 +1,4 @@
+import { experimentSpeakerIntent } from "./urgency-experiment";
 import { JOURNAL_EVIDENCE_TYPES, journalEvidenceRevision } from "./player-brief";
 import type {
   ActionProposalV2,
@@ -1037,7 +1038,12 @@ export class V2GameOrchestrator {
                 publicRevision: revision,
                 eligible,
                 submission: bid,
-                intent: (report as DecisionReportWithSpeakerIntentV1).speakerIntent,
+                ...experimentSpeakerIntent(
+                  config,
+                  playerId,
+                  eligible,
+                  (report as DecisionReportWithSpeakerIntentV1).speakerIntent,
+                ),
               },
             },
           ];

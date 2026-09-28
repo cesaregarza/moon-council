@@ -1,3 +1,5 @@
+import { clonedAttentionExperiment } from "@werewolf/contracts";
+import { PersonalityInput } from "./PersonalityInput";
 import { useMemo, useState } from "react";
 import { seatName } from "@werewolf/contracts";
 import type { CreateGameV2Request, RoleDefinitionV1, StoredGameConfig } from "@werewolf/contracts";
@@ -182,6 +184,7 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
         },
         maxTotalTokens,
         reasoningEffort,
+        experiment: clonedAttentionExperiment(initialV2, seats),
         decisionEngine: {
           mode: decisionEngine,
           workflow: "journal_v4",
@@ -279,13 +282,10 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
               <span className="seat-number">{String(index + 1).padStart(2, "0")}</span>
               <div>
                 <strong>{seat.name}</strong>
-                <input
-                  aria-label={`${seat.name} personality`}
-                  value={personalities[index] ?? ""}
-                  placeholder="Optional personality override"
-                  onChange={(event) =>
-                    setPersonalities({ ...personalities, [index]: event.target.value })
-                  }
+                <PersonalityInput
+                  name={seat.name}
+                  value={seat.personality}
+                  onChange={(value) => setPersonalities({ ...personalities, [index]: value })}
                 />
               </div>
               <select

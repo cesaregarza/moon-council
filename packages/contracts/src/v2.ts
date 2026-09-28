@@ -1,3 +1,4 @@
+import { AttentionExperimentSchema, validateAttentionExperiment } from "./attention-experiment";
 import { z } from "zod";
 import {
   GameConfigSchema,
@@ -147,8 +148,10 @@ export const GameConfigV2Schema = z
     maxTotalTokens: z.number().int().min(1_000).max(100_000_000).nullable().default(2_000_000),
     modelSettings: z.record(z.string(), ModelSettingsSchema),
     decisionEngine: DecisionEngineSchema.default(DecisionEngineSchema.parse({})),
+    experiment: AttentionExperimentSchema.optional(),
   })
   .superRefine((value, ctx) => {
+    validateAttentionExperiment(value, ctx);
     if (
       value.decisionEngine.mode === "jev" &&
       !["agent_v3_1", "agent_v3_2"].includes(value.protocolVersion)
@@ -226,6 +229,7 @@ const NewGameDeliberationSchema = DeliberationPolicySchema.extend({
   maxContextTokens: z.number().int().min(1_000).max(32_000).default(32_000),
 });
 export const CreateGameV2RequestSchema = CreateGameRequestSchema.extend({
+  experiment: AttentionExperimentSchema.optional(),
   safety: NewGameSafetySchema.default(NewGameSafetySchema.parse({})),
   preset: z.enum(["standard-8-v2", "standard-8-v3", "custom-v2"]).default("custom-v2"),
   discussion: CreateDiscussionPolicyV2Schema.default(CreateDiscussionPolicyV2Schema.parse({})),

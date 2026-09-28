@@ -33,6 +33,7 @@ ROOT_FILES = {
     "vitest.config.ts",
 }
 DOCS = {
+    "ATTENTION_EXPERIMENT.md",
     "ARCHITECTURE.md",
     "SPEAKER_AUCTION.md",
     "RUNNING.md",

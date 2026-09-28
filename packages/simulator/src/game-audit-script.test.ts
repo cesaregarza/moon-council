@@ -330,3 +330,88 @@ describe("journal workflow audit", () => {
     });
   });
 });
+
+describe("attention dynamics", () => {
+  it("measures prior floor share, delivered speeches, listener notes and missing candidates separately", () => {
+    const scores = (interest: number) => [
+      {
+        playerId: "p1",
+        urge: 1,
+        listenerInterest: interest,
+        normalizedListenerInterest: interest,
+        priority: interest,
+      },
+      {
+        playerId: "p2",
+        urge: 0.5,
+        listenerInterest: 1 - interest,
+        normalizedListenerInterest: 1 - interest,
+        priority: 1 - interest,
+      },
+    ];
+    const auction = (seq: number, interest: number, selectedPlayerId: string | null) =>
+      event(seq, "discussion.auction_resolved", {
+        auctionKey: `a${seq}`,
+        scores: scores(interest),
+        selectedPlayerId,
+        intents: { p2: { willingnessToListen: [{ playerId: "p1", willingness: interest }] } },
+      });
+    const events = [
+      event(0, "game.created", {
+        config: { experiment: { forcedUrgency: { p1: 1 } } },
+        players: [
+          { id: "p1", name: "Ram", role: { name: "Villager", alignment: "village" } },
+          { id: "p2", name: "Wolf", role: { name: "Werewolf", alignment: "werewolf" } },
+        ],
+      }),
+      auction(1, 0.9, "p1"),
+      event(2, "speech.public", { playerId: "p1", text: "Long digression" }),
+      event(3, "journal.v2_updated", {
+        playerId: "p2",
+        journal: { decisionBrief: { attention: "Repeated himself; want a new speaker." } },
+      }),
+      auction(4, 0.1, "p2"),
+      event(5, "speech.public", { playerId: "p2", text: "A useful claim" }),
+      auction(6, 0.5, "p1"), // selected but never delivered: must not count as a speech
+      event(7, "discussion.auction_resolved", {
+        scores: [],
+        selectedPlayerId: null,
+        declinedCandidateIds: ["p1"],
+      }),
+      event(8, "speech.public", { playerId: "p1", text: "Closing", closing: true }),
+    ];
+    const audit = summarizeGameAudit(game, events, []);
+    const day = audit.discussion.attention.days[0]!;
+    expect(day.players[0]).toMatchObject({
+      floorShare: 0.5,
+      speeches: 1,
+      observations: 3,
+      priorFloorInterestSpearman: -1,
+    });
+    expect(day.auctions.map((a) => a.players[0]!.priorFloorShare)).toEqual([0, 1, 0.5, 0.5]);
+    expect(day.auctions.map((a) => a.players[0]!.floorShareAfterAuction)).toEqual([
+      1, 0.5, 0.5, 0.5,
+    ]);
+    expect(day.auctions[1]!.listeners[0]).toMatchObject({
+      playerId: "p2",
+      journalSequence: 3,
+      attention: "Repeated himself; want a new speaker.",
+    });
+    expect(day.auctions[0]!.listeners[0]!.attention).toBeNull();
+    expect(day.auctions[3]!.players[0]).toMatchObject({
+      eligible: true,
+      declined: true,
+      listenerInterest: null,
+    });
+    expect(day.auctions[3]!.players[1]).toMatchObject({ eligible: false, listenerInterest: null });
+    expect(day.byAlignment).toEqual([
+      { name: "village", speeches: 1, floorShare: 0.5 },
+      { name: "werewolf", speeches: 1, floorShare: 0.5 },
+    ]);
+    expect(day.byRole).toEqual([
+      { name: "Villager", speeches: 1, floorShare: 0.5 },
+      { name: "Werewolf", speeches: 1, floorShare: 0.5 },
+    ]);
+    expect(JSON.stringify(summarizeGameProgress(audit))).not.toContain("Repeated himself");
+  });
+});
