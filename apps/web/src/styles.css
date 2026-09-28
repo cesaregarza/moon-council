@@ -657,6 +657,16 @@ select {
   padding: 7px 8px;
   font-size: 11px;
 }
+.seat-row .personality-preset {
+  grid-column: auto;
+}
+.seat-row .seat-personality {
+  grid-column: 1 / -1;
+  min-height: 5rem;
+  padding: 7px 8px;
+  font-size: 11px;
+  resize: vertical;
+}
 .seat-number {
   color: #56625c;
   font:

@@ -14,6 +14,7 @@ export function PersonalityInput({
   return (
     <>
       <select
+        className="personality-preset"
         aria-label={`${name} personality preset`}
         value={preset}
         onChange={(event) => {
@@ -21,7 +22,9 @@ export function PersonalityInput({
           if (key) onChange(PERSONALITY_PRESETS[key].text);
         }}
       >
-        <option value="">Custom personality</option>
+        <option value="" disabled>
+          Custom personality
+        </option>
         {Object.entries(PERSONALITY_PRESETS).map(([key, item]) => (
           <option key={key} value={key}>
             {item.label}
@@ -29,6 +32,7 @@ export function PersonalityInput({
         ))}
       </select>
       <textarea
+        className="seat-personality"
         aria-label={`${name} personality`}
         value={value}
         maxLength={1000}

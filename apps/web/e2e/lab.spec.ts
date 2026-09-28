@@ -413,6 +413,12 @@ test("creates the standard V3.1 setup with editable deliberation, concurrency, a
   await page.getByLabel("Decision concurrency").fill("2");
   await page.getByLabel("Ada model").selectOption("gpt-5.6-luna");
   await page.getByLabel("Ada personality preset").selectOption("rambler");
+  const desktopViewport = page.viewportSize()!;
+  const personality = page.getByLabel("Ada personality", { exact: true });
+  expect((await personality.boundingBox())!.width).toBeGreaterThan(150);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect((await personality.boundingBox())!.width).toBeGreaterThan(150);
+  await page.setViewportSize(desktopViewport);
   await expect(page.getByLabel("Ada personality", { exact: true })).toHaveValue(
     /persistent, highly talkative rambler/,
   );
