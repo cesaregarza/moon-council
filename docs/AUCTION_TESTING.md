@@ -448,8 +448,48 @@ causal task and budget. No provider calls are made.
 
 #### Scaling results
 
-The corrected protocol is frozen and its results will be recorded after running it. The old
-unordered table above is not a substitute for that validation.
+The corrected run at frozen source `b0374d53f2a4` completed all 11,232 scripted cases with zero
+provider calls. The original v1 artifacts remain unchanged. An independent replay checked every turn
+against a separate prerequisite-prefix model, including the actual public predecessor value, private
+transformation, waiting status, readiness time, selected speaker, eligible passovers, and terminal
+publication. It also compared every cyclic path with an independent recurrence over seat positions.
+
+The following means use one maximum-urgency rambler and conditional public memory. Cyclic >N and >2N
+count completions requiring more than one or two full passes through the roster:
+
+| Players | Ordered steps | Auction | Urgency-only | Cyclic mean | Cyclic >N | Cyclic >2N | Cyclic maximum |
+| ------: | ------------: | ------: | -----------: | ----------: | --------: | ---------: | -------------: |
+|       4 |             3 |    4.00 |         6.00 |        6.50 |     20/24 |       4/24 |             10 |
+|       8 |             3 |    4.00 |         6.00 |       11.99 |     85/96 |       8/96 |             20 |
+|      12 |             3 |    4.00 |         6.00 |       18.60 |     73/96 |      19/96 |             30 |
+|      12 |             9 |   10.00 |        18.00 |       53.38 |     96/96 |      96/96 |             82 |
+|      12 |            11 |   12.00 |        22.00 |       65.02 |     96/96 |      96/96 |             88 |
+|      16 |             3 |    4.00 |         6.00 |       25.21 |     78/96 |      18/96 |             43 |
+
+The C → B → A → D example above appears in the saved four-player batch and completes on turn nine.
+The reversed twelve-player fixture that needs 122 turns is a separate regression case, not the
+maximum of the 96 sampled orders.
+
+For twelve players and three steps, cyclic scheduling now averages 18.60 turns instead of v1’s 9.64.
+With eleven ordered steps it averages 65.02 instead of 11.89. The former conclusion that dense
+information made cyclic scheduling nearly tie the auction does not apply once the required
+dependency is present. Favorably aligned cyclic orders can still finish quickly; the figures are
+means, not a claim that the auction wins every seating.
+
+The exact cyclic expectations over all uniformly random orders are 18.5 turns for twelve players and
+three steps, and 66.5 for twelve players and eleven steps. These differ from the sampled means
+above. All cooperative controls completed in one turn per step under auction and urgency-only, and
+each flat-interest auction matched its urgency-only speaking sequence.
+
+This correction establishes the scheduling behavior of the stated causal task. It assumes accurate
+private readiness and exact public memory. The waiting-state transition has regression coverage, but
+the batch does not measure an improvement in Luna journals or prove Jev will make the same
+judgments. No live model calls, token-cost estimates, or latency claims are made.
+
+Validation passed 315 tests (three opt-in live tests skipped), four browser checks, sixteen Python
+checks, formatting, lint, complexity, typing, and build. The important added checks exercise the
+missed semantics: no usable B before A, no retroactive credit, and completion requiring service in
+later cycles.
 
 ## 3. Feedback: controlled conversations after the bid checks
 
