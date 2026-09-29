@@ -114,8 +114,52 @@ underlying events through Luna's journal updater and repeat the assessment on th
 separates interpretation errors from scoring errors. Include an explicit received-evidence list and
 an explicitly pending event so a scheduled backup cannot be mistaken for delivered information.
 
-This phase has not been run by `auction:replay`. It needs its own frozen fixture set and call
-budget.
+`auction:bid-probe` implements a separate, bounded judgment study. Its eight pairs cover undisclosed
+versus established clues, unanswered versus resolved questions, useful versus exhausted peers, a
+first explanation request versus a standing refusal, received versus pending backups, concise versus
+padded claims, unresolved versus independently resolved claims from a distrusted source, and
+cooperative versus obstructive objectives. The concise/padded and objective contrasts are
+exploratory: verbosity does not prove low next-turn value, and a malicious objective admits several
+tactics. Listening is not a trust score.
+
+Each of the sixteen fictional contexts receives one Jev bid from an authored factual journal, one
+fresh Luna journal update from an independent prior journal and the actual events, and one Jev bid
+from that update. Both lanes reuse `jevPrompt` from the clue-chain study, including its private
+objective rubric. Luna receives the same objective-neutral concise personality in every cell. The
+scored actor and peer are eligible after the fourth speech; all pairs have matching floor counts.
+Only the actor's private records are present. The pending backup contains no future record values.
+
+```sh
+# First commit a clean source tree. Preparation freezes inputs and makes no calls.
+npm run auction:bid-probe -- --out data/bid-probe --mode prepare
+
+# Review manifest.json, then run the fixed batch with configured provider credentials.
+npm run auction:bid-probe -- --out data/bid-probe --mode run --live
+
+# Rebuild descriptive tables using the same fixture version; no provider calls.
+npm run auction:bid-probe -- --out data/bid-probe --mode report
+```
+
+The ceiling is **48 calls: 16 Luna and 32 Jev**, two concurrent contexts, twenty minutes for the
+whole batch, no application output-token ceiling. Fixed shuffled order is saved before any call. The
+default models match the previous pilot: GPT-6 Luna at `xhigh` and `jev-latest`; actual returned
+versions and usage are logged. A Luna failure leaves its dependent Jev observation missing while
+other contexts proceed. There are no retries, replacements, or resume after uncertain interruption.
+An exclusive start marker rejects a second execution in the same directory.
+
+Preparation requires a new native-filesystem output directory and a clean committed tree. Live
+execution verifies that commit, relevant source hashes, and fixture inputs. The private directory
+contains the frozen manifest and prompt previews, durable attempt ledger, generated journals, raw
+successful responses, partial results, and report. The normal ask-jev log retains request/error
+records even when its response validator rejects an answer.
+
+Primary comparisons use the same probability-weighted score as the study runner, normalized to 0–1.
+Six pairs have a prespecified direction; two are exploratory. Differences within 0.02 are labeled
+near ties for readability, not statistical equivalence. Each cell is a single observation; these are
+diagnostic cases, not independent replications or a performance estimate. Journal provenance must
+also be inspected directly: a sensible urgency score can coexist with a false note. This explicit
+turn-four pending-status test does not recreate the previous pilot's ambiguous post-turn-six
+delivery boundary.
 
 ## 3. Feedback: controlled conversations after the bid checks
 
