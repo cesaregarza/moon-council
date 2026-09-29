@@ -209,6 +209,81 @@ uncertainty. The next small tests should isolate retention of explicit negative 
 marginal value of another confirmation before attributing these patterns to the auction arithmetic.
 No live forced-urgency or alternative-scheduler comparison was added by this batch.
 
+## Journal improvements and an allocation control
+
+A personality assignment is a treatment instruction, not proof of the behavior produced by a
+language model. To distinguish memory quality from scheduling, use two separate experiments.
+
+### Versioned free-prose journals
+
+`memory-v2` preserves evidence provenance, already-public versus genuinely new information, explicit
+statements that a peer lacks further information, and answered/declined/superseded questions. It
+asks what another turn could add to the actor's objective. An independent confirmation or
+clarification can still be useful; the instruction does not require lower scores, force agreement,
+or prescribe speech topics. Public claims remain claims, and pending deliveries remain pending.
+Statements of exhaustion expire when new information becomes available.
+
+The long journal remains free text. No new JSON memory schema or output-token cap is introduced.
+This is an explicit study policy, separate from the full game's versioned attention brief; it does
+not silently rewrite archived studies or switch the full game to an untested prompt.
+
+```sh
+# Compare two freshly generated journals on each identical actor context.
+npm run auction:bid-probe -- --out data/journal-comparison --journal-comparison --mode prepare
+npm run auction:bid-probe -- --out data/journal-comparison --mode run --live
+
+# Choose this policy explicitly for a new discussion batch.
+npm run auction:study -- --protocol clue-chain-v1 --journal-policy memory-v2
+```
+
+The new comparison freezes `auction-journal-comparison-v1`: sixteen contexts, two journal policies,
+one Luna update followed by one Jev bid per policy, **64 calls maximum** (32 Luna, 32 Jev). Two
+contexts run concurrently, policy order is balanced across A/B variants, and both start from the
+same original prior notes. Twenty-minute batch deadline, no retries, no replacement calls. A failed
+journal leaves its dependent score missing. `--journal-comparison` is preparation-only; execution
+reads the frozen manifest. Historical manifests without `journalPolicy` retain `legacy` behavior.
+
+Primary assessment is fidelity: retaining information limits and question status while preserving
+uncertainty, provenance, and the actor's objective. Jev scores are secondary. A lower score alone is
+not improvement. These are reused development cases, not a held-out benchmark or accumulated
+multi-turn memory study. The manifest records the assessment rubric before any calls.
+
+### Scripted scheduler comparison with observable memory
+
+```sh
+npm run auction:control -- --out data/auction-control
+```
+
+This command makes **zero provider calls**. It enumerates 864 deterministic cases: three conditions,
+two arrival schedules, two listener signals, three schedulers, and all 24 seat/tie orders. Each
+scheduler starts a fresh trajectory. Scripts disclose three necessary route links; completion means
+all three are public. Facts can be delivered together at slot 1 or privately at slots 1/4/7. Agents
+see their own delivered records and public speeches, never another actor's hidden record or future
+arrival. Their observable-memory journals are constructed exactly, so summarization errors are
+removed from this control.
+
+- **Schedulers:** the production auction formula, urgency-only, and cyclic round-robin. All use
+  twelve slots, the same willingness, the same previous-speaker exclusion, and matched tie order.
+- **Conditions:** cooperative scripts; a fourth actor who always bids maximum urgency and rambles
+  without task evidence; or a separate p2 actor who sets its outgoing ratings to zero while keeping
+  truthful speech and ordinary urgency. The last is an injected rating tactic, not a lying model.
+- **Listener signals:** a stated toy rule rates an unheard peer 0.7 and a peer who exhausted current
+  information or offered no task information 0.05. Flat-interest holds every sincere rating at 0.7.
+  No hidden personality or future private arrival influences that rule. A new private arrival can
+  legitimately be unknown to listeners, even with perfect memory.
+
+The primary measurements are completion slot and useless slots before completion. JSON also retains
+exact bids, journals, speech, private arrival times, and eligible opportunities passed over before
+each disclosure. Never-delivered facts are censored, with null service delay; they are not
+zero-delay successes. Post-completion turn share can describe surplus talk rather than task harm.
+
+The exact-memory control removes comprehension error, but its numerical preference rule is an
+explicit assumption. It tests scheduler behavior conditional on that signal; it does not prove Jev
+will generate it or that the auction should win. The flat-interest condition checks what listener
+feedback adds, and should reproduce urgency-only trajectories when no outgoing-rating attack is
+present. Cyclic service may beat the auction on some tasks. Enumerated seat orders are design cases,
+not independent live experimental replicates.
+
 ## 3. Feedback: controlled conversations after the bid checks
 
 Keep rambler, malicious-rating, and misinformation scenarios separate initially. Hold task, seed,

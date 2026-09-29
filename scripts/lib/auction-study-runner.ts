@@ -122,6 +122,7 @@ export async function runStudyDiscussion(
             state.speeches,
             "journal",
             manifest.turns,
+            manifest.journalPolicy,
           ),
         });
         player.journal = result.journal;
@@ -244,6 +245,7 @@ export async function runStudyDiscussion(
             state.speeches,
             "speech",
             manifest.turns,
+            manifest.journalPolicy,
           ),
         });
         state.speeches.push({ turn, playerId: selected, text: speech.text });
