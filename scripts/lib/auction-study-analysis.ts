@@ -1,3 +1,4 @@
+import { writeChainReport } from "./chain-study-analysis";
 import { studyUsage } from "./auction-study-usage";
 import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -162,6 +163,7 @@ export async function loadCheckpoints(root: string, manifest: StudyManifest) {
 const pct = (value: number | null) => (value === null ? "—" : `${(value * 100).toFixed(1)}%`);
 export async function writeStudyReport(root: string, manifest: StudyManifest) {
   const states = await loadCheckpoints(root, manifest);
+  if (manifest.protocol === "clue-chain-v1") return writeChainReport(root, manifest, states);
   const rows = states.map((state) => discussionMetrics(state, manifest));
   const effects = factorialEffects(rows);
   const usage = await Promise.all(

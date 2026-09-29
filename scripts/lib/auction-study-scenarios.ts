@@ -3,7 +3,11 @@ export interface StudyScenario {
   task: string;
   choices: Record<string, string>;
   evidence: string[];
-  lateEvidence?: { afterTurn: number; text: string };
+  lateEvidence?: { afterTurn: number; text: string; recipientIndex?: number };
+  routeProbes?: Record<
+    string,
+    { question: string; choices: Record<string, string>; correct: string }
+  >;
   correct: string;
   decisiveEvidence: string;
 }

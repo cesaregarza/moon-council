@@ -26,7 +26,12 @@ export interface StudyAuction {
   selected: string | null;
   unforcedWinner: string | null;
 }
-type StudyAnswer = { playerId: string; answer: string; probabilities: Record<string, number> };
+export type StudyAnswer = {
+  playerId: string;
+  answer: string;
+  probabilities: Record<string, number>;
+  route?: Record<string, { choice: string; probabilities: Record<string, number> }>;
+};
 
 export interface StudyCheckpoint {
   run: StudyRun;
@@ -159,6 +164,17 @@ export async function runStudyDiscussion(
           playerId: player.id,
           answer: answer.choice,
           probabilities: answer.probabilities,
+          ...(scenario.routeProbes
+            ? {
+                route: Object.fromEntries(
+                  Object.keys(scenario.routeProbes).map((key) => {
+                    const link = response.answers[key]!;
+                    if (link.type !== "choice") throw new Error("Expected a route choice");
+                    return [key, { choice: link.choice, probabilities: link.probabilities }];
+                  }),
+                ),
+              }
+            : {}),
         });
       });
       answers.sort((a, b) => a.playerId.localeCompare(b.playerId));
@@ -169,7 +185,11 @@ export async function runStudyDiscussion(
     await save();
     for (let turn = 1; turn <= manifest.turns; turn++) {
       if (scenario.lateEvidence && turn === scenario.lateEvidence.afterTurn + 1) {
-        const witness = state.players.find((player) => player.id === run.witnessId)!;
+        const recipientId =
+          scenario.lateEvidence.recipientIndex === undefined
+            ? run.witnessId
+            : run.evidenceOrder[scenario.lateEvidence.recipientIndex]!;
+        const witness = state.players.find((player) => player.id === recipientId)!;
         witness.evidence.push(scenario.lateEvidence.text);
         state.lateEvidenceDelivered = true;
         await reflect([witness], turn - 1, "private evidence arrival");

@@ -105,17 +105,18 @@ the local environment and private game artifacts under the ignored `data/` direc
 
 ## Explore the project
 
-| Start here                                           | What it explains                                                             |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [Speaker auction](docs/SPEAKER_AUCTION.md)           | Bids, listener interest, response opportunities, and deterministic selection |
-| [Speech auction study](docs/SPEECH_AUCTION_STUDY.md) | Controlled experiments beyond Werewolf, known answers, and listener updates  |
-| [Architecture](docs/ARCHITECTURE.md)                 | Player isolation, workflow, persistence, and source map                      |
-| [Cache layers](docs/OPENAI_CACHING.md)               | Shared prefixes, private suffixes, compaction, and cache measurement         |
-| [Actor workflow](docs/ACTOR_WORKFLOW.md)             | Journals, current briefs, freshness checks, and semantic recovery            |
-| [Running experiments](docs/RUNNING.md)               | Providers, pilots, checkpoints, replay, and audits                           |
-| [Game and API reference](docs/REFERENCE.md)          | Role definitions, endpoints, and control semantics                           |
-| [Agent protocol](docs/PROTOCOL_V3.md)                | Versioned wire contracts and evidence references                             |
-| [Contributing](CONTRIBUTING.md)                      | Formatting, linting, typing, tests, and maintainability conventions          |
+| Start here                                               | What it explains                                                             |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| [Speaker auction](docs/SPEAKER_AUCTION.md)               | Bids, listener interest, response opportunities, and deterministic selection |
+| [Speech auction study](docs/SPEECH_AUCTION_STUDY.md)     | Controlled experiments beyond Werewolf, known answers, and listener updates  |
+| [Chained evidence study](docs/CHAINED_EVIDENCE_STUDY.md) | Dependent clues, recoverable evidence, and a separate strategic saboteur     |
+| [Architecture](docs/ARCHITECTURE.md)                     | Player isolation, workflow, persistence, and source map                      |
+| [Cache layers](docs/OPENAI_CACHING.md)                   | Shared prefixes, private suffixes, compaction, and cache measurement         |
+| [Actor workflow](docs/ACTOR_WORKFLOW.md)                 | Journals, current briefs, freshness checks, and semantic recovery            |
+| [Running experiments](docs/RUNNING.md)                   | Providers, pilots, checkpoints, replay, and audits                           |
+| [Game and API reference](docs/REFERENCE.md)              | Role definitions, endpoints, and control semantics                           |
+| [Agent protocol](docs/PROTOCOL_V3.md)                    | Versioned wire contracts and evidence references                             |
+| [Contributing](CONTRIBUTING.md)                          | Formatting, linting, typing, tests, and maintainability conventions          |
 
 Seeded rules and replayable events make comparisons inspectable. Live model outputs remain variable:
 a single successful game does not establish better reasoning, lower cost, or faster execution.

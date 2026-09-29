@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { loadProviderEnvironment } from "@werewolf/llm";
 import { nativePath } from "./lib/native-path";
+import { chainDesign } from "./lib/chain-study-design";
 import { AUCTION_SCENARIOS } from "./lib/auction-study-scenarios";
 import {
   FOCUSED,
@@ -81,7 +82,8 @@ async function main() {
       report: { type: "boolean" },
       out: { type: "string" },
       seeds: { type: "string", default: "auction-pilot-1" },
-      scenarios: { type: "string", default: AUCTION_SCENARIOS.map((item) => item.id).join(",") },
+      scenarios: { type: "string" },
+      protocol: { type: "string", default: "free-floor-v1" },
       model: { type: "string", default: "gpt-6-luna" },
       effort: { type: "string", default: "xhigh" },
       turns: { type: "string", default: "12" },
@@ -91,7 +93,7 @@ async function main() {
   });
   if (values.help) {
     console.log(
-      "Usage: npm run auction:study -- [--live | --fake] --out NEW_DIRECTORY [--seeds SEED,SEED] [--scenarios supplier,incident,correction] [--turns 12] [--concurrency 2] [--model gpt-6-luna] [--effort xhigh] [--max-minutes 30]\nDefault previews, no calls or writes. --status / --report --out DIR are read-only with respect to discussions and never call providers. --report writes derived private analysis. --resume --out DIR uses the frozen manifest and starts only untouched discussions; it never retries an existing failed/interrupted discussion. Runs require a clean committed source tree. A stale .running lock requires operator inspection/removal after verifying its process is gone. Artifacts contain private synthetic evidence and journals.",
+      "Usage: npm run auction:study -- [--live | --fake] --out NEW_DIRECTORY [--seeds SEED,SEED] [--protocol free-floor-v1 | clue-chain-v1] [--scenarios supplier,incident,correction] [--turns 12] [--concurrency 2] [--model gpt-6-luna] [--effort xhigh] [--max-minutes 30]\nDefault previews, no calls or writes. --status / --report --out DIR are read-only with respect to discussions and never call providers. --report writes derived private analysis. --resume --out DIR uses the frozen manifest and starts only untouched discussions; it never retries an existing failed/interrupted discussion. Runs require a clean committed source tree. A stale .running lock requires operator inspection/removal after verifying its process is gone. Artifacts contain private synthetic evidence and journals.",
     );
     return;
   }
@@ -116,9 +118,22 @@ async function main() {
     return;
   }
   const source = currentSource();
+  if (values.protocol === "clue-chain-v1" && values.scenarios)
+    throw new Error("The chain protocol generates its scenario from each seed; omit --scenarios");
+  const design =
+    values.protocol === "clue-chain-v1"
+      ? chainDesign(values.seeds!.split(","))
+      : {
+          runs: studyRuns(
+            values.seeds!.split(","),
+            (values.scenarios ?? AUCTION_SCENARIOS.map((item) => item.id).join(",")).split(","),
+          ),
+          scenarios: AUCTION_SCENARIOS,
+          personalities: { focused: FOCUSED, rambling: RAMBLING },
+        };
   const manifest: StudyManifest = validateManifest({
     schemaVersion: "speech_auction_study_v1",
-    protocol: "free-floor-v1",
+    protocol: values.protocol,
     createdAt: new Date().toISOString(),
     sourceCommit: source.commit,
     live: Boolean(values.live),
@@ -128,9 +143,7 @@ async function main() {
     bias: 0.25,
     concurrency: Number(values.concurrency),
     maxMinutes: Number(values["max-minutes"]),
-    runs: studyRuns(values.seeds!.split(","), values.scenarios!.split(",")),
-    scenarios: AUCTION_SCENARIOS,
-    personalities: { focused: FOCUSED, rambling: RAMBLING },
+    ...design,
   });
   if (!values.live && !values.fake) {
     console.log(JSON.stringify(manifest, null, 2));
