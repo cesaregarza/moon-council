@@ -161,6 +161,54 @@ also be inspected directly: a sensible urgency score can coexist with a false no
 turn-four pending-status test does not recreate the previous pilot's ambiguous post-turn-six
 delivery boundary.
 
+### First paired-judgment results
+
+The first batch completed all 48 calls in 95.49 seconds with no failures or retries, using frozen
+source `f381939eaf95e72cb38e259194357c769a905bf5`. Returned models were `gpt-6-luna` and
+`jev-1.13.0`. This was sixteen decision contexts, not sixteen discussions.
+
+In each row, A is the first condition and B the second. Values are normalized probability-weighted
+scores. The concise/padded and objective comparisons were exploratory; the other six expected A > B.
+
+| Comparison (A / B)                    | Authored A | Authored B | Luna A | Luna B |
+| ------------------------------------- | ---------: | ---------: | -----: | -----: |
+| New clue / already public clue        |      0.782 |      0.160 |  0.758 |  0.713 |
+| Unanswered / resolved question        |      0.858 |      0.315 |  0.747 |  0.620 |
+| Useful / exhausted peer               |      0.915 |      0.060 |  0.943 |  0.465 |
+| First request / standing refusal      |      0.797 |      0.417 |  0.723 |  0.268 |
+| Delivered / pending record            |      0.863 |      0.613 |  0.752 |  0.640 |
+| Concise / padded claim (exploratory)  |      0.715 |      0.590 |  0.877 |  0.755 |
+| Unresolved / reported resolution      |      0.902 |      0.080 |  0.757 |  0.800 |
+| Cooperative / malicious (exploratory) |      0.948 |      0.275 |  0.925 |  0.455 |
+
+All six prespecified directions appeared with authored journals, and five with Luna journals. These
+are different diagnostic cases, not independent replicates or an accuracy estimate. Reading all
+sixteen generated journals identified three useful follow-up targets:
+
+- After a clue was already public, Luna still proposed confirming it and verifying other links. The
+  new-versus-public urgency gap narrowed from 0.623 to 0.045. The notes did not invent a record;
+  they retained more unfinished corroboration than the authored notes.
+- When Ben explicitly said he had no C record and no additional information, Luna retained his B
+  ownership but omitted the exhaustion. Jev cannot recover that missing statement from the
+  transcript, which is absent from its bid input. This is a plausible explanation for the higher
+  listening score, requiring a separate controlled repair probe to establish causality.
+- After another peer reported a resolving record, Luna accepted a provisional answer but still
+  prioritized explaining Ben's conflicting account. Listening slightly increased, from 0.758 to
+  0.800. The authored notes express distrust more strongly than the generic prior/event packet; this
+  comparison measures continued demand, not an isolated trust effect.
+
+The pending-backup journal correctly said no record had arrived. The delivered variant correctly
+used its new private C row. Both speech-length variants retained the same relevant clue, and the
+standing refusal reduced listening in both lanes. The malicious journal combined a desire to hear
+the useful row with a plan to avoid helping the group; changed scores do not prove a coherent or
+successful suppression strategy.
+
+This is a snapshot journal-construction test: one update from a prior journal and four speeches, not
+four successive updates. Human-authored notes and generated notes can reasonably differ in
+uncertainty. The next small tests should isolate retention of explicit negative facts and the
+marginal value of another confirmation before attributing these patterns to the auction arithmetic.
+No live forced-urgency or alternative-scheduler comparison was added by this batch.
+
 ## 3. Feedback: controlled conversations after the bid checks
 
 Keep rambler, malicious-rating, and misinformation scenarios separate initially. Hold task, seed,
