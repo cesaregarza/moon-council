@@ -407,6 +407,56 @@ do not establish how real agents will bid. Turn savings do not by themselves est
 wall-time savings; collecting bids and peer ratings also grows with the roster. Delayed arrivals,
 multiple ramblers, coalitions, and live model behavior are outside this scaling protocol.
 
+#### Scaling results
+
+All 11,232 scripted cases completed at frozen source `f7b3e46daadf`, with zero provider calls. A
+separate verifier reconstructed every selection from independent priority arithmetic, checked all
+disclosure times and aggregate means, and counted possible last-holder positions to validate the
+exact round-robin expectation. The three profiles coincide at four participants; duplicate labels
+are not independent evidence.
+
+With **three necessary clue holders and one maximum-urgency rambler**, increasing the roster adds
+people who have no new information to supply:
+
+| Participants | Auction | Urgency-only | Round-robin sampled mean | Round-robin exact mean |
+| -----------: | ------: | -----------: | -----------------------: | ---------------------: |
+|            4 |    4.00 |         6.00 |                     3.75 |                   3.75 |
+|            8 |    4.00 |         6.00 |                     6.72 |                   6.75 |
+|           12 |    4.00 |         6.00 |                     9.64 |                   9.75 |
+|           16 |    4.00 |         6.00 |                    12.41 |                  12.75 |
+
+This supports a scaling advantage when useful information is sparse. At twelve participants, urgency
+alone reduces the sampled 9.64-turn cyclic result to six; listener feedback then reduces six to
+four. The entire gain over round-robin should not be attributed to listening preferences.
+
+**How many people need to contribute also matters.** At twelve participants:
+
+| Necessary clue holders | Auction | Urgency-only | Round-robin sampled mean | Round-robin exact mean |
+| ---------------------: | ------: | -----------: | -----------------------: | ---------------------: |
+|                      3 |    4.00 |         6.00 |                     9.64 |                   9.75 |
+|                      9 |   10.00 |        18.00 |                    11.71 |                  11.70 |
+|                     11 |   12.00 |        22.00 |                    11.89 |                  11.92 |
+
+The nine-holder case preserves the original 75% proportion of useful participants. The auction still
+wins there, but by less than in the fixed-three case. With eleven necessary holders, round-robin
+remains narrowly faster despite the larger roster: almost every turn is necessary, and the auction
+spends its first turn discovering that the rambler adds no task information.
+
+Under this declared rule, the auction completes in `k+1` turns with one rambler and `k` initially
+ready holders. Cyclic scheduling has exact expectation `k(N+1)/(k+1)`. When `k=N−1`, this is
+`N−1/N`, narrowly below the auction’s `N` at any tested size. Roster size alone therefore does not
+determine the winner.
+
+All cooperative controls completed in one turn per clue under both auction and urgency-only. Every
+flat-interest auction matched its urgency-only speaking sequence. Those controls separate the value
+of honest urgency from the value of listener feedback. The conclusions remain conditional on the
+scripted preferences; no live twelve-player journal or Jev behavior was tested.
+
+The shared four-player control retained its original completion prefixes. Local validation passed
+309 tests (three opt-in live tests skipped), four browser checks, sixteen Python checks, formatting,
+lint, complexity, typing, and build. This extension changes a controlled experimental roster, not
+the production auction formula.
+
 ## 3. Feedback: controlled conversations after the bid checks
 
 Keep rambler, malicious-rating, and misinformation scenarios separate initially. Hold task, seed,
