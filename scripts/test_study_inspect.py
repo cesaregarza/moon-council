@@ -22,7 +22,7 @@ def fixture():
             {"playerId": "p1", "turn": 1, "text": "a😀"},
             {"playerId": "p2", "turn": 2, "text": "abc"},
         ],
-        "auctions": [{"selected": "p1", "unforcedWinner": "p2"}],
+        "auctions": [{"turn": 1, "selected": "p1", "unforcedWinner": "p2"}],
         "answers": [{"answer": "yes"}, {"answer": "no"}],
         "initialAnswers": [],
         "journals": [{"afterTurn": 1, "journal": "private note"}],

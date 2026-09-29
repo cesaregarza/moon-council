@@ -80,6 +80,7 @@ def inspect(root, run_id=None, details=False, verify=False, turn=None):
         if analysis is not None:
             verify_summary(row, analysis)
         if details:
+            row["auctions"] = [a for a in state["auctions"] if turn is None or a["turn"] == turn]
             row["speeches"] = [s for s in state["speeches"] if turn is None or s["turn"] == turn]
             row["journals"] = [
                 j for j in state["journals"] if turn is None or j["afterTurn"] == turn
