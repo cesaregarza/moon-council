@@ -2,7 +2,13 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { chainDesign, chainScenario, OBSTRUCTION_GOAL } from "./lib/chain-study-design";
+import {
+  chainDesign,
+  chainScenario,
+  parseChainStudy,
+  CHAIN_STUDIES,
+  OBSTRUCTION_GOAL,
+} from "./lib/chain-study-design";
 import { validateManifest, type StudyManifest } from "./lib/auction-study-design";
 import { studyPlayers, playerPrompt, jevPrompt } from "./lib/auction-study-agents";
 import { runStudyDiscussion, type StudyAnswer } from "./lib/auction-study-runner";
@@ -22,7 +28,7 @@ const plan = (): StudyManifest => ({
   bias: 0.25,
   concurrency: 1,
   maxMinutes: 1,
-  ...chainDesign(["chain-fixture"]),
+  ...chainDesign(["chain-fixture"], "factorial"),
 });
 const table = (text: string) =>
   Object.fromEntries(
@@ -69,6 +75,37 @@ describe("chained evidence with a separate strategic obstructer", () => {
     swapped.runs.find((run) => run.obstructerId)!.obstructerId = swapped.runs[0]!.targetId;
     expect(() => validateManifest(swapped)).toThrow();
     expect(() => chainDesign(["same", "same"])).toThrow();
+  });
+  it("selects independent discussions by default, permits separate experiments, and preserves legacy manifests", () => {
+    const independent = chainDesign(["chain-fixture"]);
+    expect(independent.runs).toHaveLength(5);
+    expect(independent.chainStudy).toBe("independent");
+    expect(
+      independent.runs.some((run) => run.condition.startsWith("rambling") && run.obstructerId),
+    ).toBe(false);
+    const rambler = chainDesign(["chain-fixture"], "rambling");
+    const malicious = chainDesign(["chain-fixture"], "obstruction");
+    expect(rambler.runs).toHaveLength(4);
+    expect(rambler.runs.every((run) => !run.obstructerId)).toBe(true);
+    expect(malicious.runs).toHaveLength(2);
+    expect(
+      malicious.runs.every(
+        (run) => run.condition.startsWith("focused") && run.condition.endsWith("natural"),
+      ),
+    ).toBe(true);
+    expect(rambler.scenarios).toEqual(malicious.scenarios);
+    expect(rambler.runs[0]!.evidenceOrder).toEqual(malicious.runs[0]!.evidenceOrder);
+    for (const suite of Object.keys(CHAIN_STUDIES)) {
+      const manifest = { ...plan(), ...chainDesign(["chain-fixture"], parseChainStudy(suite)) };
+      expect(validateManifest(manifest)).toEqual(manifest);
+    }
+    const legacy = plan();
+    delete legacy.chainStudy;
+    expect(validateManifest(legacy)).toEqual(legacy);
+    const mismatched = { ...plan(), ...malicious };
+    mismatched.chainStudy = "rambling";
+    expect(() => validateManifest(mismatched)).toThrow();
+    expect(() => parseChainStudy("unknown")).toThrow();
   });
   it("keeps goals, private records, backup and answer keys out of other actors' prompts", () => {
     const manifest = plan(),

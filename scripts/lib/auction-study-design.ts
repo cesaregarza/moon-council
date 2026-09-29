@@ -1,7 +1,7 @@
 import { FOCUSED, RAMBLING } from "./auction-study-personas";
 import { createHash } from "node:crypto";
 import { shuffled } from "@werewolf/engine";
-import { validateChainManifest, type ChainCondition } from "./chain-study-design";
+import { validateChainManifest, type ChainCondition, type ChainStudy } from "./chain-study-design";
 import { AUCTION_SCENARIOS } from "./auction-study-scenarios";
 
 export const CONDITIONS = [
@@ -26,6 +26,7 @@ export interface StudyRun {
 export interface StudyManifest {
   schemaVersion: "speech_auction_study_v1";
   protocol: "free-floor-v1" | "clue-chain-v1";
+  chainStudy?: ChainStudy;
   createdAt: string;
   sourceCommit: string;
   live: boolean;

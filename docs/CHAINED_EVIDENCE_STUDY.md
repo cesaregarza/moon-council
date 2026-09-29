@@ -27,8 +27,8 @@ flowchart LR
 
 Every mapping is a bijection with shuffled labels; equal numeric suffixes are not a clue. A seed
 changes the starting code, all three mappings, seating, tie order, and condition execution order.
-The eight conditions within a seed receive exactly the same puzzle and assignments. The source
-commit and complete manifest are frozen before calls.
+Selected conditions within a seed receive exactly the same puzzle and assignments. The source commit
+and complete manifest are frozen before calls.
 
 Removing any one record leaves all eight cartridges possible. This is checked mechanically across
 multiple generated puzzles. It is not just a story that says the participants should cooperate.
@@ -71,20 +71,34 @@ Permanent withholding of the only copy is outside this protocol: it would confou
 failure with a mathematically unavailable answer. The fixed arrival is not triggered by failure,
 participant requests, or the observed treatment effect.
 
-## Eight matched conditions
+## Independent experiments first
 
-Three independently varied factors produce eight conditions per seed:
+The rambler and saboteur do not need to appear in the same group. Each condition runs a separate
+four-person discussion with fresh journals and state. Experiments can run in different batches or at
+different times; no participant memory or conversation is carried between them.
 
-| Factor                | Control                       | Intervention                                     |
-| --------------------- | ----------------------------- | ------------------------------------------------ |
-| A's public style      | Focused and informative       | Repetitive, digressive rambler                   |
-| A's urgency           | Jev's original score          | Urgency 1 and willing to speak whenever eligible |
-| C's private objective | Help solve the archive puzzle | Prevent A/B/D from solving it                    |
+| Study selector          | Discussions per seed | Question                                                                                                        |
+| ----------------------- | -------------------: | --------------------------------------------------------------------------------------------------------------- |
+| `baseline`              |                    1 | How do four focused, cooperative participants solve the chain?                                                  |
+| `rambling`              |                    4 | What changes with rambling, with natural versus forced A urgency? No saboteur.                                  |
+| `obstruction`           |                    2 | What changes with a malicious C holder? Everyone speaks in a focused style; urgency is natural.                 |
+| `independent` (default) |                    5 | Both separate comparisons, sharing one baseline discussion within this batch. No rambler and saboteur together. |
+| `factorial` (optional)  |                    8 | Full interaction test, including groups with both a rambler and a separate saboteur.                            |
 
-Thus the study includes all-cooperative discussions, a rambler alone, a saboteur alone, and a
-rambler plus a separate saboteur, with both urgency settings for each. Rambling is not automatically
-paired with forced urgency. The saboteur's bids are always their model's choices; they are not
-hardcoded to maximum urgency or minimum listener ratings.
+The rambling study crosses A's focused/rambling style with A's natural/forced urgency, keeping C
+cooperative. The obstruction study holds A focused with natural urgency and compares a cooperative
+versus malicious C. The saboteur's bids always come from its model; they are not hardcoded to
+maximum urgency or minimum listening ratings.
+
+Matching seeds preserves the puzzle, assignments, and tie order across these separate experiments.
+Separate `rambling` and `obstruction` batches each run their own fresh control, for six discussions
+total. The five-discussion default shares a control for efficiency; its two contrasts are therefore
+correlated. Do not count that shared control twice as independent evidence. Repeated controls from
+separate batches are distinct model realizations, not the same saved conversation.
+
+The optional full factorial crosses three factors: A's style, A's urgency, and C's objective. It
+adds combined conditions only when explicitly selected, after the independent effects are
+understood.
 
 Original and effective bids are both recorded. The override changes only A's eligible urgency and
 participation. Every listening rating remains intact. Analyze ratings from cooperative participants
@@ -125,16 +139,17 @@ would steer the conversation. Their initial presence still gives all conditions 
 reminder of the chain structure.
 
 At twelve turns a complete discussion uses 121 calls, including D's backup reflection, provided
-every auction produces a speech. The conservative bound remains 124 calls per discussion. One seed's
-eight-cell pilot permits at most **992 calls**; three seeds permit at most **2,976**. Defaults
+every auction produces a speech. The conservative bound remains 124 calls per discussion. Per seed,
+`rambling` permits at most **496 calls**, `obstruction` **248**, the default `independent` batch
+**620**, and the optional `factorial` batch **992**. Multiply by the number of seeds. Defaults
 remain two concurrent discussions, thirty minutes per discussion, no output/total-token ceiling, and
 no automatic retries. These are operation bounds, not dollar-cost estimates.
 
 ## Outcomes and interpretation
 
-The primary monitored cohort is always the same three roles **A/B/D**, even in controls where C is
-cooperative. This preserves a denominator of three and prevents the saboteur's own answer from being
-counted as a failed honest-player decision.
+The primary monitored cohort is always the same three roles **A/B/D**, even in controls and
+rambling-only studies where C is cooperative. This preserves a denominator of three and prevents the
+saboteur's own answer from being counted as a failed honest-player decision.
 
 1. **Correct cartridge:** count of A/B/D choosing the correct final cartridge, with initial choices
    as a baseline.
@@ -155,11 +170,13 @@ matching is not used to claim that a node or seal was understood. The packet pro
 records and the true route to ground coding, but omits treatment and adversary labels. Wording may
 still reveal assignment. Prefer independent raters and report disagreements before reconciliation.
 
-The primary comparison is sabotage versus cooperation at each fixed A style and urgency within a
-seed. Secondary comparisons hold the other two factors fixed while changing rambling or urgency.
-Report individual cells, paired differences, and missing runs before any averages. Require all eight
-cells for an overall factorial summary. Add multiple seeds before estimating a distribution; turns,
-listeners, and the three monitored choices are dependent observations, not independent trials.
+The obstruction experiment compares sabotage versus cooperation with A focused and natural urgency.
+The rambling experiment compares style at each urgency setting and urgency at each style. Analyze
+these experiments separately before asking about their interaction. Report individual cells, paired
+differences, and missing runs before any averages. Only the explicitly selected factorial study can
+support an overall three-factor summary, and it requires all eight cells. Add multiple seeds before
+estimating a distribution; turns, listeners, and the three monitored choices are dependent
+observations, not independent trials.
 
 Keep interrupted conditions visible with missing whole-discussion outcomes. Never rerun until a
 preferred result appears. A high floor share does not prove suppression, a low rating does not prove
@@ -170,29 +187,38 @@ the group solves the puzzle despite the obstruction.
 ## Run or inspect
 
 ```sh
-# Preview eight conditions without calls or writes.
+# Preview the five independent conditions without calls or writes.
 npm run auction:study -- --protocol clue-chain-v1 --seeds chain-pilot-1
 
-# Verify mechanics with fake providers; source must be clean and committed.
-npm run auction:study -- --protocol clue-chain-v1 --seeds chain-pilot-1 \
-  --fake --out data/chain-offline
+# Inspect either experiment independently.
+npm run auction:study -- --protocol clue-chain-v1 --chain-study rambling --seeds chain-pilot-1
+npm run auction:study -- --protocol clue-chain-v1 --chain-study obstruction --seeds chain-pilot-1
 
-# Start a deliberately budgeted live batch after reviewing its scope.
-npm run auction:study -- --protocol clue-chain-v1 --seeds chain-pilot-1 \
-  --live --out data/chain-pilot
+# Mechanics only. Source must be clean and committed.
+npm run auction:study -- --protocol clue-chain-v1 --chain-study rambling \
+  --seeds chain-pilot-1 --fake --out data/chain-rambling-offline
 
-# Replication changes seeds, including puzzle mappings; it does not replay deterministic models.
-npm run auction:study -- --protocol clue-chain-v1 --seeds chain-1,chain-2,chain-3 \
-  --live --out data/chain-replication
+# Separate live batches can be run at different times after reviewing each scope.
+npm run auction:study -- --protocol clue-chain-v1 --chain-study rambling \
+  --seeds chain-pilot-1 --live --out data/chain-rambling
+npm run auction:study -- --protocol clue-chain-v1 --chain-study obstruction \
+  --seeds chain-pilot-1 --live --out data/chain-obstruction
 
-npm run auction:study -- --status --out data/chain-pilot
-npm run auction:study -- --report --out data/chain-pilot
+# Optional interaction study, not required for either experiment above.
+npm run auction:study -- --protocol clue-chain-v1 --chain-study factorial \
+  --seeds chain-pilot-1 --live --out data/chain-factorial
+
+npm run auction:study -- --status --out data/chain-obstruction
+npm run auction:study -- --report --out data/chain-obstruction
 ```
 
-For this protocol omit `--scenarios`: each seed generates its own frozen case. Existing status,
-report, and resume commands inspect the manifest to identify the protocol. Resume only starts
-untouched discussions and requires the original clean source commit. The older independent ratio
-verifier intentionally refuses to certify the different chain report schema.
+For this protocol omit `--scenarios`: each seed generates its own frozen case. `--chain-study`
+selects new batches only. Existing batches use their frozen selection; changing flags cannot add
+extra conditions during resume. Older manifests without a selection retain their original
+eight-condition factorial design. Existing status, report, and resume commands inspect the manifest
+to identify the protocol. Resume only starts untouched discussions and requires the original clean
+source commit. The older independent ratio verifier intentionally refuses to certify the different
+chain report schema.
 
 Artifacts remain in ignored local storage: frozen manifest, per-discussion checkpoints and exact
 provider ledgers, `analysis.json`, `report.md`, and `chain-coding-packet.json`. Regeneration

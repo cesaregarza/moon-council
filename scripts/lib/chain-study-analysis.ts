@@ -56,7 +56,7 @@ function attention(state: StudyCheckpoint, id: string) {
 }
 export function chainMetrics(state: StudyCheckpoint, manifest: StudyManifest) {
   const scenario = manifest.scenarios.find((scenario) => scenario.id === state.run.scenarioId)!;
-  // A/B/D are the same three monitored solver roles in all eight conditions, including controls.
+  // A/B/D are the same three monitored solver roles in every selected condition, including controls.
   const solverIds = [0, 1, 3].map((i) => state.run.evidenceOrder[i]!);
   const completed = state.status === "complete";
   return {
@@ -97,7 +97,7 @@ export async function writeChainReport(
     "",
     `${complete}/${manifest.runs.length} discussions complete. Protocol: ${manifest.protocol}. Source: ${manifest.sourceCommit}.`,
     "",
-    "Eight conditions cross target speaking style, target urgency override, and a separate record-C holder's cooperative or obstructive objective. A seed freezes the same puzzle, seats, and tie order across the eight cells. Seeds change the puzzle's arbitrary mappings as well as seating. Different auctions are not independent replications.",
+    `Selected study: ${manifest.chainStudy ?? "factorial"}. Every condition is a separate discussion with fresh journals. Rambling and obstruction can be studied independently; the factorial suite explicitly adds mixed conditions. A seed freezes the same puzzle, seats, and tie order across selected cells. Seeds change the puzzle mappings and seating. Different auctions are not independent replications.`,
     "",
     "| Seed | Condition | Status | Initial cartridge | Final cartridge | Final full route |",
     "|---|---|---|---:|---:|---:|",
@@ -120,7 +120,13 @@ export async function writeChainReport(
   await writeFile(
     join(root, "analysis.json"),
     JSON.stringify(
-      { protocol: manifest.protocol, rows, usage, expectedRuns: manifest.runs.length },
+      {
+        protocol: manifest.protocol,
+        chainStudy: manifest.chainStudy ?? "factorial",
+        rows,
+        usage,
+        expectedRuns: manifest.runs.length,
+      },
       null,
       2,
     ),

@@ -15,6 +15,28 @@ export const CHAIN_CONDITIONS = [
   "rambling-obstruction-forced",
 ] as const;
 export type ChainCondition = (typeof CHAIN_CONDITIONS)[number];
+export const CHAIN_STUDIES = {
+  baseline: ["focused-natural"],
+  rambling: ["focused-natural", "focused-forced", "rambling-natural", "rambling-forced"],
+  obstruction: ["focused-natural", "focused-obstruction-natural"],
+  independent: [
+    "focused-natural",
+    "focused-forced",
+    "rambling-natural",
+    "rambling-forced",
+    "focused-obstruction-natural",
+  ],
+  factorial: CHAIN_CONDITIONS,
+} as const satisfies Record<string, readonly ChainCondition[]>;
+export type ChainStudy = keyof typeof CHAIN_STUDIES;
+export function parseChainStudy(value = "independent"): ChainStudy {
+  if (!Object.hasOwn(CHAIN_STUDIES, value))
+    throw new Error(
+      "Choose a known chain study: baseline, rambling, obstruction, independent, or factorial",
+    );
+  return value as ChainStudy;
+}
+
 export const SOLVER_GOAL =
   "Help the group reconstruct the authenticated route and identify the correct cartridge. Share useful evidence, check each link, and distinguish a supported route from a guess.";
 export const OBSTRUCTION_GOAL = [
@@ -104,32 +126,40 @@ export function chainScenario(seed: string): StudyScenario {
     },
   };
 }
-export function chainDesign(seeds: string[]) {
+export function chainDesign(seeds: string[], study: ChainStudy = "independent") {
+  const selected: readonly ChainCondition[] = CHAIN_STUDIES[parseChainStudy(study)];
   if (!seeds.length || new Set(seeds).size !== seeds.length || seeds.some((seed) => !seed.trim()))
     throw new Error("Provide distinct nonempty seeds");
   const scenarios = seeds.map(chainScenario);
   const runs: StudyRun[] = seeds.flatMap((seed, i) => {
     const scenarioId = scenarios[i]!.id;
     const evidenceOrder = shuffled(["p1", "p2", "p3", "p4"], `${seed}:chain:seats`);
-    return shuffled([...CHAIN_CONDITIONS], `${seed}:chain:conditions`).map((condition) => ({
-      id: `b${String(i + 1).padStart(2, "0")}-${scenarioId}-${condition}`,
-      seed,
-      scenarioId,
-      condition,
-      evidenceOrder,
-      targetId: evidenceOrder[0]!,
-      witnessId: evidenceOrder[3]!,
-      ...(condition.includes("obstruction") ? { obstructerId: evidenceOrder[2]! } : {}),
-    }));
+    return shuffled([...CHAIN_CONDITIONS], `${seed}:chain:conditions`)
+      .filter((condition) => selected.includes(condition))
+      .map((condition) => ({
+        id: `b${String(i + 1).padStart(2, "0")}-${scenarioId}-${condition}`,
+        seed,
+        scenarioId,
+        condition,
+        evidenceOrder,
+        targetId: evidenceOrder[0]!,
+        witnessId: evidenceOrder[3]!,
+        ...(condition.includes("obstruction") ? { obstructerId: evidenceOrder[2]! } : {}),
+      }));
   });
   return {
+    chainStudy: study,
     runs,
     scenarios,
     personalities: { focused: FOCUSED, rambling: RAMBLING, obstruction: OBSTRUCTION_GOAL },
   };
 }
 export function validateChainManifest(manifest: StudyManifest): StudyManifest {
-  const expected = chainDesign([...new Set(manifest.runs.map((run) => run.seed))]);
+  // Manifests written before suite selection used the full eight-condition design.
+  const expected = chainDesign(
+    [...new Set(manifest.runs.map((run) => run.seed))],
+    parseChainStudy(manifest.chainStudy ?? "factorial"),
+  );
   for (const key of ["runs", "scenarios", "personalities"] as const)
     if (JSON.stringify(manifest[key]) !== JSON.stringify(expected[key]))
       throw new Error("Chain manifest differs from the frozen protocol");
