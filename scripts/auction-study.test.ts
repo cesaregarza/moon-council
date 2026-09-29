@@ -128,6 +128,11 @@ describe("general speech auction study", () => {
           expect(state.speeches[i]!.playerId).not.toBe(state.speeches[i - 1]!.playerId);
         const row = discussionMetrics(state, plan);
         rows.push(row);
+        const partial = discussionMetrics({ ...state, status: "failed" }, plan);
+        expect(Object.values(partial.metrics).every((value) => value === null)).toBe(true);
+        expect(partial.totalSpeeches).toBe(8);
+        expect(partial.groupChoice).toBeNull();
+        expect(partial.witnessNeverHeardAfterEvidence).toBeNull();
         expect(row.metrics.floorShare).toBe(
           state.speeches.filter((speech) => speech.playerId === run.targetId).length / 8,
         );

@@ -51,46 +51,49 @@ export function discussionMetrics(state: StudyCheckpoint, manifest: StudyManifes
     (speech) =>
       speech.playerId === run.witnessId && speech.turn > (scenario.lateEvidence?.afterTurn ?? 0),
   );
+  const metrics = {
+    floorShare: fraction(targetSpeeches.length, state.speeches.length),
+    characterShare: fraction(
+      targetSpeeches.reduce((sum, speech) => sum + speech.text.length, 0),
+      state.speeches.reduce((sum, speech) => sum + speech.text.length, 0),
+    ),
+    eligibleWinRate: fraction(
+      eligible.filter((auction) => auction.selected === run.targetId).length,
+      eligible.length,
+    ),
+    ratingChange: firstRating === null || lastRating === null ? null : lastRating - firstRating,
+    initialAccuracy: fraction(
+      state.initialAnswers.filter((answer) => answer.answer === scenario.correct).length,
+      state.initialAnswers.length,
+    ),
+    accuracy: fraction(
+      state.answers.filter((answer) => answer.answer === scenario.correct).length,
+      state.answers.length,
+    ),
+    brier: mean(
+      state.answers.map((answer) =>
+        Object.keys(scenario.choices).reduce(
+          (sum, choice) =>
+            sum + (answer.probabilities[choice]! - Number(choice === scenario.correct)) ** 2,
+          0,
+        ),
+      ),
+    ),
+    witnessWait: witnessAfter ? witnessAfter.turn - (scenario.lateEvidence?.afterTurn ?? 0) : null,
+  };
+  if (state.status !== "complete") {
+    for (const key of Object.keys(metrics) as Array<keyof typeof metrics>) metrics[key] = null;
+  }
   return {
     id: run.id,
     seed: run.seed,
     scenarioId: run.scenarioId,
     condition: run.condition,
     status: state.status,
-    metrics: {
-      floorShare: fraction(targetSpeeches.length, state.speeches.length),
-      characterShare: fraction(
-        targetSpeeches.reduce((sum, speech) => sum + speech.text.length, 0),
-        state.speeches.reduce((sum, speech) => sum + speech.text.length, 0),
-      ),
-      eligibleWinRate: fraction(
-        eligible.filter((auction) => auction.selected === run.targetId).length,
-        eligible.length,
-      ),
-      ratingChange: firstRating === null || lastRating === null ? null : lastRating - firstRating,
-      initialAccuracy: fraction(
-        state.initialAnswers.filter((answer) => answer.answer === scenario.correct).length,
-        state.initialAnswers.length,
-      ),
-      accuracy: fraction(
-        state.answers.filter((answer) => answer.answer === scenario.correct).length,
-        state.answers.length,
-      ),
-      brier: mean(
-        state.answers.map((answer) =>
-          Object.keys(scenario.choices).reduce(
-            (sum, choice) =>
-              sum + (answer.probabilities[choice]! - Number(choice === scenario.correct)) ** 2,
-            0,
-          ),
-        ),
-      ),
-      witnessWait: witnessAfter
-        ? witnessAfter.turn - (scenario.lateEvidence?.afterTurn ?? 0)
-        : null,
-    },
-    groupChoice,
-    groupCorrect: groupChoice === null ? null : groupChoice === scenario.correct,
+    metrics,
+    groupChoice: state.status === "complete" ? groupChoice : null,
+    groupCorrect:
+      state.status !== "complete" || groupChoice === null ? null : groupChoice === scenario.correct,
     targetSpeeches: targetSpeeches.length,
     totalSpeeches: state.speeches.length,
     eligibleAuctions: eligible.length,
@@ -105,7 +108,7 @@ export function discussionMetrics(state: StudyCheckpoint, manifest: StudyManifes
     ).length,
     ineligibleAuctions: state.auctions.length - eligible.length,
     changedWinners: trajectory.filter((row) => row.changedWinner).length,
-    witnessNeverHeardAfterEvidence: !witnessAfter,
+    witnessNeverHeardAfterEvidence: state.status === "complete" ? !witnessAfter : null,
     trajectory,
   };
 }
@@ -172,7 +175,7 @@ export async function writeStudyReport(root: string, manifest: StudyManifest) {
     "|---|---|---|---:|---:|---:|---:|---:|",
     ...rows.map(
       (row) =>
-        `| ${row.scenarioId} | ${row.condition} | ${row.status} | ${pct(row.metrics.floorShare)} | ${pct(row.metrics.characterShare)} | ${row.metrics.ratingChange?.toFixed(3) ?? "—"} | ${pct(row.metrics.accuracy)} | ${row.metrics.witnessWait ?? "never"} |`,
+        `| ${row.scenarioId} | ${row.condition} | ${row.status} | ${pct(row.metrics.floorShare)} | ${pct(row.metrics.characterShare)} | ${row.metrics.ratingChange?.toFixed(3) ?? "—"} | ${pct(row.metrics.accuracy)} | ${row.status === "complete" ? (row.metrics.witnessWait ?? "never") : "—"} |`,
     ),
   ];
   const report = [
@@ -186,7 +189,7 @@ export async function writeStudyReport(root: string, manifest: StudyManifest) {
     "",
     ...table,
     "",
-    "Floor is committed speeches; character share counts UTF-16 code units (a text-length proxy, not speaking time). Listener change is the final pre-speech auction minus the first; final-speech reactions are in checkpoint journals, not in that numeric endpoint. Witness wait is turns from evidence availability to their first speech, not proof that the evidence was communicated. Never-heard observations are censored, not zero.",
+    "Incomplete discussions have no whole-discussion outcome estimates; their partial transcript, bids, and counts remain available. Floor is committed speeches; character share counts UTF-16 code units (a text-length proxy, not speaking time). Listener change is the final pre-speech auction minus the first; final-speech reactions are in checkpoint journals, not in that numeric endpoint. Witness wait is turns from evidence availability to their first speech, not proof that the evidence was communicated. Never-heard observations are censored, not zero.",
     "",
     "Final answers are private simultaneous choices. Correctness uses the synthetic case's explicit solution. Brier score is the sum of squared errors across options (lower is better); group choice uses unique plurality, with ties left undefined. See analysis.json for within-block factorial contrasts, eligibility, original/effective urgency, and frozen-auction counterfactuals.",
     "",
@@ -199,7 +202,17 @@ export async function writeStudyReport(root: string, manifest: StudyManifest) {
   ];
   await writeFile(
     join(root, "analysis.json"),
-    JSON.stringify({ rows, effects, usage, expectedRuns: manifest.runs.length }, null, 2),
+    JSON.stringify(
+      {
+        analysisVersion: "complete-discussions-v1",
+        rows,
+        effects,
+        usage,
+        expectedRuns: manifest.runs.length,
+      },
+      null,
+      2,
+    ),
     { mode: 0o600 },
   );
   await writeFile(join(root, "report.md"), report.join("\n"), { mode: 0o600 });

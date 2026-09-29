@@ -48,6 +48,9 @@ def summarize(state, scenario):
 
 def verify_summary(row, analysis):
     expected = next(item for item in analysis["rows"] if item["id"] == row["id"])
+    if row["status"] != "complete":
+        assert all(value is None for value in expected["metrics"].values()), row["id"]
+        return
     for key in ["floorShare", "characterShare", "accuracy"]:
         actual, reference = row[key], expected["metrics"][key]
         if actual is None or reference is None:
