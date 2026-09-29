@@ -10,16 +10,18 @@ import { sha256 } from "./lib/auction-study-design";
 
 export function scaleReport(summary: ReturnType<typeof scaleSummary>) {
   const lines = [
-    "# Group size and speaker scheduling",
+    "# Ordered dependency chains and speaker scheduling",
     "",
-    "Zero provider calls. All clues are initially available, one necessary fact per holder. Compare a fixed three holders, 75% of the roster, and everyone except one participant. All 24 orders are enumerated at four participants; each larger roster uses 96 distinct reproducible hash-sorted seat orders, matched across all conditions and policies. At four participants the three information profiles coincide; these repeated design cells are not independent evidence.",
+    "Correction: auction-scale-v1 counted independently available facts and did not implement the requested ordered task. Its one-cycle cyclic results are not evidence for this task. V2 requires each holder to receive the actual public predecessor output before producing its own result. An early turn records waiting and cannot count as a result. Earlier blocked turns are not retroactively credited when a prerequisite later appears.",
     "",
-    "The production auction and the original control's bidding rule are reused. Honest urgency is 0.8 with unshared evidence, 0.05 otherwise. The optional single rambler always urges 1 and has no clue. Observed-memory ratings are 0.7 for unheard peers and 0.05 after a peer exhausts its information or adds none. Flat-interest keeps ratings at 0.7. Ratings see only public speaking history, never another player's hidden clue ownership. All actors stay willing; every policy excludes the previous speaker. The cyclic cursor persists. A run stops when all necessary facts are public or after twice the roster size in slots.",
+    "Zero provider calls. Compare 4/8/12/16 players and chains held by three players, 75% of players, or everyone except one. All 24 orders are enumerated at four players; larger sizes reuse 96 distinct fixed orders from v1. At four players the three chain lengths coincide, so repeated labels are not independent evidence. Each case starts fresh and allows N*k slots, enough for k complete cyclic passes. Completion requires publishing the terminal derived result, with every prerequisite validated.",
     "",
-    "Means below are conditional on completion; incomplete counts are reported separately in auction/urgency/cyclic order. The exact cyclic expectation k(N+1)/(k+1) assumes a uniformly random order and is distinct from the sampled cyclic mean. It follows from the expected maximum of k distinct holder positions among N seats. The experiment measures disclosure turns, not answer comprehension, API calls, tokens, or elapsed model time.",
+    "The production ranking formula, urgency-only selector, and persistent cyclic cursor are unchanged. Honest urgency is 0.8 only when a result is currently computable and unpublished, otherwise 0.05. The single optional rambler urges 1 and adds no result. Conditional public memory rates unheard peers 0.7 and blocked/exhausted/no-information peers 0.05; an explicitly stated waiting condition reopens to 0.7 when its public prerequisite arrives. Flat-interest always rates peers 0.7. Bids never inspect another actor's private packet or future output. All remain willing and all policies exclude the previous speaker.",
     "",
-    "| Players | Necessary holders | Profile | Condition | Signal | Auction | Urgency | Cyclic sample | Cyclic exact | Incomplete |",
-    "|---:|---:|---|---|---|---:|---:|---:|---:|---|",
+    "Report mean completion among completed cases with censoring separately. Cyclic >N and >2N counts expose actual revisits across cycles. The exact mean (N*k+1)/2 is for k distinct holders in a uniform random cyclic order: (N+1)/2 to the first holder, then mean forward distance N/2 per successor. Sampled means are labeled separately. This is a scripted causal task, not a test of live model comprehension or API efficiency.",
+    "",
+    "| Players | Steps | Profile | Condition | Signal | Auction | Urgency | Cyclic sampled | Cyclic exact | Cyclic >N | Cyclic >2N | Cyclic max | Incomplete A/U/C |",
+    "|---:|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
   ];
   for (const row of summary) {
     const values = POLICIES.map((p) => row.outcomes[p]!.completedMean?.toFixed(2) ?? "—");
@@ -27,13 +29,14 @@ export function scaleReport(summary: ReturnType<typeof scaleSummary>) {
       const cell = row.outcomes[p]!;
       return `${cell.incomplete}/${cell.cases}`;
     }).join(", ");
+    const cyclic = row.outcomes.cyclic!;
     lines.push(
-      `| ${row.count} | ${row.holders} | ${row.profile} | ${row.condition} | ${row.signal} | ${values.join(" | ")} | ${row.exactUniformCyclicMean.toFixed(2)} | ${incomplete} |`,
+      `| ${row.count} | ${row.holders} | ${row.profile} | ${row.condition} | ${row.signal} | ${values.join(" | ")} | ${row.exactUniformOrderedCyclicMean.toFixed(2)} | ${cyclic.overOneCycle}/${cyclic.cases} | ${cyclic.overTwoCycles}/${cyclic.cases} | ${cyclic.maxCompletion ?? "—"} | ${incomplete} |`,
     );
   }
   lines.push(
     "",
-    "These are scripted design cases, not independent model conversations. Perfect observation memory and declared urgency/listening rules remove model comprehension error but do not guarantee real models will supply useful preferences. More participants can add waiting, useful evidence, adversaries, and bid-collection work; this experiment varies only roster size and evidence density, retaining at most one rambler. It does not test delayed arrivals, coalitions, multiple ramblers, or language-model scheduling at scale.",
+    "All policies face identical causal gates. The evaluator never selects the next speaker by hidden packet ownership; it merely prevents a result before its prerequisite exists. Perfect private readiness and exact conditional memory are declared assumptions, not measured Jev behavior. Waiting means temporarily blocked, not permanently exhausted. The old unordered task remains a separate historical baseline; its conclusions have been withdrawn for this ordered task.",
     "",
   );
   return lines.join("\n");
@@ -42,7 +45,7 @@ async function main() {
   const { values } = parseArgs({ options: { out: { type: "string" }, help: { type: "boolean" } } });
   if (values.help) {
     console.log(
-      "Usage: npm run auction:scale -- --out NEW_DIRECTORY\nFrozen 4/8/12/16-player, three-density scripted comparison. No provider calls.",
+      "Usage: npm run auction:scale -- --out NEW_DIRECTORY\nFrozen ordered dependency chains with 4/8/12/16 players. No provider calls.",
     );
     return;
   }
@@ -55,6 +58,7 @@ async function main() {
   const paths = [
     "scripts/auction-scale.ts",
     "scripts/lib/auction-scale.ts",
+    "scripts/lib/auction-dependency.ts",
     "scripts/lib/auction-control.ts",
     "packages/simulator/src/speaker-auction.ts",
   ];
@@ -65,7 +69,11 @@ async function main() {
   );
   const jobs = scaleJobs();
   const manifest = {
-    protocol: "auction-scale-v1",
+    protocol: "auction-scale-v2",
+    task: "public-predecessor-activated private transformations",
+    completion: "terminal derived result published after all prerequisites",
+    slotBudget: "players * chain steps",
+    seatOrderVersion: "auction-scale-v1",
     sourceCommit: execFileSync("git", ["-C", root, "rev-parse", "HEAD"], {
       encoding: "utf8",
     }).trim(),

@@ -248,11 +248,15 @@ uncertainty, provenance, and the actor's objective. Jev scores are secondary. A 
 not improvement. These are reused development cases, not a held-out benchmark or accumulated
 multi-turn memory study. The manifest records the assessment rubric before any calls.
 
-### Scripted scheduler comparison with observable memory
+### Historical unordered scheduler control
 
 ```sh
 npm run auction:control -- --out data/auction-control
 ```
+
+**Scope correction:** this historical control permits A, B, and C to be disclosed in any order. It
+does not implement the requested causal dependency, and its results cannot establish which scheduler
+is better for the ordered task. It remains available as an unordered baseline.
 
 This command makes **zero provider calls**. It enumerates 864 deterministic cases: three conditions,
 two arrival schedules, two listener signals, three schedulers, and all 24 seat/tie orders. Each
@@ -332,9 +336,10 @@ score directions separated as expected with the candidate; legacy had five and o
 counts are not an accuracy estimate. The fresh legacy results also differed from the earlier run, so
 comparing the candidate only with that earlier baseline would exaggerate some improvements.
 
-The scheduler control completed **864 deterministic cases with zero model calls**. Each table entry
-is the mean completion slot across all 24 seat/tie orders; lower is better. All cases completed
-within twelve slots.
+**Historical unordered control:** the following figures are not results for an ordered dependency
+task. The scheduler control completed **864 deterministic cases with zero model calls**. Each table
+entry is the mean completion slot across all 24 seat/tie orders; lower is better. All cases
+completed within twelve slots.
 
 | Condition             | Listener signal | Fact arrivals | Auction | Urgency-only | Cyclic |
 | --------------------- | --------------- | ------------- | ------: | -----------: | -----: |
@@ -378,84 +383,73 @@ all attempts and raw score distributions; control checks recomputed completion, 
 eligible passovers, every aggregate row, and flat-interest trajectory equivalence. Raw requests and
 journals remain private local artifacts.
 
-### Scaling the roster without assuming the outcome
+### Ordered dependencies and scaling
+
+**Correction:** the initial `auction-scale-v1` benchmark counted ready facts disclosed in any order.
+It did not enforce the requested A-before-B-before-C dependency. The prior scaling comparisons and
+conclusion that round-robin remained competitive with dense information are withdrawn as evidence
+for this task. Passing arithmetic checks verified the implementation, not that it modeled the right
+experiment. The original code and tables remain in
+[the historical revision](https://github.com/cesaregarza/moon-council/blob/bed90c89c078349e353692bdaa3ec95a3ad3bd68/docs/AUCTION_TESTING.md#scaling-results)
+and its frozen local artifacts; they are not silently overwritten.
 
 ```sh
-npm run auction:scale -- --out data/auction-scale
+npm run auction:scale -- --out data/auction-scale-ordered
 ```
 
-This separate `auction-scale-v1` protocol compares 4, 8, 12, and 16 participants. Cross three
-information distributions: three necessary clue holders; 75% of participants holding a necessary
-clue; and everyone except one participant holding a necessary clue. Each holder has one fact,
-available initially, and completion requires all of them to be publicly disclosed. At four players
-these profiles coincide; repeated labels are not independent evidence.
+`auction-scale-v2` uses **causal private transformations**. A's holder can produce the initial
+result. B's holder must receive A's actual public output before computing B's result from its own
+private packet. C requires B's public output, and so on. These are not prewritten facts that can all
+be dumped into a transcript and assembled later. A premature turn records the missing prerequisite,
+never a future result. It receives no retroactive completion credit when that prerequisite arrives;
+the holder must get a later speaking turn to publish its newly computable result. Every publication
+is checked against its private transform and the actual public predecessor value.
 
-Reuse the production ranking function, controlled bidding rule, eligibility exclusion, and cyclic
-cursor. Compare cooperative groups and groups with one maximum-urgency rambler, under
-observed-memory and flat-interest ratings. The same 24 exhaustive seat orders at four players and 96
-distinct reproducible hash-sorted orders at each larger size are matched across all cells. The
-protocol makes no provider calls; a clean source commit, source hashes, and all job inputs are saved
-before execution. Each run stops at completion or twice its roster size in slots. Saved selections
-and disclosure times allow independent reconstruction; incomplete runs remain censored.
+For example, round-robin in the order **C, B, A, D** requires multiple passes:
 
-Round-robin's exact expected completion is `k(N+1)/(k+1)` for `k` necessary clue holders uniformly
-placed among `N` seats: the expected last holder position. Report this separately from sampled
-means. With three holders it grows with roster size; with almost everyone holding essential
-information, most turns remain necessary. This is a test of information density as well as
-participant count. Declared preferences and exact observable memory remove comprehension error but
-do not establish how real agents will bid. Turn savings do not by themselves establish API-cost or
-wall-time savings; collecting bids and peer ratings also grows with the roster. Delayed arrivals,
-multiple ramblers, coalitions, and live model behavior are outside this scaling protocol.
+| Turn | Speaker | Contribution                          |
+| ---: | ------- | ------------------------------------- |
+|    1 | C       | Waiting for B; cannot produce C       |
+|    2 | B       | Waiting for A; cannot produce B       |
+|    3 | A       | Publishes A, enabling B               |
+|    4 | D       | No chain result                       |
+|    5 | C       | Still waiting for B                   |
+|    6 | B       | Uses A and publishes B, enabling C    |
+|    7 | A       | Already contributed                   |
+|    8 | D       | No chain result                       |
+|    9 | C       | Uses B and publishes C; task complete |
+
+Completion is publication of the terminal derived result. The common budget is `N*k` slots for `N`
+players and `k` chain steps, allowing up to `k` complete cyclic passes. The former two-cycle cap is
+removed. A reversed twelve-player, eleven-step fixture completes at turn 122 within a 132-slot
+budget. Tests reject premature/forged results, check that early turns remain blocked, and verify
+prerequisite values, later service, and a terminal result beyond two cycles.
+
+The roster sizes, chain lengths, seating samples, cooperative/rambler conditions, production ranking
+formula, and previous-speaker exclusion remain matched across schedulers. There are 24 exhaustive
+seat orders at four players and the same 96 fixed sampled orders from v1 at each larger size. Each
+holder owns one distinct step. The three chain-length profiles coincide at four players and are not
+independent replications.
+
+Honest urgency is 0.8 only when the holder has a currently computable, unpublished result, otherwise
+0.05. The optional single rambler always urges 1. Conditional memory retains public statements of
+what a peer is waiting for: listening is 0.05 while blocked and returns to the ordinary 0.7 level
+when that public prerequisite appears. This corrects the difference between temporarily blocked and
+exhausted. Unheard peers receive 0.7; exhausted and noncontributing peers receive 0.05. The
+flat-interest ablation stays at 0.7. Private peer packets and future outputs do not enter listener
+scores. This is a stated scripted memory rule, not a measured improvement in Luna or Jev.
+
+For cyclic scheduling, exact expected completion is `(N*k+1)/2`: the first holder is reached after
+`(N+1)/2` slots on average, and each of the `k−1` distinct successor holders adds mean cyclic
+forward distance `N/2`. This replaces v1's expected last-holder position, which assumed unordered
+facts. The report separates sampled means from this expectation and includes completions beyond one
+and two cycles, the largest observed completion, and censored cases. All schedulers face the same
+causal task and budget. No provider calls are made.
 
 #### Scaling results
 
-All 11,232 scripted cases completed at frozen source `f7b3e46daadf`, with zero provider calls. A
-separate verifier reconstructed every selection from independent priority arithmetic, checked all
-disclosure times and aggregate means, and counted possible last-holder positions to validate the
-exact round-robin expectation. The three profiles coincide at four participants; duplicate labels
-are not independent evidence.
-
-With **three necessary clue holders and one maximum-urgency rambler**, increasing the roster adds
-people who have no new information to supply:
-
-| Participants | Auction | Urgency-only | Round-robin sampled mean | Round-robin exact mean |
-| -----------: | ------: | -----------: | -----------------------: | ---------------------: |
-|            4 |    4.00 |         6.00 |                     3.75 |                   3.75 |
-|            8 |    4.00 |         6.00 |                     6.72 |                   6.75 |
-|           12 |    4.00 |         6.00 |                     9.64 |                   9.75 |
-|           16 |    4.00 |         6.00 |                    12.41 |                  12.75 |
-
-This supports a scaling advantage when useful information is sparse. At twelve participants, urgency
-alone reduces the sampled 9.64-turn cyclic result to six; listener feedback then reduces six to
-four. The entire gain over round-robin should not be attributed to listening preferences.
-
-**How many people need to contribute also matters.** At twelve participants:
-
-| Necessary clue holders | Auction | Urgency-only | Round-robin sampled mean | Round-robin exact mean |
-| ---------------------: | ------: | -----------: | -----------------------: | ---------------------: |
-|                      3 |    4.00 |         6.00 |                     9.64 |                   9.75 |
-|                      9 |   10.00 |        18.00 |                    11.71 |                  11.70 |
-|                     11 |   12.00 |        22.00 |                    11.89 |                  11.92 |
-
-The nine-holder case preserves the original 75% proportion of useful participants. The auction still
-wins there, but by less than in the fixed-three case. With eleven necessary holders, round-robin
-remains narrowly faster despite the larger roster: almost every turn is necessary, and the auction
-spends its first turn discovering that the rambler adds no task information.
-
-Under this declared rule, the auction completes in `k+1` turns with one rambler and `k` initially
-ready holders. Cyclic scheduling has exact expectation `k(N+1)/(k+1)`. When `k=N−1`, this is
-`N−1/N`, narrowly below the auction’s `N` at any tested size. Roster size alone therefore does not
-determine the winner.
-
-All cooperative controls completed in one turn per clue under both auction and urgency-only. Every
-flat-interest auction matched its urgency-only speaking sequence. Those controls separate the value
-of honest urgency from the value of listener feedback. The conclusions remain conditional on the
-scripted preferences; no live twelve-player journal or Jev behavior was tested.
-
-The shared four-player control retained its original completion prefixes. Local validation passed
-309 tests (three opt-in live tests skipped), four browser checks, sixteen Python checks, formatting,
-lint, complexity, typing, and build. This extension changes a controlled experimental roster, not
-the production auction formula.
+The corrected protocol is frozen and its results will be recorded after running it. The old
+unordered table above is not a substitute for that validation.
 
 ## 3. Feedback: controlled conversations after the bid checks
 

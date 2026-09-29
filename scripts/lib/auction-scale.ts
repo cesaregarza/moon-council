@@ -1,14 +1,16 @@
 import { createHash } from "node:crypto";
+import { chooseControlledSpeaker, permutations, POLICIES, type Policy } from "./auction-control";
 import {
-  chooseControlledSpeaker,
-  controlBid,
-  permutations,
-  POLICIES,
-  SIGNALS,
-  type ControlSpeech,
-  type Policy,
-  type Signal,
-} from "./auction-control";
+  dependencyPackets,
+  dependencyView,
+  dependencyBid,
+  dependencySpeech,
+  validateDependencyPublication,
+  dependencyService,
+  DEPENDENCY_SIGNALS,
+  type DependencySignal,
+  type DependencySpeech,
+} from "./auction-dependency";
 
 export const SCALE_COUNTS = [4, 8, 12, 16] as const;
 export const SCALE_PROFILES = ["fixed-three", "three-quarters", "all-but-one"] as const;
@@ -22,11 +24,11 @@ export function clueCount(count: number, profile: ScaleProfile): number {
   if (profile === "fixed-three") return 3;
   return profile === "three-quarters" ? (3 * count) / 4 : count - 1;
 }
-/** Expected last position of k distinct necessary holders in a uniform random order. */
-export function expectedCyclicCompletion(count: number, holders: number): number {
+/** Initial wait averages (N+1)/2; each of k-1 distinct successors adds N/2. */
+export function expectedOrderedCyclicCompletion(count: number, holders: number): number {
   if (!Number.isInteger(count) || !Number.isInteger(holders) || holders < 1 || holders > count)
     throw new Error("Invalid roster or holder count");
-  return (holders * (count + 1)) / (holders + 1);
+  return (holders * count + 1) / 2;
 }
 /** Hash-sort sampling is deterministic. Every cell of a group size reuses these orders. */
 export function scaleOrders(count: number): string[][] {
@@ -58,7 +60,7 @@ export interface ScaleInput {
   count: number;
   holders: number;
   condition: ScaleCondition;
-  signal: Signal;
+  signal: DependencySignal;
   policy: Policy;
   order: string[];
 }
@@ -79,51 +81,41 @@ function validateScaleInput({ count, holders, order }: ScaleInput): string[] {
     throw new Error("Invalid seat order");
   return ids;
 }
-/** All necessary facts are present initially; no scripted comprehension or delivery delay. */
+/** Each result is produced only after its public predecessor activates the holder's packet. */
 export function runScaleCase(input: ScaleInput) {
   const { count, holders, condition, signal, policy, order } = input;
   const ids = validateScaleInput(input);
-  const holderIds = ids.slice(0, holders);
-  const delivered = new Set<string>();
-  const speeches: ControlSpeech[] = [];
+  const packets = dependencyPackets(ids.slice(0, holders));
+  const byOwner = new Map(packets.map((p) => [p.owner, p]));
+  const events: DependencySpeech[] = [];
+  const slotBudget = count * holders;
   let cursor = 0;
-  for (let turn = 1; turn <= 2 * count; turn++) {
-    const candidates = ids.filter((id) => id !== speeches.at(-1)?.playerId);
-    const views = ids.map((playerId) => ({
-      playerId,
-      own:
-        holderIds.includes(playerId) && !delivered.has(playerId)
-          ? { id: playerId, text: `Necessary fact held by ${playerId}.` }
-          : null,
-      publicSpeeches: speeches,
-    }));
+  for (let turn = 1; turn <= slotBudget; turn++) {
+    const candidates = ids.filter((id) => id !== events.at(-1)?.playerId);
+    const publicSnapshot = events.slice();
+    const views = ids.map((id) => dependencyView(id, byOwner.get(id), publicSnapshot));
     const bids = views.map((view) => ({
       playerId: view.playerId,
-      intent: controlBid(view, condition, signal, ids),
+      intent: dependencyBid(view, ids, condition, signal),
     }));
     const selected = chooseControlledSpeaker(policy, candidates, bids, order, cursor);
     cursor = (order.indexOf(selected) + 1) % count;
-    const fact = views.find((v) => v.playerId === selected)!.own;
-    const ramble = condition === "max-rambler" && selected === ids.at(-1);
-    speeches.push({
+    const speech = dependencySpeech(
+      views.find((v) => v.playerId === selected)!,
       turn,
-      playerId: selected,
-      fact,
-      kind: fact ? "disclosure" : ramble ? "ramble" : "no-information",
-      text: fact?.text ?? "No new task information.",
-    });
-    if (fact) delivered.add(selected);
-    if (delivered.size === holders) break;
+      condition === "max-rambler" ? ids.at(-1)! : null,
+    );
+    validateDependencyPublication(speech, byOwner.get(selected), events);
+    events.push(speech);
+    if (speech.result?.id === packets.at(-1)!.id) break;
   }
   return {
     ...input,
-    completion: delivered.size === holders ? speeches.length : null,
-    slotBudget: 2 * count,
-    speakers: speeches.map((s) => s.playerId),
-    disclosures: holderIds.map((id) => ({
-      playerId: id,
-      turn: speeches.find((s) => s.fact?.id === id)?.turn ?? null,
-    })),
+    completion: events.at(-1)?.result?.id === packets.at(-1)!.id ? events.length : null,
+    slotBudget,
+    speakers: events.map((e) => e.playerId),
+    events,
+    disclosures: dependencyService(packets, events),
   };
 }
 export interface ScaleJob extends ScaleInput {
@@ -133,7 +125,7 @@ export function scaleJobs(): ScaleJob[] {
   return SCALE_COUNTS.flatMap((count) =>
     SCALE_PROFILES.flatMap((profile) =>
       SCALE_CONDITIONS.flatMap((condition) =>
-        SIGNALS.flatMap((signal) =>
+        DEPENDENCY_SIGNALS.flatMap((signal) =>
           POLICIES.flatMap((policy) =>
             scaleOrders(count).map((order) => ({
               count,
@@ -170,6 +162,9 @@ export function scaleSummary(runs: ScaleRun[]) {
           {
             cases: cells.length,
             incomplete: cells.length - completed.length,
+            overOneCycle: completed.filter((n) => n > count).length,
+            overTwoCycles: completed.filter((n) => n > 2 * count).length,
+            maxCompletion: completed.length ? Math.max(...completed) : null,
             completedMean: completed.length
               ? completed.reduce((a, b) => a + b, 0) / completed.length
               : null,
@@ -183,7 +178,7 @@ export function scaleSummary(runs: ScaleRun[]) {
       profile,
       condition,
       signal,
-      exactUniformCyclicMean: expectedCyclicCompletion(count, holders),
+      exactUniformOrderedCyclicMean: expectedOrderedCyclicCompletion(count, holders),
       outcomes,
     };
   });
