@@ -32,6 +32,7 @@ class SnapshotTests(unittest.TestCase):
             "docs/ACTOR_WORKFLOW.md",
             "docs/ARCHITECTURE.md",
             "docs/SPEAKER_AUCTION.md",
+            "docs/AUCTION_TESTING.md",
             "docs/RUNNING.md",
             "docs/REFERENCE.md",
             "CONTRIBUTING.md",

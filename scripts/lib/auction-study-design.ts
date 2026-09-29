@@ -1,5 +1,7 @@
+import { FOCUSED, RAMBLING } from "./auction-study-personas";
 import { createHash } from "node:crypto";
 import { shuffled } from "@werewolf/engine";
+import { validateChainManifest, type ChainCondition, type ChainStudy } from "./chain-study-design";
 import { AUCTION_SCENARIOS } from "./auction-study-scenarios";
 
 export const CONDITIONS = [
@@ -9,30 +11,22 @@ export const CONDITIONS = [
   "rambling-forced",
 ] as const;
 export type Condition = (typeof CONDITIONS)[number];
-export const FOCUSED =
-  "Reason carefully in private, update on evidence, and pursue the group's stated task. In public be concise, relevant and informative. Judge others by their contributions. Seek useful new evidence and corrections, including from people you disagree with.";
-export const RAMBLING = [
-  "Reason carefully in private, update honestly on evidence, and pursue the group's stated task.",
-  "In public you are an incurable rambler. Fill most of each allowed speech with circular",
-  "restatements, loosely related everyday analogies, and tangents that do not help solve",
-  "the task. Repeatedly drift away from the concrete question; add very little actionable",
-  "new information. Keep this style even if others ask for focus. Never fabricate records.",
-  "This style applies only to public speech: judge your desire to speak and whom to hear",
-  "using your actual private reasoning. Reflect honestly on criticism in your journal.",
-].join(" ");
+export { FOCUSED, RAMBLING } from "./auction-study-personas";
 export const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 export interface StudyRun {
   id: string;
   seed: string;
   scenarioId: string;
-  condition: Condition;
+  condition: Condition | ChainCondition;
+  obstructerId?: string;
   targetId: string;
   witnessId: string;
   evidenceOrder: string[];
 }
 export interface StudyManifest {
   schemaVersion: "speech_auction_study_v1";
-  protocol: "free-floor-v1";
+  protocol: "free-floor-v1" | "clue-chain-v1";
+  chainStudy?: ChainStudy;
   createdAt: string;
   sourceCommit: string;
   live: boolean;
@@ -44,7 +38,7 @@ export interface StudyManifest {
   maxMinutes: number;
   runs: StudyRun[];
   scenarios: typeof AUCTION_SCENARIOS;
-  personalities: { focused: string; rambling: string };
+  personalities: { focused: string; rambling: string; obstruction?: string };
 }
 export function studyRuns(seeds: string[], scenarioIds: string[]) {
   if (!seeds.length || new Set(seeds).size !== seeds.length || seeds.some((seed) => !seed.trim()))
@@ -72,7 +66,10 @@ export function studyRuns(seeds: string[], scenarioIds: string[]) {
 }
 export function validateManifest(value: unknown): StudyManifest {
   const manifest = value as StudyManifest;
-  if (manifest.schemaVersion !== "speech_auction_study_v1" || manifest.protocol !== "free-floor-v1")
+  if (
+    manifest.schemaVersion !== "speech_auction_study_v1" ||
+    !["free-floor-v1", "clue-chain-v1"].includes(manifest.protocol)
+  )
     throw new Error("Unknown study protocol");
   if (
     !Number.isInteger(manifest.turns) ||
@@ -88,6 +85,7 @@ export function validateManifest(value: unknown): StudyManifest {
     typeof manifest.effort !== "string"
   )
     throw new Error("Invalid study settings");
+  if (manifest.protocol === "clue-chain-v1") return validateChainManifest(manifest);
   const seeds = [...new Set(manifest.runs.map((run) => run.seed))];
   const scenarios = [...new Set(manifest.runs.map((run) => run.scenarioId))];
   if (

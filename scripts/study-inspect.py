@@ -64,6 +64,10 @@ def inspect(root, run_id=None, details=False, verify=False, turn=None):
     manifest = json.loads((root / "manifest.json").read_text())
     if manifest["schemaVersion"] != "speech_auction_study_v1":
         raise ValueError("Unsupported study manifest")
+    if verify and manifest.get("protocol", "free-floor-v1") != "free-floor-v1":
+        raise ValueError(
+            "Ratio verification supports free-floor-v1 only; inspect chain route scores separately"
+        )
     analysis = json.loads((root / "analysis.json").read_text()) if verify else None
     rows = []
     for run in manifest["runs"]:

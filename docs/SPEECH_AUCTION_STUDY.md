@@ -178,3 +178,8 @@ python3 scripts/study-inspect.py --study data/auction-pilot \
 This read-only companion can include private journals when `--details` is explicit. It never calls a
 model. `--verify` compares independently calculated floor share, text share, accuracy, and
 changed-winner counts against the saved analysis. Run it after the batch and report finish.
+
+The next [chained-evidence protocol](CHAINED_EVIDENCE_STUDY.md) gives each of four participants an
+essential dependent record and crosses rambling with a separate strategic saboteur. An independent
+backup keeps that task collectively solvable. It supports separate rambling and obstruction
+experiments, with an optional combined factorial study and private route probes.
