@@ -42,7 +42,8 @@
     "auction:study": "tsx scripts/auction-study.ts",
     "auction:replay": "tsx scripts/auction-replay.ts",
     "auction:bid-probe": "tsx scripts/auction-bid-probe.ts",
-    "auction:control": "tsx scripts/auction-control.ts"
+    "auction:control": "tsx scripts/auction-control.ts",
+    "auction:scale": "tsx scripts/auction-scale.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
