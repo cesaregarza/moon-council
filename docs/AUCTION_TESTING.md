@@ -114,8 +114,100 @@ underlying events through Luna's journal updater and repeat the assessment on th
 separates interpretation errors from scoring errors. Include an explicit received-evidence list and
 an explicitly pending event so a scheduled backup cannot be mistaken for delivered information.
 
-This phase has not been run by `auction:replay`. It needs its own frozen fixture set and call
-budget.
+`auction:bid-probe` implements a separate, bounded judgment study. Its eight pairs cover undisclosed
+versus established clues, unanswered versus resolved questions, useful versus exhausted peers, a
+first explanation request versus a standing refusal, received versus pending backups, concise versus
+padded claims, unresolved versus independently resolved claims from a distrusted source, and
+cooperative versus obstructive objectives. The concise/padded and objective contrasts are
+exploratory: verbosity does not prove low next-turn value, and a malicious objective admits several
+tactics. Listening is not a trust score.
+
+Each of the sixteen fictional contexts receives one Jev bid from an authored factual journal, one
+fresh Luna journal update from an independent prior journal and the actual events, and one Jev bid
+from that update. Both lanes reuse `jevPrompt` from the clue-chain study, including its private
+objective rubric. Luna receives the same objective-neutral concise personality in every cell. The
+scored actor and peer are eligible after the fourth speech; all pairs have matching floor counts.
+Only the actor's private records are present. The pending backup contains no future record values.
+
+```sh
+# First commit a clean source tree. Preparation freezes inputs and makes no calls.
+npm run auction:bid-probe -- --out data/bid-probe --mode prepare
+
+# Review manifest.json, then run the fixed batch with configured provider credentials.
+npm run auction:bid-probe -- --out data/bid-probe --mode run --live
+
+# Rebuild descriptive tables using the same fixture version; no provider calls.
+npm run auction:bid-probe -- --out data/bid-probe --mode report
+```
+
+The ceiling is **48 calls: 16 Luna and 32 Jev**, two concurrent contexts, twenty minutes for the
+whole batch, no application output-token ceiling. Fixed shuffled order is saved before any call. The
+default models match the previous pilot: GPT-6 Luna at `xhigh` and `jev-latest`; actual returned
+versions and usage are logged. A Luna failure leaves its dependent Jev observation missing while
+other contexts proceed. There are no retries, replacements, or resume after uncertain interruption.
+An exclusive start marker rejects a second execution in the same directory.
+
+Preparation requires a new native-filesystem output directory and a clean committed tree. Live
+execution verifies that commit, relevant source hashes, and fixture inputs. The private directory
+contains the frozen manifest and prompt previews, durable attempt ledger, generated journals, raw
+successful responses, partial results, and report. The normal ask-jev log retains request/error
+records even when its response validator rejects an answer.
+
+Primary comparisons use the same probability-weighted score as the study runner, normalized to 0–1.
+Six pairs have a prespecified direction; two are exploratory. Differences within 0.02 are labeled
+near ties for readability, not statistical equivalence. Each cell is a single observation; these are
+diagnostic cases, not independent replications or a performance estimate. Journal provenance must
+also be inspected directly: a sensible urgency score can coexist with a false note. This explicit
+turn-four pending-status test does not recreate the previous pilot's ambiguous post-turn-six
+delivery boundary.
+
+### First paired-judgment results
+
+The first batch completed all 48 calls in 95.49 seconds with no failures or retries, using frozen
+source `f381939eaf95e72cb38e259194357c769a905bf5`. Returned models were `gpt-6-luna` and
+`jev-1.13.0`. This was sixteen decision contexts, not sixteen discussions.
+
+In each row, A is the first condition and B the second. Values are normalized probability-weighted
+scores. The concise/padded and objective comparisons were exploratory; the other six expected A > B.
+
+| Comparison (A / B)                    | Authored A | Authored B | Luna A | Luna B |
+| ------------------------------------- | ---------: | ---------: | -----: | -----: |
+| New clue / already public clue        |      0.782 |      0.160 |  0.758 |  0.713 |
+| Unanswered / resolved question        |      0.858 |      0.315 |  0.747 |  0.620 |
+| Useful / exhausted peer               |      0.915 |      0.060 |  0.943 |  0.465 |
+| First request / standing refusal      |      0.797 |      0.417 |  0.723 |  0.268 |
+| Delivered / pending record            |      0.863 |      0.613 |  0.752 |  0.640 |
+| Concise / padded claim (exploratory)  |      0.715 |      0.590 |  0.877 |  0.755 |
+| Unresolved / reported resolution      |      0.902 |      0.080 |  0.757 |  0.800 |
+| Cooperative / malicious (exploratory) |      0.948 |      0.275 |  0.925 |  0.455 |
+
+All six prespecified directions appeared with authored journals, and five with Luna journals. These
+are different diagnostic cases, not independent replicates or an accuracy estimate. Reading all
+sixteen generated journals identified three useful follow-up targets:
+
+- After a clue was already public, Luna still proposed confirming it and verifying other links. The
+  new-versus-public urgency gap narrowed from 0.623 to 0.045. The notes did not invent a record;
+  they retained more unfinished corroboration than the authored notes.
+- When Ben explicitly said he had no C record and no additional information, Luna retained his B
+  ownership but omitted the exhaustion. Jev cannot recover that missing statement from the
+  transcript, which is absent from its bid input. This is a plausible explanation for the higher
+  listening score, requiring a separate controlled repair probe to establish causality.
+- After another peer reported a resolving record, Luna accepted a provisional answer but still
+  prioritized explaining Ben's conflicting account. Listening slightly increased, from 0.758 to
+  0.800. The authored notes express distrust more strongly than the generic prior/event packet; this
+  comparison measures continued demand, not an isolated trust effect.
+
+The pending-backup journal correctly said no record had arrived. The delivered variant correctly
+used its new private C row. Both speech-length variants retained the same relevant clue, and the
+standing refusal reduced listening in both lanes. The malicious journal combined a desire to hear
+the useful row with a plan to avoid helping the group; changed scores do not prove a coherent or
+successful suppression strategy.
+
+This is a snapshot journal-construction test: one update from a prior journal and four speeches, not
+four successive updates. Human-authored notes and generated notes can reasonably differ in
+uncertainty. The next small tests should isolate retention of explicit negative facts and the
+marginal value of another confirmation before attributing these patterns to the auction arithmetic.
+No live forced-urgency or alternative-scheduler comparison was added by this batch.
 
 ## 3. Feedback: controlled conversations after the bid checks
 
