@@ -166,3 +166,15 @@ existing coding packet and its annotations; generate that packet after the batch
 A later study can vary cooperation versus conflicting incentives, group size, arrival timing,
 several disruptive speakers, scheduler guardrails, and evidence quality. Change one planned factor
 at a time and do not pool changed protocols as interchangeable trials.
+
+For targeted local inspection and an independent recomputation of report ratios:
+
+```sh
+python3 scripts/study-inspect.py --study data/auction-pilot --verify
+python3 scripts/study-inspect.py --study data/auction-pilot \
+  --run b01-supplier-rambling-forced --details --turn 7
+```
+
+This read-only companion can include private journals when `--details` is explicit. It never calls a
+model. `--verify` compares independently calculated floor share, text share, accuracy, and
+changed-winner counts against the saved analysis. Run it after the batch and report finish.
