@@ -74,21 +74,24 @@ export function controlBid(
   view: ControlView,
   condition: Condition,
   signal: Signal,
+  playerIds: string[] = IDS,
 ): SpeakerIntentV1 {
-  const target = condition === "max-rambler" && view.playerId === "p4";
+  const target = condition === "max-rambler" && view.playerId === playerIds.at(-1);
   const urge = target ? 1 : view.own ? 0.8 : 0.05;
   return {
     urge,
     wantsToSpeak: true,
-    willingnessToListen: IDS.filter((id) => id !== view.playerId).map((playerId) => ({
-      playerId,
-      willingness:
-        condition === "zero-rater" && view.playerId === "p2"
-          ? 0
-          : signal === "flat-interest"
-            ? 0.7
-            : observedInterest(view, playerId),
-    })),
+    willingnessToListen: playerIds
+      .filter((id) => id !== view.playerId)
+      .map((playerId) => ({
+        playerId,
+        willingness:
+          condition === "zero-rater" && view.playerId === playerIds[1]
+            ? 0
+            : signal === "flat-interest"
+              ? 0.7
+              : observedInterest(view, playerId),
+      })),
   };
 }
 export function chooseControlledSpeaker(

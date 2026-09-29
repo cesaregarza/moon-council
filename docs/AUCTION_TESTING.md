@@ -378,6 +378,35 @@ all attempts and raw score distributions; control checks recomputed completion, 
 eligible passovers, every aggregate row, and flat-interest trajectory equivalence. Raw requests and
 journals remain private local artifacts.
 
+### Scaling the roster without assuming the outcome
+
+```sh
+npm run auction:scale -- --out data/auction-scale
+```
+
+This separate `auction-scale-v1` protocol compares 4, 8, 12, and 16 participants. Cross three
+information distributions: three necessary clue holders; 75% of participants holding a necessary
+clue; and everyone except one participant holding a necessary clue. Each holder has one fact,
+available initially, and completion requires all of them to be publicly disclosed. At four players
+these profiles coincide; repeated labels are not independent evidence.
+
+Reuse the production ranking function, controlled bidding rule, eligibility exclusion, and cyclic
+cursor. Compare cooperative groups and groups with one maximum-urgency rambler, under
+observed-memory and flat-interest ratings. The same 24 exhaustive seat orders at four players and 96
+distinct reproducible hash-sorted orders at each larger size are matched across all cells. The
+protocol makes no provider calls; a clean source commit, source hashes, and all job inputs are saved
+before execution. Each run stops at completion or twice its roster size in slots. Saved selections
+and disclosure times allow independent reconstruction; incomplete runs remain censored.
+
+Round-robin's exact expected completion is `k(N+1)/(k+1)` for `k` necessary clue holders uniformly
+placed among `N` seats: the expected last holder position. Report this separately from sampled
+means. With three holders it grows with roster size; with almost everyone holding essential
+information, most turns remain necessary. This is a test of information density as well as
+participant count. Declared preferences and exact observable memory remove comprehension error but
+do not establish how real agents will bid. Turn savings do not by themselves establish API-cost or
+wall-time savings; collecting bids and peer ratings also grows with the roster. Delayed arrivals,
+multiple ramblers, coalitions, and live model behavior are outside this scaling protocol.
+
 ## 3. Feedback: controlled conversations after the bid checks
 
 Keep rambler, malicious-rating, and misinformation scenarios separate initially. Hold task, seed,
