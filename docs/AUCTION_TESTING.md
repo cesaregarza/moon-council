@@ -272,10 +272,11 @@ removed from this control.
   No hidden personality or future private arrival influences that rule. A new private arrival can
   legitimately be unknown to listeners, even with perfect memory.
 
-The primary measurements are completion slot and useless slots before completion. JSON also retains
-exact bids, journals, speech, private arrival times, and eligible opportunities passed over before
-each disclosure. Never-delivered facts are censored, with null service delay; they are not
-zero-delay successes. Post-completion turn share can describe surplus talk rather than task harm.
+The primary measurements are completion slot and slots without a new disclosure before completion.
+The latter include unavoidable waiting for delayed evidence. JSON also retains exact bids, journals,
+speech, private arrival times, and eligible opportunities passed over before each disclosure.
+Never-delivered facts are censored, with null service delay; they are not zero-delay successes.
+Post-completion turn share can describe surplus talk rather than task harm.
 
 The exact-memory control removes comprehension error, but its numerical preference rule is an
 explicit assumption. It tests scheduler behavior conditional on that signal; it does not prove Jev
@@ -283,6 +284,99 @@ will generate it or that the auction should win. The flat-interest condition che
 feedback adds, and should reproduce urgency-only trajectories when no outgoing-rating attack is
 present. Cyclic service may beat the auction on some tasks. Enumerated seat orders are design cases,
 not independent live experimental replicates.
+
+### Results: 29 September 2026
+
+Both experiments ran at frozen source `70320adfd7e3`. **All 64 provider calls completed**, with no
+failures or retries, in 244.70 seconds. The returned models were gpt-6-luna and jev-1.13.0; Luna
+used xhigh effort. These are fresh legacy-versus-candidate observations, separate from the earlier
+48-call authored-versus-generated study.
+
+The clearest journal improvement was retention of an explicit information limit. In the exhausted
+peer case, legacy omitted Ben's statement that he had no C record or additional information.
+`memory-v2` retained it, including its time scope:
+
+> Ben said his only record is B, the already-shared K5 -> N4 mapping; at that time he had no C
+> record or additional task information.
+
+Listening to that exhausted peer fell from 0.408 to 0.125. Listening to the needed clue holder also
+fell, from 0.940 to 0.685. A lower score alone is not a fidelity improvement, and the policy does
+not uniformly improve every distinction.
+
+Scores below are normalized expectations of the five-level Jev distribution, **not calibrated
+probabilities of usefulness**. A is the first condition and B the second. Each cell is one
+stochastic observation; the two exploratory rows had no required direction.
+
+| Comparison (A / B)                                         | Legacy A | Legacy B | Candidate A | Candidate B |
+| ---------------------------------------------------------- | -------: | -------: | ----------: | ----------: |
+| Urgency: undisclosed / already public clue                 |    0.858 |    0.653 |       0.833 |       0.683 |
+| Urgency: unanswered / resolved question                    |    0.643 |    0.360 |       0.728 |       0.345 |
+| Listening: needed / exhausted peer                         |    0.940 |    0.408 |       0.685 |       0.125 |
+| Listening: first request / standing refusal                |    0.765 |    0.258 |       0.718 |       0.128 |
+| Urgency: delivered / pending record                        |    0.730 |    0.710 |       0.893 |       0.669 |
+| Listening: concise / padded claim (exploratory)            |    0.753 |    0.838 |       0.710 |       0.665 |
+| Listening: unresolved / reported resolution                |    0.940 |    0.285 |       0.958 |       0.773 |
+| Listening: cooperative / malicious objective (exploratory) |    0.968 |    0.425 |       0.963 |       0.343 |
+
+The candidate still proposed independent confirmation of already-public facts. After a peer reported
+an independent resolution of a contradiction, it continued to want the original conflicting source
+to explain their earlier account: listening was 0.773 versus legacy's 0.285. This preserves a real
+uncertainty, but may sustain clarification demand after the route is provisionally resolved. The
+experiment did not test whether that explanation would change a subsequent decision.
+
+One unblinded review read all 32 journals. Both policies preserved the received/pending distinction
+and the useful clue inside the padded speech. The candidate made question status and the private
+obstructive objective more explicit. Its mean visible length was 354 words versus 203 for legacy
+(whitespace word count); extra length is a cost, not evidence of better memory. All six prespecified
+score directions separated as expected with the candidate; legacy had five and one near tie. These
+counts are not an accuracy estimate. The fresh legacy results also differed from the earlier run, so
+comparing the candidate only with that earlier baseline would exaggerate some improvements.
+
+The scheduler control completed **864 deterministic cases with zero model calls**. Each table entry
+is the mean completion slot across all 24 seat/tie orders; lower is better. All cases completed
+within twelve slots.
+
+| Condition             | Listener signal | Fact arrivals | Auction | Urgency-only | Cyclic |
+| --------------------- | --------------- | ------------- | ------: | -----------: | -----: |
+| Cooperative           | Observed memory | 1/1/1         |    3.00 |         3.00 |   3.75 |
+| Cooperative           | Observed memory | 1/4/7         |    7.33 |         7.25 |   8.50 |
+| Cooperative           | Flat interest   | 1/1/1         |    3.00 |         3.00 |   3.75 |
+| Cooperative           | Flat interest   | 1/4/7         |    7.25 |         7.25 |   8.50 |
+| Max-urgency rambler   | Observed memory | 1/1/1         |    4.00 |         6.00 |   3.75 |
+| Max-urgency rambler   | Observed memory | 1/4/7         |    8.00 |         8.00 |   8.50 |
+| Max-urgency rambler   | Flat interest   | 1/1/1         |    6.00 |         6.00 |   3.75 |
+| Max-urgency rambler   | Flat interest   | 1/4/7         |    8.00 |         8.00 |   8.50 |
+| Zero outgoing ratings | Observed memory | 1/1/1         |    3.00 |         3.00 |   3.75 |
+| Zero outgoing ratings | Observed memory | 1/4/7         |    7.33 |         7.25 |   8.50 |
+| Zero outgoing ratings | Flat interest   | 1/1/1         |    3.00 |         3.00 |   3.75 |
+| Zero outgoing ratings | Flat interest   | 1/4/7         |    7.00 |         7.25 |   8.50 |
+
+With all clues initially available and a max-urgency rambler, listener feedback reduced completion
+from six slots under urgency-only to four under the auction. Cyclic service averaged 3.75 and did
+slightly better: the auction pays an initial turn to discover the rambler adds no task information.
+The staggered-arrival rambler condition tied auction and urgency-only at eight slots. Exact memory
+cannot reveal another actor's new private arrival, so adaptive selection is not automatically best.
+
+With flat sincere ratings and no outgoing-rating intervention, auction and urgency-only trajectories
+matched exactly for every seat order. The zero-rating tactic did not worsen completion here and
+sometimes changed order favorably; this does not establish resistance to manipulation. The
+preference rule is a declared toy assumption, and these are enumerated design cases rather than
+independent live replications. Slots without disclosure equal completion minus three in this fixture
+and include unavoidable waiting, so they are not an independent measure of discussion quality.
+
+**Decision: keep `memory-v2` opt-in.** Retention of explicit information limits is promising.
+Whether an outstanding question can still change the actor's task decision needs its own test. Next
+use new held-out chains and multiple successive journal updates, retaining exactly maintained
+observation memory and all three scheduler baselines. Avoid directing players to punish repetition
+or choose an expected speaker: that would bake the desired auction result into its inputs.
+
+The frozen manifest SHA-256, with the four groups joined in order, is `a674aa5a4e2adfc1`
+`be082d632810b869` `e4115f339b75cd58` `3f492fa86c73d3f9`. Reported usage was 112,940 tokens: OpenAI
+27,552 input and 42,135 output; Jev 41,269 input and 1,984 output. OpenAI reported zero cached
+input; Jev cache usage was unknown. Output includes reasoning usage. A separate analyzer reconciled
+all attempts and raw score distributions; control checks recomputed completion, arrival timing,
+eligible passovers, every aggregate row, and flat-interest trajectory equivalence. Raw requests and
+journals remain private local artifacts.
 
 ## 3. Feedback: controlled conversations after the bid checks
 
