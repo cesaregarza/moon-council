@@ -412,11 +412,27 @@ test("creates the standard V3.1 setup with editable deliberation, concurrency, a
   await page.getByLabel("Journal tokens").fill("1500");
   await page.getByLabel("Decision concurrency").fill("2");
   await page.getByLabel("Ada model").selectOption("gpt-5.6-luna");
+  await page.getByLabel("Ada personality preset").selectOption("rambler");
+  const desktopViewport = page.viewportSize()!;
+  const personality = page.getByLabel("Ada personality", { exact: true });
+  expect((await personality.boundingBox())!.width).toBeGreaterThan(150);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect((await personality.boundingBox())!.width).toBeGreaterThan(150);
+  await page.setViewportSize(desktopViewport);
+  await expect(page.getByLabel("Ada personality", { exact: true })).toHaveValue(
+    /persistent, highly talkative rambler/,
+  );
   await page.getByRole("button", { name: "Create V3.1 simulation" }).click();
   await expect(page.getByText("Council record")).toBeVisible();
   expect(mock.requests.some((request) => request === "/api/v1/games")).toBeTruthy();
   expect(mock.creations[0]).toMatchObject({
     preset: "standard-8-v2",
+    seats: [
+      expect.objectContaining({
+        personality: expect.stringContaining("persistent, highly talkative rambler"),
+      }),
+      ...Array.from({ length: 7 }, () => expect.anything()),
+    ],
     maxTotalTokens: null,
     reasoningEffort: "xhigh",
     discussion: {

@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+import { summarizeAttention } from "./lib/attention-audit";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -555,6 +556,7 @@ export function summarizeGameAudit(
           speeches: speeches.filter((event) => event.day === day).length,
         })),
       auctionDetails,
+      attention: summarizeAttention(events),
     },
     provider: {
       models: Object.fromEntries(
@@ -693,22 +695,21 @@ function parseArgs(argv: string[]) {
   return { dbPath, gameId, compact, status };
 }
 
-function main(): void {
-  const options = parseArgs(process.argv.slice(2));
-  if (!existsSync(options.dbPath)) throw new Error(`Database does not exist: ${options.dbPath}`);
-  const db = new Database(options.dbPath, { readonly: true, fileMustExist: true });
+export function readGameAudit(dbPath: string, gameId: string) {
+  if (!existsSync(dbPath)) throw new Error(`Database does not exist: ${dbPath}`);
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
     const row = db
       .prepare(
         "SELECT id,name,status,error,created_at AS createdAt,updated_at AS updatedAt FROM games WHERE id=?",
       )
-      .get(options.gameId) as AuditGame | undefined;
-    if (!row) throw new Error(`Unknown game: ${options.gameId}`);
+      .get(gameId) as AuditGame | undefined;
+    if (!row) throw new Error(`Unknown game: ${gameId}`);
     const runtimeRows = db
       .prepare(
         "SELECT record_key AS key,value_json AS value FROM agent_records WHERE game_id=? AND record_key IN ('runtimeMs','runtimeStartedAt')",
       )
-      .all(options.gameId) as Array<{ key: string; value: string }>;
+      .all(gameId) as Array<{ key: string; value: string }>;
     const runtime = Object.fromEntries(
       runtimeRows.map((record) => [record.key, numberOrNull(JSON.parse(record.value))]),
     );
@@ -719,12 +720,12 @@ function main(): void {
       .prepare(
         "SELECT id,sequence,type,phase,day,visibility,payload_json AS payloadJson,created_at AS createdAt FROM events WHERE game_id=? ORDER BY sequence",
       )
-      .all(options.gameId) as Array<Omit<AuditEvent, "payload"> & { payloadJson: string }>;
+      .all(gameId) as Array<Omit<AuditEvent, "payload"> & { payloadJson: string }>;
     const attemptRows = db
       .prepare(
         "SELECT value_json AS valueJson FROM provider_attempts WHERE game_id=? ORDER BY rowid",
       )
-      .all(options.gameId) as Array<{ valueJson: string }>;
+      .all(gameId) as Array<{ valueJson: string }>;
     const events = eventRows.map(({ payloadJson, ...event }) => ({
       ...event,
       payload: JSON.parse(payloadJson) as JsonRecord,
@@ -752,17 +753,22 @@ function main(): void {
         },
       } satisfies AuditAttempt;
     });
-    const audit = summarizeGameAudit(row, events, attempts);
-    console.log(
-      JSON.stringify(
-        options.status ? summarizeGameProgress(audit) : audit,
-        null,
-        options.compact ? 0 : 2,
-      ),
-    );
+    return summarizeGameAudit(row, events, attempts);
   } finally {
     db.close();
   }
+}
+
+function main(): void {
+  const options = parseArgs(process.argv.slice(2));
+  const audit = readGameAudit(options.dbPath, options.gameId);
+  console.log(
+    JSON.stringify(
+      options.status ? summarizeGameProgress(audit) : audit,
+      null,
+      options.compact ? 0 : 2,
+    ),
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main();

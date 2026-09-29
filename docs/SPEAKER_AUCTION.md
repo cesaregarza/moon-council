@@ -73,3 +73,6 @@ ranking and eligibility functions.
 [`orchestrator-v2.ts`](../packages/simulator/src/orchestrator-v2.ts) freezes rounds, collects bids,
 and commits the selected speech. The [protocol guide](PROTOCOL_V3.md) describes compatibility with
 earlier auction workflows.
+
+The [personality and attention experiment](ATTENTION_EXPERIMENT.md) provides a paired
+rational/rambler run, explicit urgency overrides, and per-auction listener and floor-share analysis.

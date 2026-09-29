@@ -1,3 +1,4 @@
+import { ExperimentSummary } from "./ExperimentSummary";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { GameEventV1 } from "@werewolf/contracts";
 import {
@@ -469,6 +470,8 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
           </button>
         )}
       </div>
+
+      <ExperimentSummary config={payload.game.config} />
 
       <div className="game-grid observer-grid">
         <div className="panel player-panel">
