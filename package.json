@@ -39,7 +39,8 @@
     "lint:python": "python3 -m ruff check scripts && python3 -m ruff format --check scripts",
     "attention:experiment": "tsx scripts/attention-experiment.ts",
     "attention:status": "tsx scripts/attention-status.ts",
-    "auction:study": "tsx scripts/auction-study.ts"
+    "auction:study": "tsx scripts/auction-study.ts",
+    "auction:replay": "tsx scripts/auction-replay.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

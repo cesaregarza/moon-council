@@ -31,7 +31,8 @@ follow-up limits, and response dockets add explicit scheduling safeguards.
 
 Only the selected player generates a full speech. Jev scores the bids; the selected language model
 chooses what to say. See the [auction walkthrough](docs/SPEAKER_AUCTION.md) for examples and edge
-cases.
+cases. The [auction testing guide](docs/AUCTION_TESTING.md) covers deterministic bid replays and
+controlled tests of urgency, strategic ratings, and conversational feedback.
 
 ## One discussion turn
 

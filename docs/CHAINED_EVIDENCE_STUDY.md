@@ -184,6 +184,10 @@ honest rejection, and a wrong answer does not prove malicious success without a 
 The artifact of interest is how useful information travels through the chain, including cases where
 the group solves the puzzle despite the obstruction.
 
+For deterministic replay of recorded bids, boundary fixtures, and a staged plan that isolates
+selection from model judgment and conversational feedback, see
+[testing the auction](AUCTION_TESTING.md).
+
 ## Run or inspect
 
 ```sh
