@@ -19,7 +19,7 @@ function attempt(
   [started, ended]: [number, number],
   schemaVersion: string,
   layerHashes: Layers,
-  cachedInputTokens: number,
+  cachedInputTokens: number | null,
   provider = "codex",
 ) {
   const at = (second: number) => `2026-09-24T10:00:${String(second).padStart(2, "0")}.000Z`;
@@ -128,5 +128,29 @@ describe("cache audit layer-prefix stability (fixture database)", () => {
       (item: { key: string }) => item.key === reflection,
     );
     expect(row).toMatchObject({ calls: 2, depthCalls: [0, 0, 2, 0, 0], inFlightOnlyCalls: 1 });
+  });
+
+  it("counts a Jev call without layer hashes as Jev, not as a missing-hash call", () => {
+    const jevWithoutHashes = attempt("a6", [43, 44], "vote_v4", ["A", "P", "X", "R"], 0, "jev");
+    const { layerPrefixStability } = audit([
+      ...fixture,
+      { ...jevWithoutHashes, request: { ...jevWithoutHashes.request, layerHashes: undefined } },
+    ] as typeof fixture);
+    expect(layerPrefixStability.skippedCalls).toEqual({ jev: 2, noLayerHashes: 0 });
+  });
+
+  it("keeps calls with unknown cache use out of the known-cache denominator", () => {
+    // A later reflection at depth 2 whose provider reported no cached-token count.
+    const unknown = attempt("a7", [50, 60], reflection, ["A", "P", "X7", "R7"], null);
+    const { layerPrefixStability } = audit([...fixture, unknown]);
+    expect(
+      layerPrefixStability.byDepth.find((row: { depth: number }) => row.depth === 2),
+    ).toMatchObject({
+      calls: 3,
+      inputTokens: 3_000,
+      cachedInputTokens: 600,
+      knownCacheInputTokens: 2_000,
+      unknownCacheCalls: 1,
+    });
   });
 });
