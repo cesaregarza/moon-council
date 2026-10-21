@@ -95,6 +95,10 @@ describe("public-view request builder", () => {
       legalTargets: holdout.packet.legalTargets,
       model: "jev-latest",
     });
+    // Guard against a vacuous pass: the view carries real events, all of them public.
+    const events = (request.state as { events: Array<{ visibility: string }> }).events;
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.every((event) => event.visibility === "public")).toBe(true);
     const text = JSON.stringify(request);
     for (const kind of PRIVATE_KINDS) expect(text).not.toContain(`"${kind}"`);
     for (const canary of CANARIES) expect(text).not.toContain(canary);
