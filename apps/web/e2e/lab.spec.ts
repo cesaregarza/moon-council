@@ -444,6 +444,28 @@ test("creates the standard V3.1 setup with editable deliberation, concurrency, a
   });
 });
 
+test("fixes the journal budget at 16,000 for journal_v4 Jev games", async ({ page }) => {
+  const mock = await mockApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: /new game/i }).click();
+  await page.getByText("Advanced discussion & budget controls").click();
+  const journal = page.getByLabel("Journal tokens");
+  await journal.fill("1500");
+  await page.getByLabel("Decision engine").selectOption("jev");
+  await expect(journal).toHaveValue("16000");
+  await expect(journal).toBeDisabled();
+  await page.getByLabel("Decision engine").selectOption("llm");
+  await expect(journal).toBeEnabled();
+  await expect(journal).toHaveValue("1500");
+  await page.getByLabel("Decision engine").selectOption("jev");
+  await page.getByRole("button", { name: "Create V3.1 simulation" }).click();
+  await expect(page.getByText("Council record")).toBeVisible();
+  expect(mock.creations[0]).toMatchObject({
+    decisionEngine: { mode: "jev", workflow: "journal_v4" },
+    deliberation: { maxJournalTokens: 16000 },
+  });
+});
+
 test("keeps observer views safe while covering both stepping controls, decisions, replay, and exports", async ({
   page,
 }) => {
