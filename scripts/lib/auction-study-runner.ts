@@ -62,7 +62,7 @@ function expectedScore(answer: JevResponse["answers"][string]): number {
   const total = probabilities.reduce((sum, [, p]) => sum + p, 0);
   return probabilities.reduce((sum, [level, p]) => sum + Number(level) * p, 0) / (4 * total);
 }
-function bidIntent(response: JevResponse): SpeakerIntentV1 {
+export function bidIntent(response: JevResponse): SpeakerIntentV1 {
   const urge = expectedScore(response.answers.urge!);
   return {
     urge,
