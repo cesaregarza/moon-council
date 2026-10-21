@@ -63,6 +63,8 @@ const fixture = [
   ),
 ];
 
+const classified = () => fixture.map((m) => classifyMoment(m));
+
 describe("surprise scoring", () => {
   it("scores public surprisal, private probability and own-knowledge contradictions", () => {
     const score = scoreMoment(fixture[0]!);
@@ -83,11 +85,9 @@ describe("surprise scoring", () => {
   });
 
   it("does not report routine moments and honors the review cap", () => {
-    const ranked = rankNoteworthy(fixture.map(classifyMoment), 12);
+    const ranked = rankNoteworthy(classified(), 12);
     expect(ranked.map((m) => m.id)).toEqual(["fay-abstains", "seer-votes-wolf", "unexplained"]);
-    expect(rankNoteworthy(fixture.map(classifyMoment), 1).map((m) => m.id)).toEqual([
-      "fay-abstains",
-    ]);
+    expect(rankNoteworthy(classified(), 1).map((m) => m.id)).toEqual(["fay-abstains"]);
   });
 
   it("treats a near-flat public prediction as no signal, not surprise", () => {
