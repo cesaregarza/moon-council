@@ -9,8 +9,21 @@ import { observerPayload } from "../../apps/api/src/observer";
  */
 type PublicPlayer = { id: string; name: string; alive: boolean };
 
+/**
+ * observerPayload's `at` is a step through the viewer's visible events, not an event sequence.
+ * Cut at the last public event recorded before the decision.
+ */
+function publicStepBefore(repository: LabRepository, gameId: string, decisionSequence: number) {
+  const before = repository
+    .listEvents(gameId)
+    .filter((event) => event.visibility === "public" && event.sequence < decisionSequence);
+  if (!before.length) throw new Error("No public record precedes this decision");
+  return before.length - 1;
+}
+
 function publicRecord(repository: LabRepository, game: GameRecord, decisionSequence: number) {
-  const payload = observerPayload(repository, game, { kind: "public" }, decisionSequence - 1);
+  const at = publicStepBefore(repository, game.id, decisionSequence);
+  const payload = observerPayload(repository, game, { kind: "public" }, at);
   return {
     day: payload.state.day,
     phase: payload.state.phase,
