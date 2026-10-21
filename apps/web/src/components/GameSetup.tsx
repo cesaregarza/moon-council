@@ -1,4 +1,4 @@
-import { clonedAttentionExperiment } from "@werewolf/contracts";
+import { MIN_ACTOR_JOURNAL_TOKENS, clonedAttentionExperiment } from "@werewolf/contracts";
 import { PersonalityInput } from "./PersonalityInput";
 import { useMemo, useState } from "react";
 import { seatName } from "@werewolf/contracts";
@@ -89,6 +89,8 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
   const [maxJournalTokens, setMaxJournalTokens] = useState(
     initialV2?.deliberation.maxJournalTokens ?? 16_000,
   );
+  // journal_v4 Jev games need the schema maximum; LLM-only games keep the editable budget.
+  const journalBudget = decisionEngine === "jev" ? MIN_ACTOR_JOURNAL_TOKENS : maxJournalTokens;
   const [digestChars] = useState(initialV2?.deliberation.digestChars ?? 140);
   const [speakerBias, setSpeakerBias] = useState(initialV2?.discussion.speakerBias ?? 0.25);
   const [maxParallelDecisions, setMaxParallelDecisions] = useState(
@@ -178,7 +180,7 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
           requestTimeoutMs,
           episodeTimeoutMs,
           maxContextTokens,
-          maxJournalTokens,
+          maxJournalTokens: journalBudget,
           bidReasoningEffort: "medium",
           digestChars,
         },
@@ -492,9 +494,13 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
                 min={200}
                 max={16000}
                 step={100}
-                value={maxJournalTokens}
+                disabled={decisionEngine === "jev"}
+                value={journalBudget}
                 onChange={(event) => setMaxJournalTokens(Number(event.target.value))}
               />
+              {decisionEngine === "jev" && (
+                <small>Jev games need the full 16,000-token journal.</small>
+              )}
             </label>
             <label>
               Max cycles
