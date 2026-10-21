@@ -8,6 +8,7 @@ afterEach(() => {
   while (connections.length) connections.pop()!.close();
 });
 
+const FUTURE = "FUTURE-AFTER-DECISION-6c4";
 const CANARIES = ["CANARY-JOURNAL-7f3", "CANARY-BID-91c", "CANARY-PACK-2d8", "CANARY-BALLOT-5ab"];
 /** Kinds the public view must never carry, whatever their payload. */
 const PRIVATE_KINDS = [
@@ -57,6 +58,27 @@ function fixture() {
     payload: { vote: { voterId: other, targetId: actor.id }, note: CANARIES[3] },
   });
   const decisionSequence = repo.listEvents(game.id).at(-1)!.sequence + 1;
+  // The decision itself, its public resolution and later public play: none may be visible.
+  repo.appendEvent(game.id, {
+    ...at,
+    type: "vote.cast",
+    visibility: "player",
+    audienceIds: [actor.id],
+    payload: { vote: { voterId: actor.id, targetId: holdout.target.id } },
+  });
+  repo.appendEvent(game.id, {
+    ...at,
+    phase: "day_resolution",
+    type: "vote.resolved",
+    visibility: "public",
+    payload: { ballots: [], targetId: null, note: FUTURE },
+  });
+  repo.appendEvent(game.id, {
+    ...at,
+    type: "speech.public",
+    visibility: "public",
+    payload: { playerId: other, text: FUTURE, acts: [], respondsTo: [], closing: false },
+  });
   return { repo, holdout, decisionSequence, game: repo.getGame(game.id)! };
 }
 
@@ -123,5 +145,27 @@ describe("public-view request builder", () => {
     });
     const text = JSON.stringify(request);
     for (const canary of CANARIES) expect(text).not.toContain(canary);
+  });
+
+  it("never shows the decision, its resolution or anything later", () => {
+    const { repo, holdout, decisionSequence, game } = fixture();
+    const recorded = new Map(repo.listEvents(game.id).map((event) => [event.id, event.sequence]));
+    const requests = [
+      publicBallotRequest(repo, game, {
+        actorId: holdout.actor.id,
+        decisionSequence,
+        legalTargets: holdout.packet.legalTargets,
+        model: "jev-latest",
+      }).request,
+      publicDawnRequest(repo, game, { decisionSequence, model: "jev-latest" }).request,
+    ];
+    for (const request of requests) {
+      const events = (request.state as { events: Array<{ id: string }> }).events;
+      expect(events.length).toBeGreaterThan(0);
+      // Observer views renumber sequences, so map each event back to its recorded sequence.
+      const late = events.filter((event) => !(recorded.get(event.id)! < decisionSequence));
+      expect(late.map((event) => event.id)).toEqual([]);
+      expect(JSON.stringify(request)).not.toContain(FUTURE);
+    }
   });
 });
