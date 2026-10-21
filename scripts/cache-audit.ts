@@ -106,6 +106,13 @@ function rate(bucket: Bucket): number | null {
     : null;
 }
 
+/** Provider-reported write share; OpenAI and mapped Anthropic usage both include writes in input. */
+function writeRate(bucket: Bucket): number | null {
+  return bucket.knownCacheInputTokens > 0 && bucket.unknownWriteCalls === 0
+    ? (100 * bucket.cacheWriteInputTokens) / bucket.knownCacheInputTokens
+    : null;
+}
+
 export function summarizeAttempts(attempts: CacheAttempt[]) {
   const total = emptyBucket(),
     bySchema = new Map<string, Bucket>(),
@@ -161,6 +168,7 @@ export function summarizeAttempts(attempts: CacheAttempt[]) {
     key,
     ...bucket,
     cachePercent: rate(bucket),
+    cacheWritePercent: writeRate(bucket),
   });
   return {
     total: row("total", total),
@@ -212,7 +220,7 @@ function printRows(title: string, rows: Array<Record<string, unknown>>, columns:
         .map((column) => {
           const value = row[column];
           if (column.endsWith("Tokens") && typeof value === "number") return compact(value);
-          if (column === "cachePercent" && typeof value === "number") return percent(value);
+          if (column.endsWith("Percent") && typeof value === "number") return percent(value);
           return value == null
             ? ""
             : typeof value === "string" || typeof value === "number" || typeof value === "boolean"
@@ -316,6 +324,7 @@ function main(): void {
       "cachedInputTokens",
       "cacheWriteInputTokens",
       "cachePercent",
+      "cacheWritePercent",
       "unknownCacheCalls",
       "unknownWriteCalls",
     ]);
@@ -326,6 +335,7 @@ function main(): void {
       "inputTokens",
       "cachedInputTokens",
       "cachePercent",
+      "cacheWritePercent",
       "hitCalls",
       "invalidCalls",
     ]);
@@ -335,6 +345,7 @@ function main(): void {
       "inputTokens",
       "cachedInputTokens",
       "cachePercent",
+      "cacheWritePercent",
       "hitCalls",
     ]);
     printRows("Request variation", summary.prefixVariants, [
