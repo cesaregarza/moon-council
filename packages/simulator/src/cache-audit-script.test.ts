@@ -86,4 +86,27 @@ describe("cache audit", () => {
     expect(summary.byProvider.find((row) => row.key === "jev:jev-latest")?.cachePercent).toBeNull();
     expect(summary.diagnostics).toEqual({ "cache_miss:input_changed": 1, not_reported: 1 });
   });
+  it("reports an Anthropic game's provider-reported cached and write shares", () => {
+    // Anthropic usage is mapped so inputTokens includes cache reads and writes, as for OpenAI.
+    const claude = (id: string, cached: number, written: number): CacheAttempt => ({
+      ...attempt(id, `d${id}`, cached),
+      provider: "anthropic",
+      model: "claude-haiku-5-5",
+      usage: { inputTokens: 1_000, cachedInputTokens: cached, cacheWriteInputTokens: written },
+    });
+    const summary = summarizeAttempts([claude("1", 0, 800), claude("2", 600, 200)]);
+    expect(summary.byProvider).toMatchObject([
+      {
+        key: "anthropic:claude-haiku-5-5",
+        calls: 2,
+        inputTokens: 2_000,
+        cachedInputTokens: 600,
+        cacheWriteInputTokens: 1_000,
+        knownUncachedInputTokens: 400,
+        cachePercent: 30,
+        cacheWritePercent: 50,
+      },
+    ]);
+    expect(summary.total).toMatchObject({ cachePercent: 30, cacheWritePercent: 50 });
+  });
 });
