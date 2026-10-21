@@ -15,6 +15,7 @@ export type CacheAttempt = {
   decisionId: string;
   status: string;
   startedAt: string;
+  endedAt?: string | null;
   schemaVersion: string;
   usage?: TokenUsage | null;
   provider?: string;
@@ -25,6 +26,10 @@ export type CacheAttempt = {
     schema?: unknown;
     cache?: unknown;
     sharedInput?: unknown;
+    publicInput?: unknown;
+    privateInput?: unknown;
+    input?: unknown;
+    layerHashes?: Record<string, string | null | undefined>;
   } | null;
 };
 
@@ -187,6 +192,129 @@ export function summarizeAttempts(attempts: CacheAttempt[]) {
   };
 }
 
+/** Request layers in the order the OpenAI request sends them (packages/llm/src/openai-cache.ts). */
+const LAYERS = [
+  ["l0", "l0 instructions", "instructions"],
+  ["l1", "l1 public", "publicInput"],
+  ["l2", "l2 private", "privateInput"],
+  ["l3", "l3 request", "input"],
+] as const;
+const NEVER_ENDED = "\uffff";
+
+type LayerBytes = {
+  layer: string;
+  bytes: number;
+  repeatedBytes: number;
+  settledRepeatedBytes: number;
+};
+type StabilityBucket = {
+  calls: number;
+  depthCalls: number[];
+  inFlightOnlyCalls: number;
+  layers: LayerBytes[];
+};
+type DepthTokens = { depth: number; calls: number; inputTokens: number; cachedInputTokens: number };
+
+function byteSize(value: unknown): number {
+  if (value == null) return 0;
+  return Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value));
+}
+
+function leading(keys: string[], ok: (key: string) => boolean): number {
+  const index = keys.findIndex((key) => !ok(key));
+  return index === -1 ? keys.length : index;
+}
+
+function emptyStability(): StabilityBucket {
+  return {
+    calls: 0,
+    depthCalls: LAYERS.map(() => 0).concat(0),
+    inFlightOnlyCalls: 0,
+    layers: LAYERS.map(([, layer]) => ({
+      layer,
+      bytes: 0,
+      repeatedBytes: 0,
+      settledRepeatedBytes: 0,
+    })),
+  };
+}
+
+function addStability(
+  bucket: StabilityBucket,
+  attempt: CacheAttempt,
+  depth: number,
+  settled: number,
+): void {
+  bucket.calls += 1;
+  bucket.depthCalls[depth] = (bucket.depthCalls[depth] ?? 0) + 1;
+  if (settled < depth) bucket.inFlightOnlyCalls += 1;
+  LAYERS.forEach(([, , field], index) => {
+    const bytes = byteSize(attempt.request?.[field]),
+      row = bucket.layers[index]!;
+    row.bytes += bytes;
+    if (index < depth) row.repeatedBytes += bytes;
+    if (index < settled) row.settledRepeatedBytes += bytes;
+  });
+}
+
+/**
+ * Infer where cache reuse was possible from recorded layer hashes. A call's prefix depth is the
+ * number of leading layers matching an earlier-started call; its settled depth counts only calls
+ * that had finished before it started. Earlier attempts outside `counted` remain prefix history.
+ */
+export function layerPrefixStability(
+  attempts: CacheAttempt[],
+  counted: Set<string> = new Set(attempts.map((attempt) => attempt.id)),
+) {
+  const earliestEnd = new Map<string, string>(),
+    bySchema = new Map<string, StabilityBucket>(),
+    byDepth = new Map<number, DepthTokens>();
+  const skippedCalls = { jev: 0, noLayerHashes: 0 };
+  for (const attempt of attempts) {
+    const hashes = attempt.request?.layerHashes;
+    // Jev is not prompt-cached by OpenAI, so its calls are neither history nor misses.
+    if (attempt.provider === "jev" || !hashes) {
+      if (counted.has(attempt.id)) skippedCalls[hashes ? "jev" : "noLayerHashes"] += 1;
+      continue;
+    }
+    const keys = LAYERS.map((_, depth) =>
+      LAYERS.slice(0, depth + 1)
+        .map(([key]) => hashes[key] ?? "")
+        .join("|"),
+    );
+    if (counted.has(attempt.id)) {
+      const depth = leading(keys, (key) => earliestEnd.has(key)),
+        settled = leading(keys, (key) => earliestEnd.get(key)! <= attempt.startedAt);
+      const bucket = bySchema.get(attempt.schemaVersion) ?? emptyStability();
+      addStability(bucket, attempt, depth, settled);
+      bySchema.set(attempt.schemaVersion, bucket);
+      const tokens = byDepth.get(depth) ?? {
+        depth,
+        calls: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+      };
+      tokens.calls += 1;
+      tokens.inputTokens += attempt.usage?.inputTokens ?? 0;
+      tokens.cachedInputTokens += attempt.usage?.cachedInputTokens ?? 0;
+      byDepth.set(depth, tokens);
+    }
+    const ended = attempt.endedAt ?? NEVER_ENDED;
+    for (const key of keys)
+      if (!earliestEnd.has(key) || ended < earliestEnd.get(key)!) earliestEnd.set(key, ended);
+  }
+  return {
+    basis:
+      "Per-layer attribution is inferred from layer-prefix stability across calls; it is not provider-reported. Providers report cached tokens per call only.",
+    layers: LAYERS.map(([, layer]) => layer),
+    skippedCalls,
+    byDepth: [...byDepth.values()].sort((a, b) => a.depth - b.depth),
+    bySchema: [...bySchema]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, bucket]) => ({ key, ...bucket })),
+  };
+}
+
 function compact(value: number): string {
   const scales: [[number, string], [number, string], [number, string], [number, string]] = [
     [1e12, "T"],
@@ -272,14 +400,14 @@ function main(): void {
     }>;
     if (rows.length === 0)
       throw new Error(`No provider attempts found for game: ${options.gameId}`);
-    const attempts = rows
-      .map((row, index) => {
+    const recorded = rows.map((row, index) => {
         const value = JSON.parse(row.valueJson) as Partial<CacheAttempt>;
         return {
           id: row.id,
           decisionId: row.decisionId,
           status: row.status,
           startedAt: value.startedAt ?? String(index),
+          endedAt: value.endedAt ?? null,
           schemaVersion: value.schemaVersion ?? "unknown",
           usage: value.usage,
           request: value.request,
@@ -287,18 +415,22 @@ function main(): void {
           model: value.model,
           providerMetadata: value.providerMetadata,
         } satisfies CacheAttempt;
-      })
-      .slice(options.after)
-      .filter(
-        (attempt) => !options.schemaSuffix || attempt.schemaVersion.endsWith(options.schemaSuffix),
-      );
+      }),
+      attempts = recorded
+        .slice(options.after)
+        .filter(
+          (attempt) =>
+            !options.schemaSuffix || attempt.schemaVersion.endsWith(options.schemaSuffix),
+        );
     if (attempts.length === 0) throw new Error("No attempts remain after applying filters");
     const summary = summarizeAttempts(attempts),
+      stability = layerPrefixStability(recorded, new Set(attempts.map((attempt) => attempt.id))),
       result = {
         gameId: options.gameId,
         after: options.after,
         schemaSuffix: options.schemaSuffix || null,
         ...summary,
+        layerPrefixStability: stability,
       };
     if (options.json) {
       console.log(JSON.stringify(result, null, 2));
@@ -345,6 +477,25 @@ function main(): void {
       "cacheMetadata",
       "briefings",
     ]);
+    console.log(`\nLayer-prefix stability (${stability.basis})`);
+    console.log(`Skipped: ${JSON.stringify(stability.skippedCalls)}`);
+    printRows("By prefix depth (provider-reported tokens)", stability.byDepth, [
+      "depth",
+      "calls",
+      "inputTokens",
+      "cachedInputTokens",
+    ]);
+    printRows("Prefix depth by schema", stability.bySchema, [
+      "key",
+      "calls",
+      "depthCalls",
+      "inFlightOnlyCalls",
+    ]);
+    printRows(
+      "Layer bytes by schema",
+      stability.bySchema.flatMap((row) => row.layers.map((layer) => ({ key: row.key, ...layer }))),
+      ["key", "layer", "bytes", "repeatedBytes", "settledRepeatedBytes"],
+    );
   } finally {
     db.close();
   }
