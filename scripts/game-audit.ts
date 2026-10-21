@@ -99,6 +99,68 @@ function aliveAt(players: EnginePlayer[], events: AuditEvent[], sequence: number
   return new Set(players.filter((player) => !eliminated.has(player.id)).map((player) => player.id));
 }
 
+type BallotSplit = { voted: number; abstained: number };
+type Ballot = { voterId: string; targetId: string | null };
+
+function tallyBallot(split: Record<string, BallotSplit>, key: string, voted: boolean): void {
+  const row = (split[key] ??= { voted: 0, abstained: 0 });
+  row[voted ? "voted" : "abstained"] += 1;
+}
+
+function dayVote(event: AuditEvent, players: EnginePlayer[], events: AuditEvent[]) {
+  const byId = new Map(players.map((player) => [player.id, player]));
+  const ballots = Array.isArray(event.payload.ballots) ? (event.payload.ballots as Ballot[]) : [];
+  const byFaction: Record<string, BallotSplit> = {},
+    byRole: Record<string, BallotSplit> = {};
+  for (const ballot of ballots) {
+    const voter = byId.get(ballot.voterId);
+    tallyBallot(byFaction, voter?.role.alignment ?? "unknown", ballot.targetId != null);
+    tallyBallot(byRole, voter?.role.name ?? "unknown", ballot.targetId != null);
+  }
+  const eliminatedPlayerId =
+    typeof event.payload.targetId === "string" ? event.payload.targetId : null;
+  const voted = ballots.filter((ballot) => ballot.targetId != null).length;
+  const living = aliveAt(players, events, event.sequence).size;
+  const votesForEliminated = ballots.filter(
+    (ballot) => eliminatedPlayerId !== null && ballot.targetId === eliminatedPlayerId,
+  ).length;
+  return {
+    day: event.day,
+    living,
+    voted,
+    abstained: ballots.length - voted,
+    byFaction,
+    byRole,
+    eliminatedPlayerId,
+    eliminatedAlignment: eliminatedPlayerId
+      ? (byId.get(eliminatedPlayerId)?.role.alignment ?? null)
+      : null,
+    votesForEliminated,
+    // Fewer than half of the living players decided the elimination ("highest nonzero tally").
+    minorityElimination: eliminatedPlayerId !== null && votesForEliminated < living / 2,
+  };
+}
+
+/** Public ballots per day, so abstention and minority eliminations compare across games. */
+function votingDynamics(players: EnginePlayer[], events: AuditEvent[]) {
+  const byDay = events
+    .filter((event) => event.type === "vote.resolved")
+    .map((event) => dayVote(event, players, events));
+  const minority = byDay.filter((day) => day.minorityElimination);
+  return {
+    byDay,
+    totals: {
+      days: byDay.length,
+      voted: byDay.reduce((sum, day) => sum + day.voted, 0),
+      abstained: byDay.reduce((sum, day) => sum + day.abstained, 0),
+      eliminations: byDay.filter((day) => day.eliminatedPlayerId !== null).length,
+      minorityEliminations: minority.length,
+      minorityVillageVictims: minority.filter((day) => day.eliminatedAlignment === "village")
+        .length,
+    },
+  };
+}
+
 function latestBelief(
   events: AuditEvent[],
   observerId: string,
@@ -525,6 +587,7 @@ export function summarizeGameAudit(
     journal: summarizeJournalWorkflow(events, attempts),
     mechanics: {
       eliminations,
+      votingDynamics: votingDynamics(players, events),
       daysWithVotes: voteEvents.length,
       ballots: ballots.length,
       villageVotesForWolves,
@@ -671,6 +734,14 @@ export function summarizeGameProgress(audit: ReturnType<typeof summarizeGameAudi
   return {
     game: audit.game,
     eliminations: audit.mechanics.eliminations,
+    votingDynamics: audit.mechanics.votingDynamics.byDay.map((day) => ({
+      day: day.day,
+      living: day.living,
+      voted: day.voted,
+      abstained: day.abstained,
+      eliminatedPlayerId: day.eliminatedPlayerId,
+      minorityElimination: day.minorityElimination,
+    })),
     speeches: audit.discussion.publicSpeeches,
     compactions: audit.eventTypeCounts["journal.compacted"] ?? 0,
     recentFailures: audit.provider.failedDetails
