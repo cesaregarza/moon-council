@@ -1,5 +1,12 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { LabRepository, openDatabase } from "@werewolf/db";
+import { createActorHoldout } from "./testing/actor-holdouts";
 import {
+  readGameAudit,
   summarizeGameAudit,
   summarizeGameProgress,
   summarizeJournalWorkflow,
@@ -455,5 +462,133 @@ describe("attention dynamics", () => {
       { name: "Werewolf", speeches: 1, floorShare: 0.5 },
     ]);
     expect(JSON.stringify(summarizeGameProgress(audit))).not.toContain("Repeated himself");
+  });
+});
+
+describe("voting dynamics", () => {
+  const seat = (id: string, role: string, alignment: string) => ({
+    id,
+    name: id.toUpperCase(),
+    role: { name: role, alignment },
+  });
+  const players = [
+    seat("w1", "Werewolf", "werewolf"),
+    seat("w2", "Werewolf", "werewolf"),
+    seat("s", "Seer", "village"),
+    seat("b", "Bodyguard", "village"),
+    seat("v1", "Villager", "village"),
+    seat("v2", "Villager", "village"),
+    seat("v3", "Villager", "village"),
+    seat("v4", "Villager", "village"),
+  ];
+  const abstain = (voterId: string) => ({ voterId, targetId: null });
+  // The 2026-09-24 shape: Day 1 all abstain; Night 1 kills v4; Day 2 only the wolves vote.
+  const events = [
+    event(0, "game.created", { players }),
+    event(1, "game.started", {}),
+    event(2, "vote.resolved", { ballots: players.map((p) => abstain(p.id)), targetId: null }),
+    event(3, "player.eliminated", { playerId: "v4", cause: "night_attack" }, 2),
+    event(
+      4,
+      "vote.resolved",
+      {
+        ballots: [
+          { voterId: "w1", targetId: "v1" },
+          { voterId: "w2", targetId: "v1" },
+          ...["s", "b", "v1", "v2", "v3"].map(abstain),
+        ],
+        targetId: "v1",
+      },
+      2,
+    ),
+    event(5, "player.eliminated", { playerId: "v1", cause: "vote" }, 2),
+  ];
+
+  it("reports abstentions by faction and role, and a minority elimination of a villager", () => {
+    // toMatchObject keeps this compiling against an audit without the section.
+    const { mechanics } = summarizeGameAudit(game, events, []);
+    const byDay = [
+      {
+        day: 1,
+        living: 8,
+        voted: 0,
+        abstained: 8,
+        byFaction: { village: { voted: 0, abstained: 6 }, werewolf: { voted: 0, abstained: 2 } },
+        byRole: {
+          Bodyguard: { voted: 0, abstained: 1 },
+          Seer: { voted: 0, abstained: 1 },
+          Villager: { voted: 0, abstained: 4 },
+          Werewolf: { voted: 0, abstained: 2 },
+        },
+        eliminatedPlayerId: null,
+        eliminatedAlignment: null,
+        votesForEliminated: 0,
+        minorityElimination: false,
+      },
+      {
+        day: 2,
+        living: 7,
+        voted: 2,
+        abstained: 5,
+        byFaction: { village: { voted: 0, abstained: 5 }, werewolf: { voted: 2, abstained: 0 } },
+        byRole: {
+          Bodyguard: { voted: 0, abstained: 1 },
+          Seer: { voted: 0, abstained: 1 },
+          Villager: { voted: 0, abstained: 3 },
+          Werewolf: { voted: 2, abstained: 0 },
+        },
+        eliminatedPlayerId: "v1",
+        eliminatedAlignment: "village",
+        votesForEliminated: 2,
+        minorityElimination: true,
+      },
+    ];
+    const totals = {
+      days: 2,
+      voted: 2,
+      abstained: 13,
+      eliminations: 1,
+      minorityEliminations: 1,
+      minorityVillageVictims: 1,
+    };
+    expect(mechanics).toMatchObject({ votingDynamics: { byDay, totals } });
+  });
+
+  it("adds voting dynamics to --status without private notebooks, reading the database only", () => {
+    const directory = mkdtempSync(join(tmpdir(), "game-audit-"));
+    try {
+      const path = join(directory, "lab.db");
+      const connection = openDatabase(path);
+      const repo = new LabRepository(connection);
+      const { game, actor, packet } = createActorHoldout(repo, "uncertain-last-wolf");
+      repo.appendEvent(game.id, {
+        type: "journal.v2_updated",
+        day: packet.day,
+        phase: packet.phase,
+        visibility: "player",
+        audienceIds: [actor.id],
+        payload: { playerId: actor.id, journal: { text: "CANARY-NOTEBOOK-4e1", beliefs: [] } },
+      });
+      repo.appendEvent(game.id, {
+        type: "vote.resolved",
+        day: packet.day,
+        phase: "day_resolution",
+        visibility: "public",
+        payload: {
+          ballots: packet.players.map((p) => ({ voterId: p.id, targetId: null })),
+          targetId: null,
+        },
+      });
+      connection.close();
+      const digest = () => createHash("sha256").update(readFileSync(path)).digest("hex");
+      const before = digest();
+      const status = JSON.stringify(summarizeGameProgress(readGameAudit(path, game.id)));
+      expect(JSON.parse(status).votingDynamics).toMatchObject([{ day: packet.day, voted: 0 }]);
+      expect(status).not.toContain("CANARY-NOTEBOOK-4e1");
+      expect(status).not.toContain(packet.journal.decisionBrief!.action);
+      expect(digest()).toBe(before);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
