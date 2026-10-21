@@ -248,11 +248,15 @@ uncertainty, provenance, and the actor's objective. Jev scores are secondary. A 
 not improvement. These are reused development cases, not a held-out benchmark or accumulated
 multi-turn memory study. The manifest records the assessment rubric before any calls.
 
-### Scripted scheduler comparison with observable memory
+### Historical unordered scheduler control
 
 ```sh
 npm run auction:control -- --out data/auction-control
 ```
+
+**Scope correction:** this historical control permits A, B, and C to be disclosed in any order. It
+does not implement the requested causal dependency, and its results cannot establish which scheduler
+is better for the ordered task. It remains available as an unordered baseline.
 
 This command makes **zero provider calls**. It enumerates 864 deterministic cases: three conditions,
 two arrival schedules, two listener signals, three schedulers, and all 24 seat/tie orders. Each
@@ -332,9 +336,10 @@ score directions separated as expected with the candidate; legacy had five and o
 counts are not an accuracy estimate. The fresh legacy results also differed from the earlier run, so
 comparing the candidate only with that earlier baseline would exaggerate some improvements.
 
-The scheduler control completed **864 deterministic cases with zero model calls**. Each table entry
-is the mean completion slot across all 24 seat/tie orders; lower is better. All cases completed
-within twelve slots.
+**Historical unordered control:** the following figures are not results for an ordered dependency
+task. The scheduler control completed **864 deterministic cases with zero model calls**. Each table
+entry is the mean completion slot across all 24 seat/tie orders; lower is better. All cases
+completed within twelve slots.
 
 | Condition             | Listener signal | Fact arrivals | Auction | Urgency-only | Cyclic |
 | --------------------- | --------------- | ------------- | ------: | -----------: | -----: |
@@ -377,6 +382,114 @@ input; Jev cache usage was unknown. Output includes reasoning usage. A separate 
 all attempts and raw score distributions; control checks recomputed completion, arrival timing,
 eligible passovers, every aggregate row, and flat-interest trajectory equivalence. Raw requests and
 journals remain private local artifacts.
+
+### Ordered dependencies and scaling
+
+**Correction:** the initial `auction-scale-v1` benchmark counted ready facts disclosed in any order.
+It did not enforce the requested A-before-B-before-C dependency. The prior scaling comparisons and
+conclusion that round-robin remained competitive with dense information are withdrawn as evidence
+for this task. Passing arithmetic checks verified the implementation, not that it modeled the right
+experiment. The original code and tables remain in
+[the historical revision](https://github.com/cesaregarza/moon-council/blob/bed90c89c078349e353692bdaa3ec95a3ad3bd68/docs/AUCTION_TESTING.md#scaling-results)
+and its frozen local artifacts; they are not silently overwritten.
+
+```sh
+npm run auction:scale -- --out data/auction-scale-ordered
+```
+
+`auction-scale-v2` uses **causal private transformations**. A's holder can produce the initial
+result. B's holder must receive A's actual public output before computing B's result from its own
+private packet. C requires B's public output, and so on. These are not prewritten facts that can all
+be dumped into a transcript and assembled later. A premature turn records the missing prerequisite,
+never a future result. It receives no retroactive completion credit when that prerequisite arrives;
+the holder must get a later speaking turn to publish its newly computable result. Every publication
+is checked against its private transform and the actual public predecessor value.
+
+For example, round-robin in the order **C, B, A, D** requires multiple passes:
+
+| Turn | Speaker | Contribution                          |
+| ---: | ------- | ------------------------------------- |
+|    1 | C       | Waiting for B; cannot produce C       |
+|    2 | B       | Waiting for A; cannot produce B       |
+|    3 | A       | Publishes A, enabling B               |
+|    4 | D       | No chain result                       |
+|    5 | C       | Still waiting for B                   |
+|    6 | B       | Uses A and publishes B, enabling C    |
+|    7 | A       | Already contributed                   |
+|    8 | D       | No chain result                       |
+|    9 | C       | Uses B and publishes C; task complete |
+
+Completion is publication of the terminal derived result. The common budget is `N*k` slots for `N`
+players and `k` chain steps, allowing up to `k` complete cyclic passes. The former two-cycle cap is
+removed. A reversed twelve-player, eleven-step fixture completes at turn 122 within a 132-slot
+budget. Tests reject premature/forged results, check that early turns remain blocked, and verify
+prerequisite values, later service, and a terminal result beyond two cycles.
+
+The roster sizes, chain lengths, seating samples, cooperative/rambler conditions, production ranking
+formula, and previous-speaker exclusion remain matched across schedulers. There are 24 exhaustive
+seat orders at four players and the same 96 fixed sampled orders from v1 at each larger size. Each
+holder owns one distinct step. The three chain-length profiles coincide at four players and are not
+independent replications.
+
+Honest urgency is 0.8 only when the holder has a currently computable, unpublished result, otherwise
+0.05. The optional single rambler always urges 1. Conditional memory retains public statements of
+what a peer is waiting for: listening is 0.05 while blocked and returns to the ordinary 0.7 level
+when that public prerequisite appears. This corrects the difference between temporarily blocked and
+exhausted. Unheard peers receive 0.7; exhausted and noncontributing peers receive 0.05. The
+flat-interest ablation stays at 0.7. Private peer packets and future outputs do not enter listener
+scores. This is a stated scripted memory rule, not a measured improvement in Luna or Jev.
+
+For cyclic scheduling, exact expected completion is `(N*k+1)/2`: the first holder is reached after
+`(N+1)/2` slots on average, and each of the `k−1` distinct successor holders adds mean cyclic
+forward distance `N/2`. This replaces v1's expected last-holder position, which assumed unordered
+facts. The report separates sampled means from this expectation and includes completions beyond one
+and two cycles, the largest observed completion, and censored cases. All schedulers face the same
+causal task and budget. No provider calls are made.
+
+#### Scaling results
+
+The corrected run at frozen source `b0374d53f2a4` completed all 11,232 scripted cases with zero
+provider calls. The original v1 artifacts remain unchanged. An independent replay checked every turn
+against a separate prerequisite-prefix model, including the actual public predecessor value, private
+transformation, waiting status, readiness time, selected speaker, eligible passovers, and terminal
+publication. It also compared every cyclic path with an independent recurrence over seat positions.
+
+The following means use one maximum-urgency rambler and conditional public memory. Cyclic >N and >2N
+count completions requiring more than one or two full passes through the roster:
+
+| Players | Ordered steps | Auction | Urgency-only | Cyclic mean | Cyclic >N | Cyclic >2N | Cyclic maximum |
+| ------: | ------------: | ------: | -----------: | ----------: | --------: | ---------: | -------------: |
+|       4 |             3 |    4.00 |         6.00 |        6.50 |     20/24 |       4/24 |             10 |
+|       8 |             3 |    4.00 |         6.00 |       11.99 |     85/96 |       8/96 |             20 |
+|      12 |             3 |    4.00 |         6.00 |       18.60 |     73/96 |      19/96 |             30 |
+|      12 |             9 |   10.00 |        18.00 |       53.38 |     96/96 |      96/96 |             82 |
+|      12 |            11 |   12.00 |        22.00 |       65.02 |     96/96 |      96/96 |             88 |
+|      16 |             3 |    4.00 |         6.00 |       25.21 |     78/96 |      18/96 |             43 |
+
+The C → B → A → D example above appears in the saved four-player batch and completes on turn nine.
+The reversed twelve-player fixture that needs 122 turns is a separate regression case, not the
+maximum of the 96 sampled orders.
+
+For twelve players and three steps, cyclic scheduling now averages 18.60 turns instead of v1’s 9.64.
+With eleven ordered steps it averages 65.02 instead of 11.89. The former conclusion that dense
+information made cyclic scheduling nearly tie the auction does not apply once the required
+dependency is present. Favorably aligned cyclic orders can still finish quickly; the figures are
+means, not a claim that the auction wins every seating.
+
+The exact cyclic expectations over all uniformly random orders are 18.5 turns for twelve players and
+three steps, and 66.5 for twelve players and eleven steps. These differ from the sampled means
+above. All cooperative controls completed in one turn per step under auction and urgency-only, and
+each flat-interest auction matched its urgency-only speaking sequence.
+
+This correction establishes the scheduling behavior of the stated causal task. It assumes accurate
+private readiness and exact public memory. The waiting-state transition has regression coverage, but
+the batch does not measure an improvement in Luna journals or prove Jev will make the same
+judgments. No live model calls, token-cost estimates, or latency claims are made.
+
+Validation passed 315 tests (three opt-in live tests skipped), four browser checks, sixteen Python
+checks, formatting, lint, complexity, typing, and build. The important added checks exercise the
+missed semantics: no usable B before A, no retroactive credit, and completion requiring service in
+later cycles.
 
 ## 3. Feedback: controlled conversations after the bid checks
 

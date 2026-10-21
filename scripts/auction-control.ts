@@ -11,9 +11,9 @@ export function controlReport(runs: ReturnType<typeof controlStudy>) {
   const mean = (values: number[]) =>
     values.length ? (values.reduce((a, b) => a + b, 0) / values.length).toFixed(2) : "—";
   const lines = [
-    "# Speaker auction: controlled scheduler comparison",
+    "# Speaker auction: historical unordered disclosure control",
     "",
-    "No model calls. Scripted speakers, exact observation memory, three necessary facts and twelve slots. All 24 seat/tie orders are enumerated per cell. These are deterministic design cases, not independent human or model conversations.",
+    "Scope: these facts may be disclosed in any order. This is not the intended causal A-before-B-before-C task; use auction:scale for ordered dependencies. No model calls. Scripted speakers, exact observation memory, three necessary facts and twelve slots. All 24 seat/tie orders are enumerated per cell. These are deterministic design cases, not independent human or model conversations.",
     "",
     "The observed-memory signal scores an unheard peer 0.7 and a peer who exhausted current information or supplied no task information 0.05. This explicit toy rule is the listening-signal assumption being tested. Flat-interest holds every sincere rating at 0.7. Nobody sees another actor's private arrival before disclosure. The scripts never lie about evidence; zero-rater is a private bidding intervention, not a misinformation test.",
     "",
