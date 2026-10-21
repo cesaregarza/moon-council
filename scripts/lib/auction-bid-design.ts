@@ -1,3 +1,4 @@
+import type { JournalPolicy } from "./study-journal";
 import { z } from "zod";
 import { shuffled } from "@werewolf/engine";
 import { jevPrompt, playerPrompt, type StudyPlayer } from "./auction-study-agents";
@@ -32,8 +33,10 @@ const Pair = z.strictObject({
 export const PAIRS = z.array(Pair).length(8).parse(fixtures);
 export type BidPair = z.infer<typeof Pair>;
 export type BidContext = z.infer<typeof Context>;
-export type BidMode = "authored" | "luna";
+export type BidMode = "authored" | "luna" | "memory-v2";
 export const BID_PROTOCOL = "auction-bid-pairs-v1";
+export const JOURNAL_PROTOCOL = "auction-journal-comparison-v1";
+export const JOURNAL_MAX_CALLS = PAIRS.length * 2 * 4;
 export const MAX_CALLS = PAIRS.length * 2 * 3;
 export const ORDER_SEED = "auction-bid-pairs-v1-order";
 export const NEAR_TIE = 0.02;
@@ -58,9 +61,9 @@ export function bidRequest(context: BidContext, journal: string) {
   const players = playersFor(context, journal);
   return jevPrompt(players[0]!, players, TASK, context.speeches, false, { turns: 12 }, 4);
 }
-export function journalRequest(context: BidContext) {
+export function journalRequest(context: BidContext, policy: JournalPolicy = "legacy") {
   const players = playersFor(context, context.priorJournal);
-  return playerPrompt(players[0]!, players, TASK, context.speeches, "journal", 12);
+  return playerPrompt(players[0]!, players, TASK, context.speeches, "journal", 12, policy);
 }
 export function orderedContexts() {
   return shuffled(

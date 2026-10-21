@@ -1,3 +1,4 @@
+import { parseJournalPolicy, type JournalPolicy } from "./study-journal";
 import { FOCUSED, RAMBLING } from "./auction-study-personas";
 import { createHash } from "node:crypto";
 import { shuffled } from "@werewolf/engine";
@@ -27,6 +28,7 @@ export interface StudyManifest {
   schemaVersion: "speech_auction_study_v1";
   protocol: "free-floor-v1" | "clue-chain-v1";
   chainStudy?: ChainStudy;
+  journalPolicy?: JournalPolicy;
   createdAt: string;
   sourceCommit: string;
   live: boolean;
@@ -66,6 +68,7 @@ export function studyRuns(seeds: string[], scenarioIds: string[]) {
 }
 export function validateManifest(value: unknown): StudyManifest {
   const manifest = value as StudyManifest;
+  parseJournalPolicy(manifest.journalPolicy);
   if (
     manifest.schemaVersion !== "speech_auction_study_v1" ||
     !["free-floor-v1", "clue-chain-v1"].includes(manifest.protocol)

@@ -41,7 +41,8 @@
     "attention:status": "tsx scripts/attention-status.ts",
     "auction:study": "tsx scripts/auction-study.ts",
     "auction:replay": "tsx scripts/auction-replay.ts",
-    "auction:bid-probe": "tsx scripts/auction-bid-probe.ts"
+    "auction:bid-probe": "tsx scripts/auction-bid-probe.ts",
+    "auction:control": "tsx scripts/auction-control.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

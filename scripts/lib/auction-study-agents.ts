@@ -1,3 +1,4 @@
+import { journalInstructions, type JournalPolicy } from "./study-journal";
 import { z } from "zod";
 import { SOLVER_GOAL, OBSTRUCTION_GOAL, OBSTRUCTOR_STYLE } from "./chain-study-design";
 import type { PreparedPrompt, JevRequest } from "@werewolf/llm";
@@ -58,6 +59,7 @@ export function playerPrompt(
   speeches: StudySpeech[],
   action: "journal" | "speech",
   turns: number,
+  journalPolicy: JournalPolicy = "legacy",
 ): PreparedPrompt {
   const instructions = [
     scenario.routeProbes
@@ -90,7 +92,7 @@ export function playerPrompt(
     input:
       action === "speech"
         ? "You have the floor. Generate your public speech now, at most 1,600 characters. Follow your public speaking personality. Output only the required text field."
-        : "Update your private journal in free prose, preferably under 600 words. Preserve your evidence, current answer and uncertainty, what changed, any useful contribution you could make, and whom you want to hear next and why. Evaluate the latest speech's relevance and novelty without assuming that verbosity or silence implies correctness. Distinguish agreement, credibility, and desire for an answer. Output only the journal field.",
+        : journalInstructions(journalPolicy),
     cache: {
       mode: "explicit",
       ttl: "30m",

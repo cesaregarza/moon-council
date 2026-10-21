@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+import { parseJournalPolicy } from "./lib/study-journal";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -81,6 +82,10 @@ function validateStudySelection(
       "--chain-study selects a new clue-chain-v1 batch; existing batches use their frozen manifest",
     );
 }
+function validateJournalSelection(selection: string | undefined, inspecting: boolean) {
+  if (selection && inspecting) throw new Error("Existing studies use their frozen journal policy");
+  if (selection) parseJournalPolicy(selection);
+}
 async function main() {
   const { values } = parseArgs({
     options: {
@@ -95,6 +100,7 @@ async function main() {
       scenarios: { type: "string" },
       protocol: { type: "string", default: "free-floor-v1" },
       "chain-study": { type: "string" },
+      "journal-policy": { type: "string" },
       model: { type: "string", default: "gpt-6-luna" },
       effort: { type: "string", default: "xhigh" },
       turns: { type: "string", default: "12" },
@@ -104,7 +110,7 @@ async function main() {
   });
   if (values.help) {
     console.log(
-      "Usage: npm run auction:study -- [--live | --fake] --out NEW_DIRECTORY [--seeds SEED,SEED] [--protocol free-floor-v1 | clue-chain-v1] [--scenarios supplier,incident,correction] [--chain-study independent|rambling|obstruction|baseline|factorial] [--turns 12] [--concurrency 2] [--model gpt-6-luna] [--effort xhigh] [--max-minutes 30]\nDefault previews, no calls or writes. --status / --report --out DIR are read-only with respect to discussions and never call providers. --report writes derived private analysis. --resume --out DIR uses the frozen manifest and starts only untouched discussions; it never retries an existing failed/interrupted discussion. Runs require a clean committed source tree. A stale .running lock requires operator inspection/removal after verifying its process is gone. Artifacts contain private synthetic evidence and journals.",
+      "Usage: npm run auction:study -- [--live | --fake] --out NEW_DIRECTORY [--seeds SEED,SEED] [--protocol free-floor-v1 | clue-chain-v1] [--scenarios supplier,incident,correction] [--chain-study independent|rambling|obstruction|baseline|factorial] [--journal-policy legacy|memory-v2] [--turns 12] [--concurrency 2] [--model gpt-6-luna] [--effort xhigh] [--max-minutes 30]\nDefault previews, no calls or writes. --status / --report --out DIR are read-only with respect to discussions and never call providers. --report writes derived private analysis. --resume --out DIR uses the frozen manifest and starts only untouched discussions; it never retries an existing failed/interrupted discussion. Runs require a clean committed source tree. A stale .running lock requires operator inspection/removal after verifying its process is gone. Artifacts contain private synthetic evidence and journals.",
     );
     return;
   }
@@ -119,6 +125,10 @@ async function main() {
   );
   const root = values.out ? await nativePath(values.out) : null;
   if (modes.length && !root) throw new Error("--out is required");
+  validateJournalSelection(
+    values["journal-policy"],
+    [values.status, values.report, values.resume].some(Boolean),
+  );
   if (values.status || values.report || values.resume) {
     const manifest = validateManifest(
       JSON.parse(await readFile(join(root!, "manifest.json"), "utf8")),
@@ -149,6 +159,7 @@ async function main() {
         };
   const manifest: StudyManifest = validateManifest({
     schemaVersion: "speech_auction_study_v1",
+    journalPolicy: parseJournalPolicy(values["journal-policy"]),
     protocol: values.protocol,
     createdAt: new Date().toISOString(),
     sourceCommit: source.commit,

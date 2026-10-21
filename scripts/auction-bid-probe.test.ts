@@ -7,7 +7,13 @@ import {
   PAIRS,
   orderedContexts,
 } from "./lib/auction-bid-design";
-import { BidCalls, probeContext, runBidJobs, type BidObservation } from "./lib/auction-bid-runner";
+import {
+  BidCalls,
+  probeContext,
+  runBidJobs,
+  compareJournals,
+  type BidObservation,
+} from "./lib/auction-bid-runner";
 import { expectedBidScore, summarizeBids } from "./lib/auction-bid-report";
 
 class FixtureProvider implements DecisionProvider {
@@ -135,6 +141,27 @@ describe("paired bid protocol", () => {
       delta: null,
       direction: "missing",
     });
+  });
+  it("compares fresh journal policies with independent priors and no authored-score calls", async () => {
+    const jev = new FixtureProvider(),
+      luna = new FixtureProvider();
+    const events: Record<string, unknown>[] = [];
+    const results = await compareJournals(
+      new BidCalls({ jev, luna }, (e) => events.push(e), 20, 64),
+      orderedContexts()[0]!,
+    );
+    expect(results.map((r) => r.mode).sort((a, b) => String(a).localeCompare(String(b)))).toEqual([
+      "luna",
+      "memory-v2",
+    ]);
+    expect(jev.calls).toBe(2);
+    expect(luna.calls).toBe(2);
+    expect(
+      events
+        .filter((e) => e.event === "started")
+        .map((e) => e.stage)
+        .sort((a, b) => String(a).localeCompare(String(b))),
+    ).toEqual(["journal", "journal-memory-v2", "luna", "memory-v2"]);
   });
   it("stops at the shared attempt ceiling", async () => {
     const jev = new FixtureProvider(),
