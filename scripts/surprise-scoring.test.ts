@@ -122,4 +122,23 @@ describe("surprise scoring", () => {
       contradictsOwnKnowledge({ ...fixture[0]!, kind: "night_action", verified: villageFound }),
     ).toBe(false);
   });
+
+  it("treats a vote for any of several verified living wolves as consistent", () => {
+    const twoWolves = [
+      { targetId: "wolf", alignment: "werewolf" as const },
+      { targetId: "wolf2", alignment: "werewolf" as const },
+    ];
+    const ballot = (actual: string) =>
+      contradictsOwnKnowledge({
+        ...fixture[0]!,
+        actual,
+        publicView: { wolf: 0.3, wolf2: 0.3, villager: 0.2, abstain: 0.2 },
+        verified: twoWolves,
+      });
+    expect(ballot("wolf")).toBe(false);
+    expect(ballot("wolf2")).toBe(false);
+    // Passing over every verified wolf is still a contradiction.
+    expect(ballot("villager")).toBe(true);
+    expect(ballot("abstain")).toBe(true);
+  });
 });
