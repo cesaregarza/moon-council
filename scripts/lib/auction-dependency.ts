@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { SpeakerIntentV1 } from "@werewolf/contracts";
+import { CONTROL_ALWAYS_WILLING } from "../../packages/simulator/src/speaker-decline";
 
 export const DEPENDENCY_SIGNALS = ["conditional-memory", "flat-interest"] as const;
 export type DependencySignal = (typeof DEPENDENCY_SIGNALS)[number];
@@ -86,7 +87,7 @@ export function dependencyBid(
 ): SpeakerIntentV1 {
   return {
     urge: condition === "max-rambler" && view.playerId === ids.at(-1) ? 1 : view.ready ? 0.8 : 0.05,
-    wantsToSpeak: true,
+    wantsToSpeak: CONTROL_ALWAYS_WILLING,
     willingnessToListen: ids
       .filter((id) => id !== view.playerId)
       .map((playerId) => ({
