@@ -55,10 +55,8 @@ export function acknowledgeSemanticAnomaly(
       conflict(
         "The recorded ballot is stale; acknowledgment cannot bypass changed evidence or legal state",
       );
-    const attempt = store.attempts(gameId, op.id).find((item) => item.id === final.attemptId);
-    if (attempt?.provider !== "jev" || attempt.status !== "valid" || !attempt.response) {
-      conflict("The final validated Jev receipt is missing");
-    }
+    if (state.votes.some((vote) => vote.voterId === op.playerId))
+      conflict("The player already cast a ballot");
     const errors = validateReport(
       final.report,
       op.packet,
