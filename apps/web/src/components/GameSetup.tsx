@@ -1,4 +1,4 @@
-import { clonedAttentionExperiment } from "@werewolf/contracts";
+import { MIN_ACTOR_JOURNAL_TOKENS, clonedAttentionExperiment } from "@werewolf/contracts";
 import { PersonalityInput } from "./PersonalityInput";
 import { useMemo, useState } from "react";
 import { seatName } from "@werewolf/contracts";
@@ -34,6 +34,34 @@ const standardRoles: Record<string, string[]> = {
   ],
 };
 const lunaModel = "gpt-5.6-luna";
+
+/** journal_v4 Jev games need the schema maximum; LLM-only games keep the editable budget. */
+function journalBudget(engine: "llm" | "jev", requested: number) {
+  return engine === "jev" ? MIN_ACTOR_JOURNAL_TOKENS : requested;
+}
+
+function JournalTokensField(props: {
+  engine: "llm" | "jev";
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const fixed = props.engine === "jev";
+  return (
+    <label>
+      Journal tokens
+      <input
+        type="number"
+        min={200}
+        max={16000}
+        step={100}
+        disabled={fixed}
+        value={journalBudget(props.engine, props.value)}
+        onChange={(event) => props.onChange(Number(event.target.value))}
+      />
+      {fixed && <small>Jev games need the full 16,000-token journal.</small>}
+    </label>
+  );
+}
 
 export function GameSetup({ roles, onCreated, initialConfig }: Props) {
   const initialV2 = initialConfig?.schemaVersion === "game_config_v2" ? initialConfig : undefined;
@@ -178,7 +206,7 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
           requestTimeoutMs,
           episodeTimeoutMs,
           maxContextTokens,
-          maxJournalTokens,
+          maxJournalTokens: journalBudget(decisionEngine, maxJournalTokens),
           bidReasoningEffort: "medium",
           digestChars,
         },
@@ -485,17 +513,11 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
                 onChange={(event) => setMaxContextTokens(Number(event.target.value))}
               />
             </label>
-            <label>
-              Journal tokens
-              <input
-                type="number"
-                min={200}
-                max={16000}
-                step={100}
-                value={maxJournalTokens}
-                onChange={(event) => setMaxJournalTokens(Number(event.target.value))}
-              />
-            </label>
+            <JournalTokensField
+              engine={decisionEngine}
+              value={maxJournalTokens}
+              onChange={setMaxJournalTokens}
+            />
             <label>
               Max cycles
               <input
