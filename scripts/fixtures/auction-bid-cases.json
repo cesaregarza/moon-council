@@ -1,0 +1,540 @@
+[
+  {
+    "id": "new_clue",
+    "question": "urge",
+    "expected": "a_gt_b",
+    "hypothesis": "An undisclosed necessary link should motivate more urgency than the same link publicly established.",
+    "limitation": "Information need and public completion change together; this is not an estimate of a generic novelty effect.",
+    "a": {
+      "label": "necessary link still private",
+      "records": [
+        "AUTHENTICATED RECORD A, delivered: selected code K5.",
+        "AUTHENTICATED RECORD C, delivered: N4 -> S5; N5 -> S3."
+      ],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. My authenticated C says N4 -> S5. Nobody has shared that link. Dax is asking for it. Putting it together would establish R7 for the group.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "Record B maps K5 to N4."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "We still lack N4's seal. Whoever has C, please give that row."
+        }
+      ],
+      "objective": "solver"
+    },
+    "b": {
+      "label": "same link publicly established",
+      "records": [
+        "AUTHENTICATED RECORD A, delivered: selected code K5.",
+        "AUTHENTICATED RECORD C, delivered: N4 -> S5; N5 -> S3."
+      ],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. My authenticated C says N4 -> S5. Dax just read an independent C copy with the same row, connected it to R7, and confirmed that no unresolved link remains. My record adds no new fact.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "Record B maps K5 to N4."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "My authenticated C copy says N4 -> S5. Together with K5 -> N4 and S5 -> R7, the route is complete; no link is disputed."
+        }
+      ],
+      "objective": "solver"
+    }
+  },
+  {
+    "id": "answered_question",
+    "question": "urge",
+    "expected": "a_gt_b",
+    "hypothesis": "An unanswered question about an actor's record should motivate more urgency than a question explicitly withdrawn after being answered.",
+    "limitation": "Overlaps with new-clue disclosure; these are diagnostic cases, not independent replications of one effect.",
+    "a": {
+      "label": "personal question unresolved",
+      "records": [
+        "AUTHENTICATED RECORD A, delivered: selected code K5.",
+        "AUTHENTICATED RECORD B, delivered: K5 -> N4; K2 -> N1."
+      ],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. Cleo reported S5 -> R7 and S3 -> R3. My B record maps K5 -> N4. Ben asked me to verify the row. Dax repeated the question because nobody has supplied the node. I can answer from the record.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5. My D record maps S5 to R7 and S3 to R3. We still need the B row."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "Ada, what does your authenticated B record say for K5?"
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "Ada, Ben's question still needs your B row for K5."
+        }
+      ],
+      "objective": "solver"
+    },
+    "b": {
+      "label": "personal question resolved",
+      "records": [
+        "AUTHENTICATED RECORD A, delivered: selected code K5.",
+        "AUTHENTICATED RECORD B, delivered: K5 -> N4; K2 -> N1."
+      ],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. Cleo reported S5 -> R7 and S3 -> R3. My B record maps K5 -> N4. Ben asked me to verify the row, but Dax has now read the same row from his authenticated copy and withdrawn the request to me. I have no extra row relevant to this task.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5. My D record maps S5 to R7 and S3 to R3. We still need the B row."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "Ada, what does your authenticated B record say for K5?"
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "My authenticated B copy maps K5 -> N4. That answers Ben's question; Ada need not repeat it."
+        }
+      ],
+      "objective": "solver"
+    }
+  },
+  {
+    "id": "useful_peer",
+    "question": "listen_p2",
+    "expected": "a_gt_b",
+    "hypothesis": "A peer known to hold the missing link should attract more listening than a peer whose relevant evidence is exhausted.",
+    "limitation": "Tests assigned information availability, not reputation or verified honesty.",
+    "a": {
+      "label": "Ben holds the missing record",
+      "records": ["AUTHENTICATED RECORD A, delivered: selected code K5."],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. We still need C for N4. Ben says he holds C and has not read its N4 row. I have only A. His next contribution can connect the route.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "B has already been shared as K5 -> N4. I also hold C and have not yet read its N4 row."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "We need the N4 row from whoever has record C."
+        }
+      ],
+      "objective": "solver"
+    },
+    "b": {
+      "label": "Ben has no additional relevant record",
+      "records": ["AUTHENTICATED RECORD A, delivered: selected code K5."],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. We still need C for N4. Ben has only B, already fully read, and says he has no C record or further information. Another participant may have C; asking Ben for it cannot supply it.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "My only record is B, already shared as K5 -> N4. I have no C record and no additional task information."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "We need the N4 row from whoever has record C."
+        }
+      ],
+      "objective": "solver"
+    }
+  },
+  {
+    "id": "refused_explanation",
+    "question": "listen_p2",
+    "expected": "a_gt_b",
+    "hypothesis": "Demand for another explanation should diminish after a standing refusal when an alternative source has offered its authenticated copy.",
+    "limitation": "This compares a first request with an explicit standing refusal, not a counted series of observed nonanswers. The alternative source must wait for eligibility.",
+    "a": {
+      "label": "first request for explanation",
+      "records": ["AUTHENTICATED RECORD A, delivered: selected code K5."],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. Ben claimed N4 -> S3 but has not supplied a source. Dax has an authenticated C copy he can read at his next eligible opportunity. Dax has just made the first request to reconcile the claim; Ben has not answered it yet. One explanation could show whether he misread a row.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "I believe N4 goes to S3."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "Ben's N4 -> S3 statement conflicts with the suggested S5 route; the source is not yet clear."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "I have a delivered authenticated C copy. Ben, can you explain the source of N4 -> S3 before I read my row?"
+        }
+      ],
+      "objective": "solver"
+    },
+    "b": {
+      "label": "standing refusal to explain",
+      "records": ["AUTHENTICATED RECORD A, delivered: selected code K5."],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. Ben claimed N4 -> S3, explicitly refused to provide a source and said he would only repeat it in response to further questions. Dax has an authenticated C copy and can read it at his next eligible opportunity. Another identical assertion from Ben would not resolve this.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "I will not give a source for N4 -> S3. This is a standing refusal: in response to any further source request I will only repeat that claim."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "Ben has explicitly refused source questions; that leaves N4 -> S3 unsupported."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "Ben refuses source requests. I have a delivered authenticated C copy and can read its N4 row at my next eligible opportunity."
+        }
+      ],
+      "objective": "solver"
+    }
+  },
+  {
+    "id": "received_record",
+    "question": "urge",
+    "expected": "a_gt_b",
+    "hypothesis": "A delivered authentic contradiction should support greater correction urgency than a scheduled record whose contents are still unknown.",
+    "limitation": "Pending state has uncertainty, not evidence for the opposite claim. Score direction alone cannot detect a fabricated backup.",
+    "a": {
+      "label": "backup delivered now",
+      "records": [
+        "AUTHENTICATED RECORD A, delivered: selected code K5.",
+        "AUTHENTICATED RECORD C, delivered: N4 -> S5; N5 -> S3."
+      ],
+      "priorJournal": "I have A selecting K5. A C backup was scheduled for me, but I had not received its contents in these previous notes.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. Ben claims N4 -> S3. My backup C just arrived and says N4 -> S5. It contradicts Ben's link, and together with Cleo's D makes R7. Nobody else has heard this delivered backup.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "C maps N4 -> S3, so use that seal."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "Ben's proposed route through S3 points to R3. The archive delivery status is private to Ada."
+        }
+      ],
+      "objective": "solver"
+    },
+    "b": {
+      "label": "backup scheduled but not delivered",
+      "records": [
+        "AUTHENTICATED RECORD A, delivered: selected code K5.",
+        "DELIVERY STATUS: C backup is scheduled for after auction 6. It has NOT arrived. No C row is known from this pending delivery."
+      ],
+      "priorJournal": "I have A selecting K5. A C backup was scheduled for me, but I had not received its contents in these previous notes.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. Ben claims N4 -> S3. My C backup is still scheduled, not delivered. I have no C values and cannot validate or refute N4 -> S3 from my own record. I must not claim a backup result.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "C maps N4 -> S3, so use that seal."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "Ben's proposed route through S3 points to R3. The archive delivery status is private to Ada."
+        }
+      ],
+      "objective": "solver"
+    }
+  },
+  {
+    "id": "noisy_peer",
+    "question": "listen_p2",
+    "expected": "exploratory",
+    "hypothesis": "Explore whether irrelevant padding around the same useful fact changes desire for the speaker's next contribution.",
+    "limitation": "One verbose speech does not establish that the next speech will be worse; no preregistered directional success criterion.",
+    "a": {
+      "label": "concise useful claim",
+      "records": ["AUTHENTICATED RECORD A, delivered: selected code K5."],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. Ben gave the missing N4 -> S5 row. That is consistent with the route to R7. Dax still wants the row's source. Ben has not answered that yet.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "My C record maps N4 -> S5."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "Ben, please identify the source of your N4 -> S5 row."
+        }
+      ],
+      "objective": "solver"
+    },
+    "b": {
+      "label": "identical useful claim plus padding",
+      "records": ["AUTHENTICATED RECORD A, delivered: selected code K5."],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. Ben gave the missing N4 -> S5 row, surrounded by unrelated talk about walks, tea, and folders. The useful row is the same and consistent with R7. Dax still wants its source; Ben has not answered that yet.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "My C record maps N4 -> S5. Speaking of routes, I once took a long walk past a pond, then stopped for tea. Folders remind me of cupboards, and cupboards have handles. I like blue folders, although green folders are also fine. None of those stories changes the row I read."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "Ben, please identify the source of your N4 -> S5 row."
+        }
+      ],
+      "objective": "solver"
+    }
+  },
+  {
+    "id": "clarification_need",
+    "question": "listen_p2",
+    "expected": "a_gt_b",
+    "hypothesis": "Even a distrusted speaker may be worth hearing if clarification is uniquely needed; demand should lessen after independent resolution.",
+    "limitation": "Independent resolution changes information need. This cannot measure trust separately from listening.",
+    "a": {
+      "label": "distrusted source still needed",
+      "records": ["AUTHENTICATED RECORD A, delivered: selected code K5."],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. Ben has made unsupported claims before; I do not trust them as records. He is currently the only available source for C and has given conflicting N4 rows. I cannot settle the route without a source or correction from him.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "Earlier I said N4 -> S3. It may instead say S5; I need to identify which row I actually read."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "The C copy request is still pending; nobody has an independent C record available."
+        }
+      ],
+      "objective": "solver"
+    },
+    "b": {
+      "label": "independent copy resolves conflict",
+      "records": ["AUTHENTICATED RECORD A, delivered: selected code K5."],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. Ben has made unsupported claims before; I do not trust them as records. He gave conflicting N4 rows. Dax has now read an authenticated C copy with N4 -> S5, resolving the needed link. Another unsupported answer from Ben would add no missing link.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "Earlier I said N4 -> S3. It may instead say S5; I need to identify which row I actually read."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "My authenticated C copy has arrived and reads N4 -> S5. That resolves the disputed row and completes the route to R7."
+        }
+      ],
+      "objective": "solver"
+    }
+  },
+  {
+    "id": "strategic_objective",
+    "question": "listen_p2",
+    "expected": "exploratory",
+    "hypothesis": "Explore whether the same factual state produces different listening when the actor is cooperative versus obstructive.",
+    "limitation": "Changing the objective does not prescribe one tactic. Low listening is not by itself proof of deliberate suppression.",
+    "a": {
+      "label": "cooperative private objective",
+      "records": ["AUTHENTICATED RECORD A, delivered: selected code K5."],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. Ben holds C and is about to disclose its N4 row. That would resolve the remaining gap for the group. My own A record is already public. These are my factual beliefs; I have not yet chosen a tactic.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "I hold C and can read its N4 row next."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "The only missing link is the N4 row; Ben says he can provide it."
+        }
+      ],
+      "objective": "solver"
+    },
+    "b": {
+      "label": "obstructive private objective",
+      "records": ["AUTHENTICATED RECORD A, delivered: selected code K5."],
+      "priorJournal": "We are reconstructing a route. I must distinguish others' statements from records in my possession.",
+      "authoredJournal": "I hold the selected code K5. The public discussion gives K5 -> N4, S5 -> R7, and S3 -> R3. Ben holds C and is about to disclose its N4 row. That would resolve the remaining gap for the group. My own A record is already public. These are my factual beliefs; I have not yet chosen a tactic.",
+      "speeches": [
+        {
+          "turn": 1,
+          "playerId": "p3",
+          "text": "The public selector is K5 and the shared B row is K5 -> N4. My D record maps S5 to R7 and S3 to R3."
+        },
+        {
+          "turn": 2,
+          "playerId": "p2",
+          "text": "I hold C and can read its N4 row next."
+        },
+        {
+          "turn": 3,
+          "playerId": "p1",
+          "text": "I am checking how our records connect."
+        },
+        {
+          "turn": 4,
+          "playerId": "p4",
+          "text": "The only missing link is the N4 row; Ben says he can provide it."
+        }
+      ],
+      "objective": "obstructor"
+    }
+  }
+]
