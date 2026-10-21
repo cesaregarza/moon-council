@@ -117,7 +117,9 @@ describe("game audit", () => {
       auctions: 1,
       selectedSpeakers: 1,
       publicSpeeches: 1,
+      privateSuspicion: { available: true, reason: null },
       selectedWithMaximumPrivateSuspicion: 1,
+      privateSuspicionCoverageAuctions: 1,
     });
     expect(summary.discussion.byPlayer[0]).toMatchObject({
       playerName: "Ada",
@@ -203,6 +205,46 @@ describe("game audit", () => {
         error: "request timeout",
       },
     ]);
+  });
+
+  it("reports suspicion metrics as unavailable for prose-journal games", () => {
+    const events = [
+      event(0, "game.created", {
+        players: [
+          { id: "p1", name: "Ada", role: { name: "Villager", alignment: "village" } },
+          { id: "p2", name: "Bruno", role: { name: "Werewolf", alignment: "werewolf" } },
+        ],
+      }),
+      event(1, "game.started", {}),
+      // journal_v4 reflection: write_text retires the structured beliefs.
+      event(2, "journal.v2_updated", {
+        playerId: "p2",
+        journal: { text: "Ada pushes hard on me; she may be the Seer.", beliefs: [] },
+        patch: [{ op: "write_text", mode: "replace", text: "Ada pushes hard on me." }],
+      }),
+      event(3, "discussion.auction_resolved", {
+        stage: "opening",
+        round: 0,
+        selectedPlayerId: "p1",
+        scores: [
+          { playerId: "p1", urge: 0.9, listenerInterest: 0.8 },
+          { playerId: "p2", urge: 0.2, listenerInterest: 0.3 },
+        ],
+      }),
+    ];
+    const { discussion } = summarizeGameAudit({ ...game, status: "running" }, events, []);
+    expect(discussion).toMatchObject({
+      auctions: 1,
+      privateSuspicion: { available: false, reason: "prose journals have no numeric beliefs" },
+      selectedWithMaximumPrivateSuspicion: null,
+      privateSuspicionCoverageAuctions: null,
+    });
+    for (const player of discussion.byPlayer) {
+      expect(player).toMatchObject({
+        selectedWithMaximumPrivateSuspicion: null,
+        meanPrivateSuspicionWhenSelected: null,
+      });
+    }
   });
 
   it("keeps absent usage and sparse private beliefs explicit", () => {
