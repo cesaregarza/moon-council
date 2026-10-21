@@ -117,6 +117,28 @@ function latestBelief(
   return numberOrNull(belief?.probability);
 }
 
+/** Suspicion metrics need numeric beliefs; prose journals (journal_v3/v4) retire them. */
+function suspicionAvailability(events: AuditEvent[]) {
+  const journals = events
+    .filter((event) => event.type === "journal.v2_updated")
+    .map(
+      (event) =>
+        event.payload.journal as
+          { text?: unknown; beliefs?: Array<{ probability?: unknown }> } | undefined,
+    );
+  if (journals.some((journal) => journal?.beliefs?.some((b) => typeof b.probability === "number")))
+    return { available: true, reason: null };
+  const prose = journals.some((journal) => typeof journal?.text === "string" && journal.text);
+  return {
+    available: false,
+    reason: prose ? "prose journals have no numeric beliefs" : "no numeric beliefs recorded",
+  };
+}
+
+function ifAvailable<T>(availability: { available: boolean }, value: T): T | null {
+  return availability.available ? value : null;
+}
+
 function tokenField(attempts: AuditAttempt[], key: keyof AuditAttempt["usage"]) {
   const known = attempts.flatMap((attempt) =>
     typeof attempt.usage[key] === "number" ? [attempt.usage[key] as number] : [],
@@ -260,6 +282,7 @@ export function summarizeGameAudit(
 
   const speeches = events.filter((event) => event.type === "speech.public");
   const auctions = events.filter((event) => event.type === "discussion.auction_resolved");
+  const privateSuspicion = suspicionAvailability(events);
   const auctionDetails = auctions.map((event) => {
     const scores = Array.isArray(event.payload.scores)
       ? (event.payload.scores as AuctionScore[])
@@ -346,10 +369,12 @@ export function summarizeGameAudit(
       selectedWithMaximumListenerInterest: selected.filter((auction) =>
         auction.maximumListenerInterestIds.includes(player.playerId),
       ).length,
-      selectedWithMaximumPrivateSuspicion: selected.filter((auction) =>
-        auction.maximumPrivateSuspicionIds.includes(player.playerId),
-      ).length,
-      meanPrivateSuspicionWhenSelected: mean(selectedSuspicion),
+      selectedWithMaximumPrivateSuspicion: ifAvailable(
+        privateSuspicion,
+        selected.filter((auction) => auction.maximumPrivateSuspicionIds.includes(player.playerId))
+          .length,
+      ),
+      meanPrivateSuspicionWhenSelected: ifAvailable(privateSuspicion, mean(selectedSuspicion)),
       meanUrgeWhenSelected: mean(
         selected.flatMap((auction) => (auction.selectedScore ? [auction.selectedScore.urge] : [])),
       ),
@@ -539,14 +564,20 @@ export function summarizeGameAudit(
           auction.selectedPlayerId &&
           auction.maximumListenerInterestIds.includes(auction.selectedPlayerId),
       ).length,
-      selectedWithMaximumPrivateSuspicion: auctionDetails.filter(
-        (auction) =>
-          auction.selectedPlayerId &&
-          auction.maximumPrivateSuspicionIds.includes(auction.selectedPlayerId),
-      ).length,
-      privateSuspicionCoverageAuctions: auctionDetails.filter((auction) =>
-        auction.suspicion.some((item) => item.observers > 0),
-      ).length,
+      privateSuspicion,
+      selectedWithMaximumPrivateSuspicion: ifAvailable(
+        privateSuspicion,
+        auctionDetails.filter(
+          (auction) =>
+            auction.selectedPlayerId &&
+            auction.maximumPrivateSuspicionIds.includes(auction.selectedPlayerId),
+        ).length,
+      ),
+      privateSuspicionCoverageAuctions: ifAvailable(
+        privateSuspicion,
+        auctionDetails.filter((auction) => auction.suspicion.some((item) => item.observers > 0))
+          .length,
+      ),
       byPlayer,
       auctionsByDay: [...new Set(auctionDetails.map((auction) => auction.day))]
         .sort((a, b) => a - b)
