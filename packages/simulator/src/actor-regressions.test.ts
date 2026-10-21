@@ -374,6 +374,61 @@ describe("v4 review regressions", () => {
     ).toThrow("stale");
     expect(repo.listEvents(fixture.game.id).some((e) => e.type === "vote.cast")).toBe(false);
   });
+  async function pausedAnomaly() {
+    const repo = repository(),
+      fixture = createActorHoldout(repo, "uncertain-last-wolf"),
+      options = holdoutVote(repo, fixture);
+    await expect(
+      new DecisionExecutorV2(repo, new FakeDecisionProvider(), votes(["abstain"]).provider).execute(
+        options,
+      ),
+    ).rejects.toThrow("one reconsideration");
+    repo.updateGame(fixture.game.id, { status: "paused" });
+    const decision = () =>
+      fixture.store.get<DecisionOpportunityV1>(
+        fixture.game.id,
+        `decision:${options.opportunity.id}`,
+      )!;
+    return { repo, fixture, decisionId: options.opportunity.id, decision };
+  }
+  it("refuses acknowledgment when the player already cast a ballot", async () => {
+    const { repo, fixture, decisionId, decision } = await pausedAnomaly();
+    // Inconsistent stored state: a ballot exists although the decision never committed.
+    repo.appendEvent(fixture.game.id, {
+      type: "vote.cast",
+      day: 2,
+      phase: "day_vote",
+      visibility: "player",
+      audienceIds: [fixture.actor.id],
+      payload: { vote: { voterId: fixture.actor.id, targetId: fixture.target.id } },
+    });
+    const before = repo.listEvents(fixture.game.id).length;
+    expect(() => acknowledgeSemanticAnomaly(repo, fixture.game.id, decisionId, "Reviewed")).toThrow(
+      "The player already cast a ballot",
+    );
+    expect(repo.listEvents(fixture.game.id)).toHaveLength(before);
+    expect(decision().status).toBe("paused");
+  });
+  it.each([
+    ["is not a Jev attempt", { provider: "openai" }],
+    ["is not valid", { status: "invalid" }],
+    ["has no response", { response: null }],
+  ] as const)(
+    "refuses acknowledgment when the final recorded attempt %s",
+    async (_label, corruption) => {
+      const { repo, fixture, decisionId, decision } = await pausedAnomaly();
+      const finalId = decision().jevState!.semanticFinal!.attemptId;
+      const final = fixture.store
+        .attempts(fixture.game.id, decisionId)
+        .find((a) => a.id === finalId)!;
+      fixture.store.updateAttempt({ ...final, ...corruption });
+      expect(() =>
+        acknowledgeSemanticAnomaly(repo, fixture.game.id, decisionId, "Reviewed"),
+      ).toThrow("The final validated Jev receipt is missing");
+      expect(repo.listEvents(fixture.game.id).some((e) => e.type === "vote.cast")).toBe(false);
+      expect(decision().status).toBe("paused");
+    },
+  );
   it("rolls back the semantic assessment together with a failed checkpoint write", async () => {
     const repo = repository(),
       fixture = createActorHoldout(repo, "uncertain-last-wolf"),
