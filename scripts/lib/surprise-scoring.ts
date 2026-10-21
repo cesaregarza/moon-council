@@ -48,17 +48,22 @@ function normalizedEntropy(view: Record<string, number>) {
 
 /**
  * A village actor's ballot contradicts its own verified results when it targets a player it
- * verified as village, or passes over a verified wolf that is still a legal target. A wolf's
+ * verified as village, or passes over every verified wolf that is still a legal target. A wolf's
  * ballot is deception, not a contradiction; other moment kinds are not tagged yet.
  */
 export function contradictsOwnKnowledge(moment: SurpriseMoment): boolean {
   if (moment.kind !== "ballot" || moment.actorAlignment !== "village") return false;
   const legal = new Set(Object.keys(moment.publicView));
-  return moment.verified.some((result) =>
-    result.alignment === "village"
-      ? result.targetId === moment.actual
-      : legal.has(result.targetId) && result.targetId !== moment.actual,
+  const votedVerifiedVillager = moment.verified.some(
+    (result) => result.alignment === "village" && result.targetId === moment.actual,
   );
+  // With several verified wolves, a vote for any one of them is consistent.
+  const legalWolves = moment.verified.filter(
+    (result) => result.alignment === "werewolf" && legal.has(result.targetId),
+  );
+  const passedOverWolves =
+    legalWolves.length > 0 && !legalWolves.some((result) => result.targetId === moment.actual);
+  return votedVerifiedVillager || passedOverWolves;
 }
 
 export function scoreMoment(moment: SurpriseMoment, t: Thresholds = SURPRISE_THRESHOLDS) {
