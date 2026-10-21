@@ -128,10 +128,8 @@ describe("per-game Claude spend admission", () => {
   it("refuses a call whose own reservation would cross the limit", () => {
     const game = ledger(0.01);
     expect(() => assertV2Budget(game.store, game.gameId, game.config)).not.toThrow();
-    // Called loosely so this compiles against the pre-extension signature (fail-first evidence).
-    const admit = assertV2Budget as (...args: unknown[]) => void;
     expect(() =>
-      admit(game.store, game.gameId, game.config, 0, true, {
+      assertV2Budget(game.store, game.gameId, game.config, 0, true, {
         provider: "anthropic",
         model: "claude-haiku-5-5",
         inputTokens: 1_000,

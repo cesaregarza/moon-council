@@ -156,7 +156,12 @@ export class NarrationV2 {
     const admitsBudget = () => {
       const usage = usageTotals(this.store, options.gameId);
       try {
-        assertV2Budget(this.store, options.gameId, config);
+        assertV2Budget(this.store, options.gameId, config, 0, true, {
+          provider: options.provider ?? "unknown",
+          model: options.model,
+          inputTokens: estimatedTokens(basePrompt) + estimatedTokens(jsonSchema),
+          maxOutputTokens,
+        });
       } catch (error) {
         if (!(error instanceof V2BudgetError)) throw error;
         return false;

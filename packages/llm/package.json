@@ -5,6 +5,7 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
+    "@anthropic-ai/sdk": "1.1.0",
     "@openai/codex-sdk": "0.154.0",
     "@werewolf/contracts": "0.1.0",
     "@werewolf/engine": "0.1.0",

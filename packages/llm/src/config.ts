@@ -7,7 +7,13 @@ export function loadProviderEnvironment(): void {
   if (existsSync(path)) process.loadEnvFile(path);
 }
 
-export const DecisionProviderKinds = ["fake", "openai", "codex", "codex_direct"] as const;
+export const DecisionProviderKinds = [
+  "fake",
+  "openai",
+  "codex",
+  "codex_direct",
+  "anthropic",
+] as const;
 export type DecisionProviderKind = (typeof DecisionProviderKinds)[number];
 
 /** Both Codex transports authenticate with the same `codex login` credentials. */
@@ -33,6 +39,11 @@ export function selectedProviderKind(
 
 export function resolveDefaultModel(kind = selectedProviderKind()): string {
   if (kind === "fake") return "fake-model";
+  if (kind === "anthropic") {
+    const claude = process.env.ANTHROPIC_MODEL?.trim();
+    if (claude) return claude;
+    throw new Error("ANTHROPIC_MODEL is required when LLM_PROVIDER=anthropic");
+  }
   const model = usesCodexLogin(kind)
     ? process.env.CODEX_MODEL?.trim() || process.env.OPENAI_MODEL?.trim()
     : process.env.OPENAI_MODEL?.trim();
@@ -45,6 +56,7 @@ export function resolveDefaultModel(kind = selectedProviderKind()): string {
 }
 
 export function resolveModeratorModel(defaultModel: string, kind = selectedProviderKind()): string {
+  if (kind === "anthropic") return process.env.ANTHROPIC_MODERATOR_MODEL?.trim() || defaultModel;
   if (usesCodexLogin(kind)) {
     return (
       process.env.CODEX_MODERATOR_MODEL?.trim() ||
@@ -75,6 +87,20 @@ export function describeProviderConfiguration(
       liveModelConfigured: ready,
       authentication: "api_key",
       statusDetail: ready ? "OpenAI API key configured" : "Set OPENAI_API_KEY and OPENAI_MODEL",
+    };
+  }
+  if (kind === "anthropic") {
+    const ready = Boolean(
+      process.env.ANTHROPIC_API_KEY?.trim() && process.env.ANTHROPIC_MODEL?.trim(),
+    );
+    return {
+      provider: kind,
+      providerReady: ready,
+      liveModelConfigured: ready,
+      authentication: "api_key",
+      statusDetail: ready
+        ? "Anthropic API key configured; monthly spend ledger enforced"
+        : "Set ANTHROPIC_API_KEY and ANTHROPIC_MODEL",
     };
   }
   const ready = Boolean(process.env.CODEX_MODEL?.trim() || process.env.OPENAI_MODEL?.trim());
