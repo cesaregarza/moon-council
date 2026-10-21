@@ -213,7 +213,36 @@ type StabilityBucket = {
   inFlightOnlyCalls: number;
   layers: LayerBytes[];
 };
-type DepthTokens = { depth: number; calls: number; inputTokens: number; cachedInputTokens: number };
+type DepthTokens = {
+  depth: number;
+  calls: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  /** Input of calls that reported a cached-token count; the denominator for cache share. */
+  knownCacheInputTokens: number;
+  unknownCacheCalls: number;
+};
+
+function addDepthTokens(byDepth: Map<number, DepthTokens>, depth: number, attempt: CacheAttempt) {
+  const tokens = byDepth.get(depth) ?? {
+    depth,
+    calls: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    knownCacheInputTokens: 0,
+    unknownCacheCalls: 0,
+  };
+  const input = attempt.usage?.inputTokens,
+    cached = attempt.usage?.cachedInputTokens;
+  tokens.calls += 1;
+  tokens.inputTokens += input ?? 0;
+  // An unreported cache count is unknown, not a miss.
+  if (typeof input === "number" && typeof cached === "number") {
+    tokens.cachedInputTokens += cached;
+    tokens.knownCacheInputTokens += input;
+  } else tokens.unknownCacheCalls += 1;
+  byDepth.set(depth, tokens);
+}
 
 function byteSize(value: unknown): number {
   if (value == null) return 0;
@@ -274,7 +303,8 @@ export function layerPrefixStability(
     const hashes = attempt.request?.layerHashes;
     // Jev is not prompt-cached by OpenAI, so its calls are neither history nor misses.
     if (attempt.provider === "jev" || !hashes) {
-      if (counted.has(attempt.id)) skippedCalls[hashes ? "jev" : "noLayerHashes"] += 1;
+      if (counted.has(attempt.id))
+        skippedCalls[attempt.provider === "jev" ? "jev" : "noLayerHashes"] += 1;
       continue;
     }
     const keys = LAYERS.map((_, depth) =>
@@ -288,16 +318,7 @@ export function layerPrefixStability(
       const bucket = bySchema.get(attempt.schemaVersion) ?? emptyStability();
       addStability(bucket, attempt, depth, settled);
       bySchema.set(attempt.schemaVersion, bucket);
-      const tokens = byDepth.get(depth) ?? {
-        depth,
-        calls: 0,
-        inputTokens: 0,
-        cachedInputTokens: 0,
-      };
-      tokens.calls += 1;
-      tokens.inputTokens += attempt.usage?.inputTokens ?? 0;
-      tokens.cachedInputTokens += attempt.usage?.cachedInputTokens ?? 0;
-      byDepth.set(depth, tokens);
+      addDepthTokens(byDepth, depth, attempt);
     }
     const ended = attempt.endedAt ?? NEVER_ENDED;
     for (const key of keys)
@@ -484,6 +505,8 @@ function main(): void {
       "calls",
       "inputTokens",
       "cachedInputTokens",
+      "knownCacheInputTokens",
+      "unknownCacheCalls",
     ]);
     printRows("Prefix depth by schema", stability.bySchema, [
       "key",

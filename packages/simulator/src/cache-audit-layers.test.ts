@@ -117,8 +117,22 @@ describe("cache audit layer-prefix stability (fixture database)", () => {
   it("joins provider-reported cache tokens to the inferred prefix depth", () => {
     const { layerPrefixStability } = audit(fixture);
     expect(layerPrefixStability.byDepth).toEqual([
-      { depth: 0, calls: 2, inputTokens: 2_000, cachedInputTokens: 0 },
-      { depth: 2, calls: 2, inputTokens: 2_000, cachedInputTokens: 600 },
+      {
+        depth: 0,
+        calls: 2,
+        inputTokens: 2_000,
+        cachedInputTokens: 0,
+        knownCacheInputTokens: 2_000,
+        unknownCacheCalls: 0,
+      },
+      {
+        depth: 2,
+        calls: 2,
+        inputTokens: 2_000,
+        cachedInputTokens: 600,
+        knownCacheInputTokens: 2_000,
+        unknownCacheCalls: 0,
+      },
     ]);
   });
 
