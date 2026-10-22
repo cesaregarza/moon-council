@@ -181,6 +181,9 @@ function markdown(report: AnalysisReport) {
       lines.push("", ...review.issues.map((issue) => `- Rejected citation: ${issue}`));
     lines.push("");
   }
+  for (const moment of report.moments)
+    if (moment.noSignalReason)
+      lines.push(`## ${moment.id}: no signal: ${moment.noSignalReason}`, "");
   return lines.join("\n");
 }
 

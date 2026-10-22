@@ -128,9 +128,11 @@ distribution, it asks Jev what the public record alone predicts, then scores the
 player's recorded choice. Each night's wolf kill is one moment for the pack: Jev predicts who is
 found dead at dawn, and the dawn outcome is scored against the mean of every living wolf's recorded
 probability in the pack's final round. A save, a block, a split pack or a missing wolf distribution
-makes that night "no signal". Other night roles and non-kill pack points produce no moment. The
-moments are private knowledge, herd over knowledge, noise or error, routine, or no signal. The top
-12 (`--cap`) go to the review model, plus 2 random routine moments as a recall check (`--recall`).
+makes that night "no signal", as do inconsistent pack records (for example a missing or duplicated
+freeze, or a decision that is not the pointing wolf's own); a no-signal moment makes no Jev or
+review call. Other night roles and non-kill pack points produce no moment. The moments are private
+knowledge, herd over knowledge, noise or error, routine, or no signal. The top 12 (`--cap`) go to
+the review model, plus 2 random routine moments as a recall check (`--recall`).
 
 - The review provider and model have no defaults. Numeric options must be positive integers in
   range, or the run refuses to start.

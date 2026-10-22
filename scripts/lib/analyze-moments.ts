@@ -9,6 +9,15 @@ import {
   type ClassifiedMoment,
   type SurpriseMoment,
 } from "./surprise-scoring";
+import {
+  between,
+  isKillPoint,
+  readPackNights,
+  type AuditEvents,
+  type Committed,
+  type FinalPoint,
+  type PackNight,
+} from "./pack-night";
 import type { Decider } from "./analyze-citations";
 import { validUsd } from "./analyze-review";
 
@@ -30,14 +39,6 @@ export interface MomentSource {
   moment: Omit<SurpriseMoment, "publicView">;
 }
 
-type AuditEvents = ReturnType<LabRepository["listEvents"]>;
-interface Committed {
-  op: DecisionOpportunityV1;
-  commit: AuditEvents[number];
-  selected: string;
-  /** Null when the decision has no valid recorded Jev distribution. */
-  view: Record<string, number> | null;
-}
 /** The last validated Jev attempt for a decision, as a distribution over player IDs. */
 function privateView(
   store: DecisionStore,
@@ -88,16 +89,6 @@ function committed(
   return commit && selected ? { op, commit, selected, view: privateView(store, op) } : null;
 }
 
-/** A kill point: the pack's eliminate action, offered to each wolf as a team point. */
-function isKillPoint(op: DecisionOpportunityV1): boolean {
-  if (op.taskType !== "team_point_choice") return false;
-  const { self, legalActions } = op.packet;
-  return (
-    self.role.actions.find((action) => action.id === legalActions[0]?.actionId)?.effect ===
-    "eliminate"
-  );
-}
-
 /** The mean of the wolves' recorded distributions, over every option any of them gave. */
 function meanView(views: Record<string, number>[]): Record<string, number> {
   const options = new Set(views.flatMap((view) => Object.keys(view)));
@@ -107,135 +98,6 @@ function meanView(views: Record<string, number>[]): Record<string, number> {
       views.reduce((sum, view) => sum + (view[option] ?? 0), 0) / views.length,
     ]),
   );
-}
-
-/** One living wolf at the pack's final round: its `team.point` and the decision behind it. */
-interface FinalPoint {
-  wolfId: string;
-  /** Sequence of the wolf's final-round `team.point`, the first event of its commit. */
-  pointedAt: number | undefined;
-  point: Committed | undefined;
-}
-
-/** A night's pack decision, as the orchestrator froze it after the pack's last round. */
-interface PackNight {
-  id: string;
-  finals: FinalPoint[];
-  /** The broken invariant, when the night's records are inconsistent; never repaired. */
-  inconsistency: string | undefined;
-  /** The unanimous target, or null when the pack never agreed. */
-  selected: string | null;
-  firstPointAt: number;
-  agreedAt: number;
-  resolvedAt: number;
-}
-
-const between = (event: AuditEvent, after: number, before: number) =>
-  event.sequence > after && event.sequence < before;
-
-/**
- * The commit behind a `team.point`: the decision store writes a commit's action events first,
- * so it is the wolf's next `decision.committed`, with no other point of its own in between.
- */
-function commitAfter(mark: AuditEvent, events: AuditEvents) {
-  const next = events.find(
-    (event) =>
-      event.sequence > mark.sequence &&
-      event.payload.playerId === mark.payload.playerId &&
-      (event.type === "decision.committed" || event.type === "team.point"),
-  );
-  return next?.type === "decision.committed" ? next : undefined;
-}
-
-/** Wolves alive when the pack froze, from the authoritative state at that point. */
-function livingWolves(events: AuditEvents, agreedAt: number): string[] {
-  const before = events.filter((event) => event.sequence < agreedAt);
-  return reduceGame(events[0]?.gameId ?? "", before)
-    .players.filter((player) => player.alive && player.role.alignment === "werewolf")
-    .map((player) => player.id);
-}
-
-/** The first night invariant the records break, if any (CES-1040 ruling on damaged records). */
-function packInconsistency(
-  agreements: AuditEvent[],
-  deciders: string[],
-  finalMarks: AuditEvent[],
-  links: { lateCommit: boolean; ownershipMismatch: boolean },
-  living: string[],
-): string | undefined {
-  const marked = finalMarks.map((mark) => String(mark.payload.playerId));
-  const sameSet = (a: string[], b: string[]) =>
-    a.length === b.length && a.toSorted().join() === b.toSorted().join();
-  const broken = [
-    agreements.length !== 1 && `${agreements.length} agreements for one night`,
-    !deciders.length && "no deciders recorded for the pack",
-    (new Set(deciders).size !== deciders.length || new Set(marked).size !== marked.length) &&
-      "a duplicated decider in the pack's final round",
-    !sameSet([...new Set(deciders)], living) && "the pack's members differ from the living wolves",
-    links.lateCommit && "a final decision committed after the freeze",
-    links.ownershipMismatch && "ownership mismatch: a decision belongs to another player",
-  ].find((issue): issue is string => typeof issue === "string");
-  return broken && `inconsistent pack records: ${broken}`;
-}
-
-/**
- * Reads one resolved night. Only the final round counts: the last `team.point` round before the
- * (single) agreement; every point and decision used must fall inside the night, before the
- * freeze. Any broken invariant leaves the night no_signal; earlier rounds never stand in.
- */
-function packNight(
-  agreements: AuditEvent[],
-  opened: number,
-  resolvedAt: number,
-  events: AuditEvents,
-  byCommit: Map<string, Committed>,
-): PackNight {
-  const agreement = agreements[0]!;
-  const marks = events.filter(
-    (event) => event.type === "team.point" && between(event, opened, agreement.sequence),
-  );
-  const finalRound = marks.at(-1)?.payload.round;
-  const finalMarks = marks.filter((mark) => mark.payload.round === finalRound);
-  const { payload } = agreement;
-  const deciders = Array.isArray(payload.actorIds) ? payload.actorIds.map(String) : [];
-  const links = { lateCommit: false, ownershipMismatch: false };
-  const finals = deciders.map((wolfId) => {
-    const mark = finalMarks.find((event) => event.payload.playerId === wolfId);
-    const commit = mark && commitAfter(mark, events);
-    if (commit && commit.sequence > agreement.sequence) links.lateCommit = true;
-    const point =
-      commit && commit.sequence < agreement.sequence ? byCommit.get(commit.id) : undefined;
-    // The decision behind a wolf's point must be that wolf's own: its op and its brief.
-    if (point && (point.op.playerId !== wolfId || point.op.packet.self.id !== wolfId))
-      links.ownershipMismatch = true;
-    return { wolfId, pointedAt: mark?.sequence, point };
-  });
-  const living = livingWolves(events, agreement.sequence);
-  return {
-    id: agreement.id,
-    finals,
-    inconsistency: packInconsistency(agreements, deciders, finalMarks, links, living),
-    selected:
-      payload.reason === "unanimous" && typeof payload.targetId === "string"
-        ? payload.targetId
-        : null,
-    firstPointAt: marks[0]?.sequence ?? agreement.sequence,
-    agreedAt: agreement.sequence,
-    resolvedAt,
-  };
-}
-type AuditEvent = AuditEvents[number];
-
-function missingFreeze(resolved: AuditEvent, opened: number, activity: AuditEvent[]): PackNight {
-  return {
-    id: resolved.id,
-    finals: [],
-    inconsistency: "inconsistent pack records: missing freeze",
-    selected: null,
-    firstPointAt: activity[0]?.sequence ?? resolved.sequence,
-    agreedAt: opened,
-    resolvedAt: resolved.sequence,
-  };
 }
 
 function noSignalReason(night: PackNight, actual: string): string | undefined {
@@ -277,7 +139,8 @@ function killMoment(night: PackNight, events: AuditEvents): MomentSource {
   return {
     op: present[0]?.point.op,
     pack: present.map(({ point }) => point.op),
-    decisionSequence: night.firstPointAt,
+    // A scored night's public prediction stops at the freeze, before any night outcome.
+    decisionSequence: night.agreedAt,
     decisionEventId: night.id,
     deciders: present.map(({ wolfId, pointedAt }) => ({
       actorId: wolfId,
@@ -301,30 +164,6 @@ function killMoment(night: PackNight, events: AuditEvents): MomentSource {
       verified: [],
     },
   };
-}
-
-/** One moment per resolved night that recorded a pack agreement, never more. */
-function killMoments(points: Committed[], events: AuditEvents): MomentSource[] {
-  const byCommit = new Map(points.map((point) => [point.commit.id, point]));
-  const resolutions = events.filter((event) => event.type === "night.resolved");
-  return resolutions.flatMap((resolved, index) => {
-    const opened = resolutions[index - 1]?.sequence ?? -1;
-    const agreements = events.filter(
-      (event) =>
-        event.type === "team.agreement_frozen" && between(event, opened, resolved.sequence),
-    );
-    if (agreements.length)
-      return [
-        killMoment(packNight(agreements, opened, resolved.sequence, events, byCommit), events),
-      ];
-    // Pack points or decisions with no freeze: the night is kept, never silently skipped.
-    const activity = events.filter(
-      (event) => event.type === "team.point" && between(event, opened, resolved.sequence),
-    );
-    const decided = points.some((point) => between(point.commit, opened, resolved.sequence));
-    if (!activity.length && !decided) return [];
-    return [killMoment(missingFreeze(resolved, opened, activity), events)];
-  });
 }
 
 export function collectMoments(
@@ -364,13 +203,13 @@ export function collectMoments(
       },
     ];
   });
-  return [
-    ...ballots,
-    ...killMoments(
-      decisions.filter((entry) => isKillPoint(entry.op)),
-      events,
-    ),
-  ];
+  const killOps = store.opportunities(game.id).filter(isKillPoint);
+  const nights = readPackNights(
+    decisions.filter((entry) => isKillPoint(entry.op)),
+    killOps,
+    events,
+  );
+  return [...ballots, ...nights.map((night) => killMoment(night, events))];
 }
 
 /** One Jev call's reported usage; cost is null unless the provider reports it. */
@@ -382,7 +221,10 @@ export interface JevCallUsage {
   costUsd: number | null;
 }
 
-/** Jev predicts each decision from the public record alone. One call per moment. */
+/**
+ * Jev predicts each decision from the public record alone: one call per moment that can carry
+ * a signal, none for a moment that already has none.
+ */
 export async function publicViews(
   repository: LabRepository,
   game: GameRecord,
@@ -393,6 +235,11 @@ export async function publicViews(
   const classified: ClassifiedMoment[] = [];
   const jevCalls: JevCallUsage[] = [];
   for (const source of sources) {
+    // A moment already without signal (a broken pack invariant, a save) costs no Jev call.
+    if (source.moment.noSignalReason) {
+      classified.push(classifyMoment({ ...source.moment, publicView: {} }));
+      continue;
+    }
     const built =
       source.moment.kind === "ballot"
         ? publicBallotRequest(repository, game, {
