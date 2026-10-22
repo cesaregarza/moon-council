@@ -204,11 +204,15 @@ function scriptedJev(moments: ScriptedMoment[]): DecisionProvider {
       const view = queue.shift()!.publicView!;
       const handles = Object.keys(criteria);
       // "*" scripts a uniform prediction over every option the question offers.
+      const scripted = Object.entries(criteria).map(([handle, text]) => {
+        const id = handle === "abstain" ? "abstain" : (/\(([^)]+)\)/.exec(text)?.[1] ?? handle);
+        return [handle, "*" in view ? 1 / handles.length : (view[id] ?? 0)] as const;
+      });
+      // Renormalized over the offered options, so a view scripted for another moment (when an
+      // analyzer calls Jev for a decision the script did not expect) still parses as Jev output.
+      const total = scripted.reduce((sum, [, p]) => sum + p, 0);
       const probabilities = Object.fromEntries(
-        Object.entries(criteria).map(([handle, text]) => {
-          const id = handle === "abstain" ? "abstain" : (/\(([^)]+)\)/.exec(text)?.[1] ?? handle);
-          return [handle, "*" in view ? 1 / handles.length : (view[id] ?? 0)];
-        }),
+        scripted.map(([handle, p]) => [handle, total > 0 ? p / total : 1 / handles.length]),
       );
       const choice = Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0]![0];
       return {
