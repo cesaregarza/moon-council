@@ -133,6 +133,29 @@ export function claudeResponseCostUsd(model: string, usage: Anthropic.Usage): nu
   });
 }
 
+/** Content whose cost its serialized bytes cannot bound (images, documents, tool traffic). */
+export class UnboundedClaudeContentError extends Error {
+  override name = "UnboundedClaudeContentError";
+}
+
+/**
+ * Moon Council sends text only. Any other block (an image, a document, a URL- or file-backed
+ * source) costs what it references, not what it serializes to, so it is refused before admission.
+ */
+function assertTextOnly(body: Anthropic.MessageCreateParamsNonStreaming): void {
+  const blocks = [
+    ...(Array.isArray(body.system) ? body.system : []),
+    ...body.messages.flatMap((message) =>
+      typeof message.content === "string" ? [] : message.content,
+    ),
+  ];
+  const other = blocks.find((block) => block.type !== "text");
+  if (other)
+    throw new UnboundedClaudeContentError(
+      `Claude request holds a ${other.type} block; only text can be bounded before sending`,
+    );
+}
+
 /** Upper bound on prompt tokens before sending: a token is never shorter than a UTF-8 byte. */
 const promptCeilingTokens = (body: Anthropic.MessageCreateParamsNonStreaming) =>
   Buffer.byteLength(
@@ -188,6 +211,7 @@ export class AnthropicMessagesProvider implements DecisionProvider {
   async decide<T>(request: DecisionRequest<T>): Promise<DecisionResult<T>> {
     const body = claudeRequest(request, this.maxTokensCap);
     assertClaudePriced(body.model);
+    assertTextOnly(body);
     if (request.signal?.aborted) throw new Error("Claude decision aborted");
     const reservationId = randomUUID();
     const reservation = claudeReservationUsd(

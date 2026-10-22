@@ -167,10 +167,8 @@ describe("Claude request rules", () => {
         { role: "user" as const, content: "turn 1" },
         {
           role: "assistant" as const,
-          content: [
-            { type: "thinking" as const, thinking: "", signature: "sig-1" },
-            { type: "text" as const, text: '{"choice":"b"}' },
-          ],
+          // Text only: replaying thinking blocks needs a recorded-usage ceiling (CES-1556).
+          content: [{ type: "text" as const, text: '{"choice":"b"}' }],
         },
         { role: "user" as const, content: [{ type: "text" as const, text: "turn 2" }] },
       ],
@@ -305,6 +303,31 @@ describe("Claude usage and cost", () => {
     await expect(call).rejects.toBeInstanceOf(SpendLimitError);
     expect(bodies).toHaveLength(0);
     expect(book.status().settledUsd).toBeLessThanOrEqual(200);
+  });
+});
+
+describe("Claude content admission", () => {
+  it("refuses image and other non-text content before reserving or calling the SDK", async () => {
+    // halcyon's probe: 100 URL images cost what the images are, not what their URLs serialize to.
+    const images = Array.from({ length: 100 }, (_, i) => ({
+      type: "image" as const,
+      source: { type: "url" as const, url: `https://example.invalid/${i}.png` },
+    }));
+    const { client, bodies } = fakeClient([message()]);
+    const book = ledger();
+    book.reserve("earlier", 199.965);
+    book.settle("earlier", 199.965);
+    const call = new AnthropicMessagesProvider({ client, ledger: book }).decide(
+      request({
+        claudeHarness: {
+          system: [{ type: "text", text: "frozen" }],
+          messages: [{ role: "user", content: [{ type: "text", text: "look" }, ...images] }],
+        } as never,
+      }),
+    );
+    await expect(call).rejects.toMatchObject({ name: "UnboundedClaudeContentError" });
+    expect(bodies).toHaveLength(0);
+    expect(book.status()).toMatchObject({ settledUsd: 199.965, openReservations: 0 });
   });
 });
 

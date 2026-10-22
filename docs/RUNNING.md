@@ -87,8 +87,10 @@ ANTHROPIC_MAX_OUTPUT_TOKENS=16000
 
 The key is read only from the environment. It is never logged, stored in a game database or included
 in the recorded request body. Requests use adaptive thinking with an explicit effort, structured
-JSON output, and no sampling parameters or assistant prefill. A refusal is recorded as a failed
-attempt with its category; no other model is tried.
+JSON output, and no sampling parameters or assistant prefill. Requests are text only: an image,
+document or other non-text block is refused before any spend is reserved, because its bytes cannot
+bound its cost. A refusal is recorded as a failed attempt with its category; no other model is
+tried.
 
 **Spend guard (fail closed).**
 
@@ -96,11 +98,12 @@ attempt with its category; no other model is tried.
   covers Opus 5.5, Sonnet 5.5 and Haiku 5.5, including Haiku 5.5's higher rate for prompts above
   100,000 tokens.
 - **Per game:** `maxSpendUsd` is required for any game with Claude seats; for a pilot, pass
-  `--max-spend-usd`. Each call is admitted only if settled spend, plus unsettled calls at their
-  worst case, plus this call's worst case, fits. The worst case bounds the prompt by its UTF-8 byte
-  length (a token is never shorter than a byte), prices it as 1-hour cache writes at the
-  long-context rate whenever that bound could cross the threshold, and adds the output cap. Settled
-  calls count the provider's actual cost. Reaching the limit ends the game as `budget_exhausted`.
+  `--max-spend-usd`. Each call is admitted only if settled spend, plus unsettled calls at the worst
+  case admitted when they began, plus this call's worst case, fits. The worst case bounds the prompt
+  by its UTF-8 byte length (a token is never shorter than a byte), prices it as 1-hour cache writes
+  at the long-context rate whenever that bound could cross the threshold, and adds the output cap.
+  Settled calls count the provider's actual cost. Reaching the limit ends the game as
+  `budget_exhausted`.
 - **Per month:** a ledger outside the repository and game databases (default
   `~/.moon-council/claude-spend.json`, or `MOON_COUNCIL_SPEND_LEDGER`) holds UTC calendar-month
   spend. The default limit is $200 (`MOON_COUNCIL_CLAUDE_MONTHLY_LIMIT_USD`). Each call reserves its
