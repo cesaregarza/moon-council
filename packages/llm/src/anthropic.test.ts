@@ -331,6 +331,68 @@ describe("Claude content admission", () => {
   });
 });
 
+describe("Claude session replay ceilings", () => {
+  // A replayed thinking block's bytes (its signature) cannot bound its tokens; the recorded usage
+  // of the previous turn (its prompt plus its reply) can (Felix, CES-1556 note on PR #20).
+  const replay = (
+    replayedTokens?: number,
+    pending: unknown[] = [{ type: "text", text: "turn 2" }],
+  ) =>
+    ({
+      system: [{ type: "text", text: "frozen" }],
+      messages: [
+        { role: "user", content: [{ type: "text", text: "turn 1" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "", signature: "sig-1" },
+            { type: "text", text: '{"choice":"b"}' },
+          ],
+        },
+        { role: "user", content: pending },
+      ],
+      ...(replayedTokens === undefined ? {} : { replayedTokens }),
+    }) as never;
+
+  it("sends a replayed thinking turn unchanged when its recorded usage bounds it", async () => {
+    const { client, bodies } = fakeClient([message()]);
+    await expect(
+      new AnthropicMessagesProvider({ client, ledger: ledger() }).decide(
+        request({ claudeHarness: replay(2_120) }),
+      ),
+    ).resolves.toMatchObject({ data: { choice: "a" } });
+    expect(bodies).toHaveLength(1);
+  });
+
+  it("reserves the replayed history at its recorded tokens, not its bytes", async () => {
+    // 150K recorded tokens put Haiku past its 100K threshold: well over the $0.035 left.
+    const { client, bodies } = fakeClient([message()]);
+    const book = ledger();
+    book.reserve("earlier", 199.965);
+    book.settle("earlier", 199.965);
+    const call = new AnthropicMessagesProvider({ client, ledger: book }).decide(
+      request({ claudeHarness: replay(150_000) }),
+    );
+    await expect(call).rejects.toBeInstanceOf(SpendLimitError);
+    expect(bodies).toHaveLength(0);
+  });
+
+  it("refuses replayed thinking with no recorded usage, and thinking in the new turn", async () => {
+    for (const harness of [
+      replay(),
+      replay(2_120, [{ type: "thinking", thinking: "", signature: "forged" }]),
+    ]) {
+      const { client, bodies } = fakeClient([message()]);
+      await expect(
+        new AnthropicMessagesProvider({ client, ledger: ledger() }).decide(
+          request({ claudeHarness: harness }),
+        ),
+      ).rejects.toMatchObject({ name: "UnboundedClaudeContentError" });
+      expect(bodies).toHaveLength(0);
+    }
+  });
+});
+
 describe("Claude refusals", () => {
   it("records the category as a named failure and calls no other model", async () => {
     const { client, bodies } = fakeClient([

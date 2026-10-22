@@ -318,6 +318,41 @@ describe("Claude session harness", () => {
     expect(JSON.stringify(dayTwo.body.messages[0])).toContain("day two");
   });
 
+  it("bounds the replayed history by the previous turn's recorded usage", () => {
+    const game = scriptedGame();
+    const sessions = new ClaudeSessions(game.store);
+    const first = call(game, sessions, game.villager, 1);
+    expect((first.turn.harness as { replayedTokens?: number }).replayedTokens).toBeUndefined();
+    answer(first.turn, 2_000);
+    const second = call(game, sessions, game.villager, 1);
+    // 2,000 prompt tokens plus the 120-token reply, thinking included.
+    expect((second.turn.harness as { replayedTokens?: number }).replayedTokens).toBe(2_120);
+  });
+
+  it("opens a new session after a reply whose usage is unknown", () => {
+    const game = scriptedGame();
+    const sessions = new ClaudeSessions(game.store);
+    const first = call(game, sessions, game.villager, 1);
+    const opened = sessions.load(game.gameId, game.villager)!.id;
+    first.turn.commit({
+      content: [
+        { type: "thinking", thinking: "", signature: "unmetered" },
+        { type: "text", text: '{"reply":0}', citations: null },
+      ],
+      stopReason: "end_turn",
+      usage: {
+        inputTokens: null,
+        outputTokens: null,
+        totalTokens: null,
+        cachedInputTokens: null,
+        cacheWriteInputTokens: null,
+        reasoningTokens: null,
+      },
+    });
+    call(game, sessions, game.villager, 1);
+    expect(sessions.load(game.gameId, game.villager)!.id).not.toBe(opened);
+  });
+
   it("rebuilds the same request bytes from the database after a pause", () => {
     const game = scriptedGame();
     vi.useFakeTimers();
