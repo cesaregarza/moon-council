@@ -9,6 +9,8 @@ export class SpendLimitError extends Error {}
 export class SpendLedgerError extends Error {}
 
 export const DEFAULT_MONTHLY_LIMIT_USD = 200;
+/** The ledger stores only finite, non-negative amounts (Rule L). */
+const validAmount = (usd: number) => Number.isFinite(usd) && usd >= 0;
 /** A reservation this old belongs to a process that died mid-call; it settles at its worst case. */
 const STALE_RESERVATION_MS = 60 * 60_000;
 const LOCK_WAIT_MS = 5_000;
@@ -58,6 +60,8 @@ export class ClaudeSpendLedger {
 
   /** Admit `usd` against the current month, or throw before any request is sent. */
   reserve(id: string, usd: number): void {
+    if (!validAmount(usd))
+      throw new SpendLedgerError(`Refusing to reserve an invalid Claude amount: ${usd}`);
     this.update((ledger) => {
       const month = this.month(ledger);
       const open = Object.values(month.reservations).reduce((sum, r) => sum + r.usd, 0);
@@ -79,6 +83,13 @@ export class ClaudeSpendLedger {
       const open = months.find((month) => month.reservations[id]);
       const swept = months.find((month) => month.swept[id] !== undefined);
       const month = open ?? swept ?? this.month(ledger);
+      // Rule L: an invalid amount settles at what is held, never as a number of its own.
+      const held = open ? open.reservations[id]!.usd : swept?.swept[id];
+      if (!validAmount(usd)) {
+        if (held === undefined)
+          throw new SpendLedgerError(`Refusing to settle an invalid Claude amount: ${usd}`);
+        usd = held;
+      }
       if (!open && swept) {
         month.settledUsd = Math.max(0, month.settledUsd - swept.swept[id]!);
         delete month.swept[id];

@@ -88,8 +88,10 @@ export function claudeReservationUsd(
   });
 }
 
-const invalidCount = (value: number | null) =>
-  value !== null && !(Number.isInteger(value) && value >= 0);
+/** A token count: a JavaScript number that is a non-negative safe integer (Rule U). */
+export const isTokenCount = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+const invalidCount = (value: number | null) => value !== null && !isTokenCount(value);
 
 /**
  * Settled cost from mapped usage (inputTokens includes cache reads and writes). Usage does not
