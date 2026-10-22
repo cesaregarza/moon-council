@@ -554,6 +554,62 @@ describe("voting dynamics", () => {
     expect(mechanics).toMatchObject({ votingDynamics: { byDay, totals } });
   });
 
+  it("derives an archived V1 day from its tally, never reporting missing ballots as zero", () => {
+    // halcyon's repro (PR #16 review): eight living, v1 eliminated 5-3, no per-player ballots.
+    const archived = [
+      event(0, "game.created", { players }),
+      event(1, "game.started", {}),
+      event(2, "vote.resolved", { tally: { v1: 5, w1: 3 }, tied: false, targetId: "v1" }),
+    ];
+    const { mechanics } = summarizeGameAudit(game, archived, []);
+    expect(mechanics).toMatchObject({
+      votingDynamics: {
+        byDay: [
+          {
+            day: 1,
+            basis: "tally",
+            living: 8,
+            voted: 8,
+            abstained: null,
+            byFaction: null,
+            byRole: null,
+            eliminatedPlayerId: "v1",
+            eliminatedAlignment: "village",
+            votesForEliminated: 5,
+            minorityElimination: false,
+          },
+        ],
+        totals: { minorityEliminations: 0, coverage: { ballots: 0, tally: 1, unavailable: 0 } },
+      },
+    });
+  });
+
+  it("reports a day with neither ballots nor a tally as unavailable, with no minority call", () => {
+    const bare = [
+      event(0, "game.created", { players }),
+      event(1, "game.started", {}),
+      event(2, "vote.resolved", { targetId: "v1" }),
+    ];
+    const { mechanics } = summarizeGameAudit(game, bare, []);
+    expect(mechanics).toMatchObject({
+      votingDynamics: {
+        byDay: [
+          {
+            basis: "unavailable",
+            voted: null,
+            abstained: null,
+            byFaction: null,
+            byRole: null,
+            eliminatedPlayerId: "v1",
+            votesForEliminated: null,
+            minorityElimination: null,
+          },
+        ],
+        totals: { minorityEliminations: 0, coverage: { ballots: 0, tally: 0, unavailable: 1 } },
+      },
+    });
+  });
+
   it("adds voting dynamics to --status without private notebooks, reading the database only", () => {
     const directory = mkdtempSync(join(tmpdir(), "game-audit-"));
     try {
