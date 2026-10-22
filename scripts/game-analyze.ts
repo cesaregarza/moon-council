@@ -45,10 +45,12 @@ function assertNumericOptions(options: AnalyzeOptions): void {
 }
 
 function jevUsage(calls: Awaited<ReturnType<typeof publicViews>>["jevCalls"]) {
-  const total = (key: "inputTokens" | "outputTokens" | "totalTokens" | "costUsd") =>
-    calls.some((call) => call[key] === null)
-      ? null
-      : calls.reduce((sum, call) => sum + call[key]!, 0);
+  // Unknown when any call is unknown or the sum is not finite; never Infinity.
+  const total = (key: "inputTokens" | "outputTokens" | "totalTokens" | "costUsd") => {
+    if (calls.some((call) => call[key] === null)) return null;
+    const sum = calls.reduce((t, call) => t + call[key]!, 0);
+    return Number.isFinite(sum) ? sum : null;
+  };
   return {
     calls: calls.length,
     inputTokens: total("inputTokens"),

@@ -160,7 +160,7 @@ function packInconsistency(
   agreements: AuditEvent[],
   deciders: string[],
   finalMarks: AuditEvent[],
-  lateCommit: boolean,
+  links: { lateCommit: boolean; ownershipMismatch: boolean },
   living: string[],
 ): string | undefined {
   const marked = finalMarks.map((mark) => String(mark.payload.playerId));
@@ -172,7 +172,8 @@ function packInconsistency(
     (new Set(deciders).size !== deciders.length || new Set(marked).size !== marked.length) &&
       "a duplicated decider in the pack's final round",
     !sameSet([...new Set(deciders)], living) && "the pack's members differ from the living wolves",
-    lateCommit && "a final decision committed after the freeze",
+    links.lateCommit && "a final decision committed after the freeze",
+    links.ownershipMismatch && "ownership mismatch: a decision belongs to another player",
   ].find((issue): issue is string => typeof issue === "string");
   return broken && `inconsistent pack records: ${broken}`;
 }
@@ -197,23 +198,23 @@ function packNight(
   const finalMarks = marks.filter((mark) => mark.payload.round === finalRound);
   const { payload } = agreement;
   const deciders = Array.isArray(payload.actorIds) ? payload.actorIds.map(String) : [];
-  let lateCommit = false;
+  const links = { lateCommit: false, ownershipMismatch: false };
   const finals = deciders.map((wolfId) => {
     const mark = finalMarks.find((event) => event.payload.playerId === wolfId);
     const commit = mark && commitAfter(mark, events);
-    if (commit && commit.sequence > agreement.sequence) lateCommit = true;
-    const inside = commit && commit.sequence < agreement.sequence;
-    return {
-      wolfId,
-      pointedAt: mark?.sequence,
-      point: inside ? byCommit.get(commit.id) : undefined,
-    };
+    if (commit && commit.sequence > agreement.sequence) links.lateCommit = true;
+    const point =
+      commit && commit.sequence < agreement.sequence ? byCommit.get(commit.id) : undefined;
+    // The decision behind a wolf's point must be that wolf's own: its op and its brief.
+    if (point && (point.op.playerId !== wolfId || point.op.packet.self.id !== wolfId))
+      links.ownershipMismatch = true;
+    return { wolfId, pointedAt: mark?.sequence, point };
   });
   const living = livingWolves(events, agreement.sequence);
   return {
     id: agreement.id,
     finals,
-    inconsistency: packInconsistency(agreements, deciders, finalMarks, lateCommit, living),
+    inconsistency: packInconsistency(agreements, deciders, finalMarks, links, living),
     selected:
       payload.reason === "unanimous" && typeof payload.targetId === "string"
         ? payload.targetId
@@ -224,6 +225,18 @@ function packNight(
   };
 }
 type AuditEvent = AuditEvents[number];
+
+function missingFreeze(resolved: AuditEvent, opened: number, activity: AuditEvent[]): PackNight {
+  return {
+    id: resolved.id,
+    finals: [],
+    inconsistency: "inconsistent pack records: missing freeze",
+    selected: null,
+    firstPointAt: activity[0]?.sequence ?? resolved.sequence,
+    agreedAt: opened,
+    resolvedAt: resolved.sequence,
+  };
+}
 
 function noSignalReason(night: PackNight, actual: string): string | undefined {
   if (night.inconsistency) return night.inconsistency;
@@ -300,8 +313,17 @@ function killMoments(points: Committed[], events: AuditEvents): MomentSource[] {
       (event) =>
         event.type === "team.agreement_frozen" && between(event, opened, resolved.sequence),
     );
-    if (!agreements.length) return [];
-    return [killMoment(packNight(agreements, opened, resolved.sequence, events, byCommit), events)];
+    if (agreements.length)
+      return [
+        killMoment(packNight(agreements, opened, resolved.sequence, events, byCommit), events),
+      ];
+    // Pack points or decisions with no freeze: the night is kept, never silently skipped.
+    const activity = events.filter(
+      (event) => event.type === "team.point" && between(event, opened, resolved.sequence),
+    );
+    const decided = points.some((point) => between(point.commit, opened, resolved.sequence));
+    if (!activity.length && !decided) return [];
+    return [killMoment(missingFreeze(resolved, opened, activity), events)];
   });
 }
 
@@ -402,6 +424,7 @@ async function askJev(jev: DecisionProvider, request: JevRequest) {
   const schema = jevResponseSchema(request);
   let reported: UsageV2 | undefined;
   let costUsd: number | null = null;
+  let costUnknown = false;
   const result = await jev.decide({
     kind: "jev",
     model: request.model,
@@ -411,7 +434,12 @@ async function askJev(jev: DecisionProvider, request: JevRequest) {
     preparedPrompt: { instructions: "", input: JSON.stringify(request) },
     onUsage: (usage) => (reported = usage),
     onProviderMetadata: (metadata) => {
-      costUsd = validUsd(metadata.costUsd) ? metadata.costUsd : null;
+      // Unknown is sticky: a later valid report cannot clear an earlier invalid one.
+      if (validUsd(metadata.costUsd) && !costUnknown) costUsd = metadata.costUsd;
+      else if (metadata.costUsd !== undefined) {
+        costUnknown = true;
+        costUsd = null;
+      }
     },
   });
   const usage = reported ?? result.usage;

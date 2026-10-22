@@ -51,6 +51,13 @@ const UNENFORCED_OUTPUT_LIMIT_KINDS = new Set(["codex", "codex_direct"]);
 export const validUsd = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
 
+/** A cost total: unknown once any part is unknown or the sum is not finite (sticky). */
+export function addCosts(total: number | null, part: unknown): number | null {
+  if (total === null || !validUsd(part)) return null;
+  const sum = total + part;
+  return Number.isFinite(sum) ? sum : null;
+}
+
 export class UnenforcedOutputLimitError extends Error {
   override name = "UnenforcedOutputLimitError";
 }
@@ -150,10 +157,7 @@ async function reviewOne(
       },
       onProviderMetadata: (metadata) => {
         if (metadata.costUsd === undefined) return;
-        call.costUsd =
-          call.costUsd !== null && validUsd(metadata.costUsd)
-            ? call.costUsd + metadata.costUsd
-            : null;
+        call.costUsd = addCosts(call.costUsd, metadata.costUsd);
       },
     });
     if (!call.enforced)
@@ -201,8 +205,7 @@ export async function reviewMoments(items: ReviewItem[], options: ReviewOptions)
     usage.calls += 1;
     const call = await reviewOne(item, prompt, worstCase, options);
     usage.tokens += call.spent;
-    usage.costUsd =
-      usage.costUsd === null || call.costUsd === null ? null : usage.costUsd + call.costUsd;
+    usage.costUsd = addCosts(usage.costUsd, call.costUsd);
     bounded = call.enforced;
     outcomes.push(call.outcome);
   }
