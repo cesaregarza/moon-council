@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { symlinkSync } from "node:fs";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import { actorBriefing } from "../packages/simulator/src/jev-actor";
 import { V2GameOrchestrator } from "../packages/simulator/src/orchestrator-v2";
 import { actorConfig, refreshFixtureBrief } from "../packages/simulator/src/testing/actor-fixtures";
 import { analyzeGame, postGameAnalysisRequest } from "./game-analyze";
+import { writeReportAtomically } from "./lib/analyze-output";
 import type { MomentReview } from "./lib/analyze-review";
 
 const directories: string[] = [];
@@ -34,10 +36,13 @@ interface ScriptedMoment {
    */
   publicView?: Distribution;
   /**
-   * A night decision: a wolf's pack point (the kill, as real games record it) or another role's
-   * night action. With `dawn`, the night resolves after it: the player found dead, or null.
+   * A night decision: a wolf's pack point (the kill, as real games record it, in pack `round`) or
+   * another role's night action. With `dawn`, the night resolves after it: the pack's agreement
+   * from its last round, then the player found dead, or null.
    */
-  night?: { point?: boolean; dawn?: string | null };
+  night?: { point?: boolean; round?: number; dawn?: string | null };
+  /** Set false when the decision has no valid recorded Jev distribution. */
+  distribution?: false;
   /** The actor's current decision brief (what Jev was given as current reasoning). */
   brief?: string;
 }
@@ -90,9 +95,19 @@ function recordedGame(
     payload: { actorId: seer, targetId: wolf, targetName: "wolf", result: "werewolf" },
   });
   const inspectionId = repository.listEvents(game.id).at(-1)!.id;
+  // A result only the first wolf received (a wolf-seer variant), for pack citation checks.
+  repository.appendEvent(game.id, {
+    ...at,
+    type: "inspection.delivered",
+    visibility: "player",
+    audienceIds: [wolf],
+    payload: { actorId: wolf, targetId: seer, targetName: "seer", result: "village" },
+  });
+  const wolfInspectionId = repository.listEvents(game.id).at(-1)!.id;
   const store = new DecisionStore(repository);
   const moments = script({ wolf, other, villager, seer });
   const ops: Record<string, DecisionOpportunityV1> = {};
+  let nightPoints: { actor: string; target: string; round: number }[] = [];
   for (const moment of moments) {
     const actor = { seer, villager, wolf, wolf2 }[moment.actor];
     const events = repository.listEvents(game.id);
@@ -141,7 +156,7 @@ function recordedGame(
     );
     store.updateAttempt({
       ...attempt,
-      status: "valid",
+      status: moment.distribution === false ? "invalid" : "valid",
       response: JSON.stringify({
         model: "jev-latest",
         answers: {
@@ -164,10 +179,62 @@ function recordedGame(
         },
       },
     });
-    if (moment.night?.dawn !== undefined) dawn(repository, game.id, moment.night.dawn);
+    if (point) {
+      const round = moment.night?.round ?? 0;
+      nightPoints.push({ actor, target: moment.actual, round });
+      repository.appendEvent(game.id, {
+        ...at,
+        phase: "night_team",
+        type: "team.point",
+        visibility: "team",
+        audienceIds: [wolf, wolf2],
+        payload: { playerId: actor, targetId: moment.actual, round, blind: round === 0 },
+      });
+    }
+    if (moment.night?.dawn !== undefined) {
+      if (nightPoints.length) agreement(repository, game.id, nightPoints);
+      nightPoints = [];
+      dawn(repository, game.id, moment.night.dawn);
+    }
   }
   connection.close();
-  return { dbPath, gameId: game.id, directory, inspectionId, seer, villager, moments, ops };
+  return {
+    dbPath,
+    gameId: game.id,
+    directory,
+    inspectionId,
+    wolfInspectionId,
+    seer,
+    villager,
+    wolf,
+    wolf2,
+    moments,
+    ops,
+  };
+}
+
+/** The orchestrator's record of how the pack's last round ended. */
+function agreement(
+  repository: LabRepository,
+  gameId: string,
+  points: { actor: string; target: string; round: number }[],
+) {
+  const round = Math.max(...points.map((point) => point.round));
+  const last = points.filter((point) => point.round === round);
+  const agreed = new Set(last.map((point) => point.target)).size === 1;
+  repository.appendEvent(gameId, {
+    day: 1,
+    phase: "night_team",
+    type: "team.agreement_frozen",
+    visibility: "moderator",
+    payload: {
+      channel: "werewolves",
+      targetId: agreed ? last[0]!.target : null,
+      actorIds: [...new Set(points.map((point) => point.actor))],
+      reason: agreed ? "unanimous" : "no_agreement",
+      round,
+    },
+  });
 }
 
 /** The engine's night resolution: a public death (or none), then the moderator's summary. */
@@ -263,6 +330,11 @@ function scriptedReviewer(
   };
   return { provider, calls, dossiers };
 }
+
+type Claim = MomentReview["knowledgeClaims"][number];
+/** A knowledge claim about one player (`subjectId`), or about the whole pack when null. */
+const claim = (text: string, eventIds: string[], subjectId: string | null = null) =>
+  ({ claim: text, eventIds, subjectId }) as Claim;
 
 // Cast so the fixture compiles against a schema without groundTruth (tests-first commit).
 const plain = (): MomentReview =>
@@ -361,16 +433,14 @@ describe("post-game surprise analyzer", () => {
       if (momentId === "seer-votes-doubted-wolf")
         return {
           ...plain(),
-          knowledgeClaims: [
-            { claim: "The seer inspected the wolf.", eventIds: [game.inspectionId] },
-          ],
+          knowledgeClaims: [claim("The seer inspected the wolf.", [game.inspectionId])],
         };
       if (momentId === "fay-abstains")
         return { ...plain(), citedEventIds: ["event-that-never-happened"] };
       // The villager cannot see the seer's private inspection.
       return {
         ...plain(),
-        knowledgeClaims: [{ claim: "They knew the wolf.", eventIds: [game.inspectionId] }],
+        knowledgeClaims: [claim("They knew the wolf.", [game.inspectionId])],
       };
     });
     const report = await run(game, reviewer, { cap: 3 });
@@ -488,6 +558,31 @@ describe("post-game analyzer safety and accounting", () => {
       true,
     );
     expect(report.usage.review.tokens).toBe(21_000);
+  });
+
+  it("keeps accounting finite when a provider reports non-finite usage", async () => {
+    // halcyon's control: a NaN total must not switch the budget off. With a 6,000-token cap and
+    // a 12,000-token budget, the second review's worst case can no longer fit.
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain, {
+      outputTokens: Number.NaN,
+      outputLimitEnforced: true,
+    });
+    const report = await run(game, reviewer, { tokenBudget: 12_000, maxOutputTokens: 6_000 });
+    expect(Number.isFinite(report.usage.review.tokens)).toBe(true);
+    expect(report.usage.review.tokens).toBeGreaterThan(6_000);
+    expect(reviewer.calls).toHaveLength(1);
+  });
+
+  it("removes its temporary file when the rename fails, so a retry is not blocked", () => {
+    const directory = mkdtempSync(join(tmpdir(), "analyze-output-"));
+    directories.push(directory);
+    const target = join(directory, "analysis.json");
+    mkdirSync(join(target, "occupied"), { recursive: true }); // rename onto it fails
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(() => writeReportAtomically(target, "{}\n")).toThrow();
+      expect(readdirSync(directory).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    }
   });
 
   it.each([
@@ -688,6 +783,105 @@ describe("post-game analyzer night moments", () => {
       class: "no_signal",
       noSignalReason: expect.stringContaining("unanim"),
     });
+  });
+
+  it("scores the pack from its final, resolving round only", async () => {
+    // halcyon's control: a split first round, then both wolves agree (0.9 and 0.7) and the
+    // victim dies. The night is scored on the final round: mean 0.8.
+    const game = recordedGame(({ other, villager }) => [
+      {
+        id: "round-0-a",
+        actor: "wolf",
+        actual: other,
+        privateView: { [other]: 0.6, [villager]: 0.4 },
+        night: { point: true, round: 0 },
+      },
+      {
+        id: "round-0-b",
+        actor: "wolf2",
+        actual: villager,
+        privateView: { [villager]: 0.5, [other]: 0.5 },
+        night: { point: true, round: 0 },
+      },
+      {
+        id: "round-1-a",
+        actor: "wolf",
+        actual: villager,
+        privateView: { [villager]: 0.9, [other]: 0.1 },
+        night: { point: true, round: 1 },
+      },
+      {
+        id: "round-1-b",
+        actor: "wolf2",
+        actual: villager,
+        privateView: { [villager]: 0.7, [other]: 0.3 },
+        publicView: { [villager]: 0.05, [other]: 0.15, no_death: 0.8 },
+        night: { point: true, round: 1, dawn: villager },
+      },
+    ]);
+    const report = await run(game, scriptedReviewer(plain));
+    expect(report.moments).toHaveLength(1);
+    const kill = report.moments[0] as unknown as {
+      selected?: string;
+      class: string;
+      score: { privateProbability: number };
+      wolfProbabilities: Record<string, number>;
+    };
+    expect(kill).toMatchObject({ selected: game.villager, class: "private_knowledge" });
+    expect(kill.score.privateProbability).toBeCloseTo(0.8, 10);
+    expect(Object.values(kill.wolfProbabilities).sort((a, b) => a - b)).toEqual([0.7, 0.9]);
+  });
+
+  it("marks a night no_signal when a living wolf has no valid final distribution", async () => {
+    const game = recordedGame(({ villager }) => [
+      {
+        id: "complete",
+        actor: "wolf",
+        actual: villager,
+        privateView: { [villager]: 0.9 },
+        night: { point: true },
+      },
+      {
+        id: "missing",
+        actor: "wolf2",
+        actual: villager,
+        privateView: { [villager]: 0.9 },
+        distribution: false,
+        publicView: { [villager]: 0.05, no_death: 0.95 },
+        night: { point: true, dawn: villager },
+      },
+    ]);
+    const report = await run(game, scriptedReviewer(plain));
+    expect(report.moments).toHaveLength(1);
+    expect(report.moments[0]).toMatchObject({
+      class: "no_signal",
+      noSignalReason: expect.stringContaining("incomplete pack distributions"),
+    });
+  });
+
+  it("checks a pack claim against its subject wolf's own view, never the pack's union", async () => {
+    // halcyon's control: only the first wolf received this inspection.
+    const outcome = async (review: (game: ReturnType<typeof recordedGame>) => MomentReview) => {
+      const game = recordedGame((ids) => nights(ids).slice(0, 2));
+      const report = await run(
+        game,
+        scriptedReviewer(() => review(game)),
+      );
+      return report.reviews.find((r) => r.momentId === "kill-matches-dawn")!;
+    };
+    const knew = (subject: (game: ReturnType<typeof recordedGame>) => string | null) =>
+      outcome((game) => ({
+        ...plain(),
+        knowledgeClaims: [
+          claim("Knew the seer was village.", [game.wolfInspectionId], subject(game)),
+        ],
+      }));
+    expect(await knew((game) => game.wolf2)).toMatchObject({ status: "rejected_citation" });
+    expect(await knew(() => null)).toMatchObject({ status: "rejected_citation" });
+    expect(await knew((game) => game.wolf)).toMatchObject({ status: "accepted" });
+    expect(
+      await outcome((game) => ({ ...plain(), citedEventIds: [game.wolfInspectionId] })),
+    ).toMatchObject({ status: "rejected_citation" });
   });
 
   it("gives the reviewer every living wolf's decision-time briefing for a kill", async () => {
