@@ -94,6 +94,11 @@ export interface DecisionRequest<T> {
     automaticCache?: boolean;
     /** Shared new prefix: the first request goes alone, the rest wait for its first token. */
     warmGateKey?: string;
+    /**
+     * Recorded tokens of the previous turn (its prompt plus its reply) that bound everything
+     * before the last message, thinking blocks included; absent on a session's first turn.
+     */
+    replayedTokens?: number;
   };
   /** Claude only: every received reply, before parsing, so a harness can store it verbatim. */
   onClaudeReply?: (reply: {

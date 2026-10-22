@@ -31,8 +31,11 @@ export interface ClaudeSessionRecord {
   turns: { kind: string; user: string; assistant: ClaudeReplyContent }[];
   /** Prompt size of the latest answered request (cache reads and writes included). */
   lastPromptTokens: number | null;
-  /** That request plus its reply: what the next request re-sends before its new turn. */
-  lastTotalTokens: number;
+  /**
+   * That request plus its reply: what the next request re-sends before its new turn, and its
+   * spend ceiling. Null when either was unreported, which opens a new session.
+   */
+  lastTotalTokens: number | null;
   closed: boolean;
 }
 
@@ -106,7 +109,6 @@ export class ClaudeSessions {
         // Turns are only ever appended. A turn built from a stale record would rewrite history.
         if (latest?.id !== opened.id || latest.turns.length !== opened.turns.length)
           throw new Error(`Claude session ${opened.id} changed while a turn was in flight`);
-        const input = reply.usage.inputTokens ?? 0;
         this.save(call.gameId, {
           ...latest,
           turns: [
@@ -115,7 +117,10 @@ export class ClaudeSessions {
           ],
           turnCursor: pending.cursor,
           lastPromptTokens: reply.usage.inputTokens,
-          lastTotalTokens: input + (reply.usage.outputTokens ?? 0),
+          lastTotalTokens:
+            reply.usage.inputTokens === null || reply.usage.outputTokens === null
+              ? null
+              : reply.usage.inputTokens + reply.usage.outputTokens,
         });
       },
     };
@@ -132,6 +137,7 @@ export class ClaudeSessions {
       record.closed ||
       record.day !== call.packet.day ||
       record.model !== call.model ||
+      record.lastTotalTokens === null ||
       record.lastTotalTokens + estimatedTokens(turn) > limit
     );
   }
@@ -187,6 +193,9 @@ export class ClaudeSessions {
         { role: "user", content: [text(pendingTurn)] },
       ],
       automaticCache: true,
+      ...(record.turns.length && record.lastTotalTokens !== null
+        ? { replayedTokens: record.lastTotalTokens }
+        : {}),
       ...(record.turns.length === 0
         ? { warmGateKey: sharedPrefixKey(record.model, record.systemBlocks) }
         : {}),

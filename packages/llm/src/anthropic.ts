@@ -138,30 +138,42 @@ export class UnboundedClaudeContentError extends Error {
   override name = "UnboundedClaudeContentError";
 }
 
+type ClaudeBody = Anthropic.MessageCreateParamsNonStreaming;
+const blocksOf = (messages: Anthropic.MessageParam[]) =>
+  messages.flatMap((message) => (typeof message.content === "string" ? [] : message.content));
+/** A session's replayed turns may carry the model's own thinking; its recorded usage bounds it. */
+const REPLAYED_BLOCK_TYPES = new Set(["text", "thinking", "redacted_thinking"]);
+
 /**
  * Moon Council sends text only. Any other block (an image, a document, a URL- or file-backed
  * source) costs what it references, not what it serializes to, so it is refused before admission.
+ * The one exception is a session's replayed history, when `replayedTokens` (the previous turn's
+ * recorded prompt plus reply) bounds it: there the model's own thinking blocks may return.
  */
-function assertTextOnly(body: Anthropic.MessageCreateParamsNonStreaming): void {
-  const blocks = [
-    ...(Array.isArray(body.system) ? body.system : []),
-    ...body.messages.flatMap((message) =>
-      typeof message.content === "string" ? [] : message.content,
-    ),
-  ];
-  const other = blocks.find((block) => block.type !== "text");
-  if (other)
+function assertBoundedContent(body: ClaudeBody, replayedTokens: number | undefined): void {
+  const replayed = replayedTokens === undefined ? [] : body.messages.slice(0, -1);
+  const fresh = replayedTokens === undefined ? body.messages : body.messages.slice(-1);
+  const unbounded = [
+    ...(Array.isArray(body.system) ? body.system : []).filter((block) => block.type !== "text"),
+    ...blocksOf(fresh).filter((block) => block.type !== "text"),
+    ...blocksOf(replayed).filter((block) => !REPLAYED_BLOCK_TYPES.has(block.type)),
+  ][0];
+  if (unbounded)
     throw new UnboundedClaudeContentError(
-      `Claude request holds a ${other.type} block; only text can be bounded before sending`,
+      `Claude request holds a ${unbounded.type} block that its bytes or recorded usage cannot bound`,
     );
 }
 
-/** Upper bound on prompt tokens before sending: a token is never shorter than a UTF-8 byte. */
-const promptCeilingTokens = (body: Anthropic.MessageCreateParamsNonStreaming) =>
-  Buffer.byteLength(
-    JSON.stringify({ system: body.system, messages: body.messages, output: body.output_config }),
-    "utf8",
-  );
+/**
+ * Upper bound on prompt tokens before sending: a token is never shorter than a UTF-8 byte. A
+ * session's replayed history counts at its recorded tokens instead, plus the new turn's bytes.
+ */
+function promptCeilingTokens(body: ClaudeBody, replayedTokens: number | undefined): number {
+  const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
+  if (replayedTokens === undefined)
+    return bytes({ system: body.system, messages: body.messages, output: body.output_config });
+  return replayedTokens + bytes({ turn: body.messages.at(-1), output: body.output_config });
+}
 
 export interface ClaudeClient {
   messages: {
@@ -211,12 +223,13 @@ export class AnthropicMessagesProvider implements DecisionProvider {
   async decide<T>(request: DecisionRequest<T>): Promise<DecisionResult<T>> {
     const body = claudeRequest(request, this.maxTokensCap);
     assertClaudePriced(body.model);
-    assertTextOnly(body);
+    const replayedTokens = request.claudeHarness?.replayedTokens;
+    assertBoundedContent(body, replayedTokens);
     if (request.signal?.aborted) throw new Error("Claude decision aborted");
     const reservationId = randomUUID();
     const reservation = claudeReservationUsd(
       body.model,
-      promptCeilingTokens(body),
+      promptCeilingTokens(body, replayedTokens),
       body.max_tokens,
     );
     this.ledger.reserve(reservationId, reservation);
