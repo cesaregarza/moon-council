@@ -97,13 +97,16 @@ attempt with its category; no other model is tried.
   100,000 tokens.
 - **Per game:** `maxSpendUsd` is required for any game with Claude seats; for a pilot, pass
   `--max-spend-usd`. Each call is admitted only if settled spend, plus unsettled calls at their
-  worst case, plus this call's worst case (estimated prompt plus output cap), fits. Reaching the
-  limit ends the game as `budget_exhausted`.
+  worst case, plus this call's worst case, fits. The worst case bounds the prompt by its UTF-8 byte
+  length (a token is never shorter than a byte), prices it as 1-hour cache writes at the
+  long-context rate whenever that bound could cross the threshold, and adds the output cap. Settled
+  calls count the provider's actual cost. Reaching the limit ends the game as `budget_exhausted`.
 - **Per month:** a ledger outside the repository and game databases (default
   `~/.moon-council/claude-spend.json`, or `MOON_COUNCIL_SPEND_LEDGER`) holds UTC calendar-month
   spend. The default limit is $200 (`MOON_COUNCIL_CLAUDE_MONTHLY_LIMIT_USD`). Each call reserves its
-  worst case before sending and settles to the actual cost afterwards. A corrupt or unreadable
-  ledger, or a held lock, refuses calls; it is never reset to zero.
+  worst case before sending and settles to the actual cost afterwards, in the month it was reserved,
+  even when a stale reservation was already swept at its worst case. A corrupt or unreadable ledger,
+  or a held lock, refuses calls; it is never reset to zero.
 
 Check the month's spend at any time, with no API call:
 

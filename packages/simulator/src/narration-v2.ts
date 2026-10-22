@@ -291,6 +291,10 @@ export class NarrationV2 {
           signal: controller.signal,
           timeoutMs,
           onUsage,
+          onProviderMetadata: (metadata) => {
+            attempt.providerMetadata = { ...attempt.providerMetadata, ...metadata };
+            this.store.updateAttempt(attempt);
+          },
         });
         const result = await Promise.race([call, abortPromise]);
         receivedResult = true;

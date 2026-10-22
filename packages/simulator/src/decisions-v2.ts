@@ -6,7 +6,7 @@ import {
   type DecisionReportV2,
   type GameConfigV2,
 } from "@werewolf/contracts";
-import { DecisionStore, LabRepository } from "@werewolf/db";
+import { DecisionStore, LabRepository, type ProviderAttemptRecord } from "@werewolf/db";
 import { type EngineEventInput } from "@werewolf/engine";
 import {
   AskJevProvider,
@@ -94,27 +94,34 @@ export interface NextCallReservation {
 /** Claude output cap assumed when a recorded call set none (the provider's default cap). */
 const CLAUDE_DEFAULT_OUTPUT_CAP = 16_000;
 
+/** `estimatedTokens` is UTF-8 bytes / 3; a token is never shorter than a byte, so 3x bounds it. */
+const promptCeilingTokens = (estimate: number) => 3 * estimate;
+
+/** The provider's actual cost when recorded, else the cost from usage, else the worst case. */
+function claudeAttemptUsd(attempt: ProviderAttemptRecord): number {
+  const actual = attempt.providerMetadata?.costUsd;
+  if (typeof actual === "number") return actual;
+  return (
+    claudeUsageCostUsd(attempt.model, attempt.usage) ??
+    claudeReservationUsd(
+      attempt.model,
+      promptCeilingTokens(estimatedTokens(attempt.request)),
+      attempt.maxOutputTokens ?? CLAUDE_DEFAULT_OUTPUT_CAP,
+    )
+  );
+}
+
 /** Settled Claude calls at actual cost; unsettled ones stay reserved at their worst case. */
 function claudeSpendUsd(store: DecisionStore, gameId: string, next?: NextCallReservation): number {
   const settled = store
     .attempts(gameId)
     .filter((attempt) => attempt.provider === "anthropic")
-    .reduce(
-      (sum, attempt) =>
-        sum +
-        (claudeUsageCostUsd(attempt.model, attempt.usage) ??
-          claudeReservationUsd(
-            attempt.model,
-            estimatedTokens(attempt.request),
-            attempt.maxOutputTokens ?? CLAUDE_DEFAULT_OUTPUT_CAP,
-          )),
-      0,
-    );
+    .reduce((sum, attempt) => sum + claudeAttemptUsd(attempt), 0);
   return next?.provider === "anthropic"
     ? settled +
         claudeReservationUsd(
           next.model,
-          next.inputTokens,
+          promptCeilingTokens(next.inputTokens),
           next.maxOutputTokens ?? CLAUDE_DEFAULT_OUTPUT_CAP,
         )
     : settled;
