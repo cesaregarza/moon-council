@@ -149,6 +149,10 @@ async function packNight(script: NightScript) {
       .sort((a, b) => a.sequence - b.sequence)
       .map((entry) => entry.op);
   const agreement = repository.listEvents(game.id).find((e) => e.type === "team.agreement_frozen");
+  const killOps = Object.fromEntries(wolves.map((w) => [w, points(w)])) as Record<
+    string,
+    DecisionOpportunityV1[]
+  >;
   const finalOps = Object.fromEntries(wolves.map((w) => [w, points(w).at(-1)!])) as Record<
     string,
     DecisionOpportunityV1
@@ -165,6 +169,7 @@ async function packNight(script: NightScript) {
     wolfInspectionId,
     agreementId: agreement?.id,
     finalOps,
+    killOps,
     dawned: done,
   };
 }
@@ -218,6 +223,14 @@ const plain = (): MomentReview =>
 
 async function analyze(night: Night, review: () => MomentReview = plain) {
   const dossiers: Record<string, unknown>[] = [];
+  const predictions = { calls: 0 };
+  const dawn = dawnJev(night.victim);
+  const counted: DecisionProvider = {
+    decide: (request) => {
+      predictions.calls += 1;
+      return dawn.decide(request);
+    },
+  };
   const reviewer: DecisionProvider = {
     decide: async (request) => {
       dossiers.push(JSON.parse(request.preparedPrompt!.input));
@@ -233,12 +246,12 @@ async function analyze(night: Night, review: () => MomentReview = plain) {
     dbPath: night.dbPath,
     gameId: night.gameId,
     outDir: join(night.directory, "analysis"),
-    jev: dawnJev(night.victim),
+    jev: counted,
     jevModel: "jev-latest",
     review: { provider: reviewer, kind: "fake", model: "review" },
   });
   const kills = report.moments.filter((m) => m.kind === "night_action");
-  return { report, kills, dossiers };
+  return { report, kills, dossiers, predictions };
 }
 
 type Kill = {
@@ -582,4 +595,122 @@ describe("pack nights with inconsistent records", () => {
     });
     await inconsistent(night, "2 agreements");
   });
+});
+
+/**
+ * Felix's seventh invariant (commit binding) and no calls for no-signal moments (CES-1040 ruling
+ * 0a07760e), on real orchestrator nights that are then damaged.
+ */
+describe("pack night commit binding and no-signal calls", () => {
+  const split: NightScript["rounds"] = [
+    [
+      { at: "victim", p: 0.6 },
+      { at: "other", p: 0.6 },
+    ],
+    [
+      { at: "victim", p: 0.9 },
+      { at: "victim", p: 0.7 },
+    ],
+  ];
+  type Sql = LabRepository["connection"]["sqlite"];
+  type EventRow = Record<string, unknown> & { id: string; sequence: number; payload_json: string };
+  const commitOf = (sql: Sql, night: Night, op: DecisionOpportunityV1) =>
+    sql
+      .prepare(
+        "SELECT * FROM events WHERE game_id=? AND type='decision.committed' AND payload_json LIKE ?",
+      )
+      .get(night.gameId, `%"decisionId":"${op.id}"%`) as EventRow;
+  const expectNoSignal = async (night: Night, reason: string) => {
+    const { kills } = await analyze(night);
+    expect(kills).toHaveLength(1);
+    expect(kills[0]).toMatchObject({
+      class: "no_signal",
+      noSignalReason: expect.stringContaining(reason),
+    });
+  };
+
+  it.each(["agent_v3_2", "agent_v3_1"] as const)(
+    "binds each final point to the wolf's latest committed op (%s)",
+    async (protocol) => {
+      // halcyon's case: the earlier commit removed, the final commit pointed at the earlier op,
+      // the final op retained without a commit of its own.
+      const night = await packNight({ protocol, rounds: split });
+      edit(night, (sql) => {
+        const [earlier, final] = night.killOps[night.wolves[1]!]! as [
+          DecisionOpportunityV1,
+          DecisionOpportunityV1,
+        ];
+        sql.prepare("DELETE FROM events WHERE id=?").run(commitOf(sql, night, earlier).id);
+        const commit = commitOf(sql, night, final);
+        const payload = { ...JSON.parse(commit.payload_json), decisionId: earlier.id };
+        sql
+          .prepare("UPDATE events SET payload_json=? WHERE id=?")
+          .run(JSON.stringify(payload), commit.id);
+      });
+      await expectNoSignal(night, "commit binding");
+    },
+  );
+
+  it.each(["agent_v3_2", "agent_v3_1"] as const)(
+    "refuses a committed op with two commit events (%s)",
+    async (protocol) => {
+      const night = await packNight({ protocol, rounds: split });
+      edit(night, (sql) => {
+        const commit = commitOf(sql, night, night.finalOps[night.wolves[1]!]!);
+        sql
+          .prepare("UPDATE events SET sequence = -(sequence + 1) WHERE game_id=? AND sequence > ?")
+          .run(night.gameId, commit.sequence);
+        sql
+          .prepare("UPDATE events SET sequence = -sequence WHERE game_id=? AND sequence < 0")
+          .run(night.gameId);
+        const { row_id: _rowId, ...fields } = commit;
+        const columns = Object.keys(fields);
+        sql
+          .prepare(
+            `INSERT INTO events (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+          )
+          .run(
+            ...columns.map((column) =>
+              column === "id"
+                ? `${commit.id}-twice`
+                : column === "sequence"
+                  ? commit.sequence + 1
+                  : fields[column],
+            ),
+          );
+      });
+      await expectNoSignal(night, "commit binding");
+    },
+  );
+
+  it("makes no prediction or review call for a no-signal night", async () => {
+    // A decision-only night: the freeze and every team.point removed, the decisions kept.
+    const night = await packNight({ rounds: split });
+    edit(night, (sql) =>
+      sql
+        .prepare(
+          "DELETE FROM events WHERE game_id=? AND type IN ('team.agreement_frozen', 'team.point')",
+        )
+        .run(night.gameId),
+    );
+    const { kills, predictions, dossiers } = await analyze(night);
+    expect(kills).toHaveLength(1);
+    expect(kills[0]).toMatchObject({
+      class: "no_signal",
+      noSignalReason: expect.stringContaining("missing freeze"),
+    });
+    expect(predictions.calls).toBe(0);
+    expect(dossiers).toHaveLength(0);
+  });
+
+  it.each(["agent_v3_2", "agent_v3_1"] as const)(
+    "keeps a real split-then-agree night scored (%s)",
+    async (protocol) => {
+      const night = await packNight({ protocol, rounds: split });
+      const { kills, predictions } = await analyze(night);
+      expect(kills).toHaveLength(1);
+      expect(kills[0]).toMatchObject({ class: "private_knowledge", selected: night.victim });
+      expect(predictions.calls).toBe(1);
+    },
+  );
 });
