@@ -64,6 +64,7 @@ function fakeClient(replies: Anthropic.Message[]) {
         bodies.push(body);
         const reply = replies.shift();
         return {
+          on: () => undefined,
           finalMessage: async () => {
             if (!reply) throw new Error("no scripted reply");
             return reply as never;
@@ -310,5 +311,57 @@ describe("Claude refusals", () => {
       stopReason: "refusal",
       stopDetails: { category: "cyber" },
     });
+  });
+});
+
+describe("Claude warm gate in the provider", () => {
+  it("holds a second request with the same shared prefix until the first streams", async () => {
+    const started: string[] = [];
+    const streams: { emit: () => void; finish: () => void }[] = [];
+    const client: ClaudeClient = {
+      messages: {
+        stream(body) {
+          started.push(JSON.stringify(body.messages));
+          let listener: ((event: Anthropic.MessageStreamEvent) => void) | undefined;
+          let finish!: () => void;
+          const done = new Promise<void>((resolve) => (finish = resolve));
+          streams.push({
+            emit: () =>
+              listener?.({
+                type: "content_block_start",
+                index: 0,
+                content_block: { type: "text", text: "", citations: null },
+              } as Anthropic.MessageStreamEvent),
+            finish,
+          });
+          return {
+            on: (_event, handler) => (listener = handler),
+            finalMessage: async () => {
+              await done;
+              return message();
+            },
+            abort: () => undefined,
+          };
+        },
+      },
+    };
+    const provider = new AnthropicMessagesProvider({ client, ledger: ledger() });
+    const gated = (turn: string) =>
+      request({
+        claudeHarness: {
+          system: [{ type: "text", text: "shared" }],
+          messages: [{ role: "user", content: turn }],
+          warmGateKey: "day-1",
+        },
+      });
+    const first = provider.decide(gated("seat 1"));
+    const second = provider.decide(gated("seat 2"));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(started).toHaveLength(1);
+    streams[0]!.emit();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(started).toHaveLength(2);
+    streams.forEach((stream) => stream.finish());
+    await Promise.all([first, second]);
   });
 });
