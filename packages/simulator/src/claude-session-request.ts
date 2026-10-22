@@ -99,7 +99,7 @@ export function turnText(packet: PlayerContextV2, cursors: TurnCursors, requestI
   };
   return {
     text: [
-      JSON.stringify({ NEW_RECORDS: render(packet, fresh).reverse() }),
+      JSON.stringify({ NEW_RECORDS: render(packet, fresh) }),
       JSON.stringify({ NOW: now }),
       requestInput,
     ].join("\n"),
