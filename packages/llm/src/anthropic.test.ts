@@ -14,7 +14,7 @@ import {
 } from "./anthropic";
 import { claudeCostUsd, claudeReservationUsd, UnpricedModelError } from "./anthropic-pricing";
 import type { DecisionRequest } from "./provider";
-import { ClaudeSpendLedger } from "./spend-ledger";
+import { ClaudeSpendLedger, SpendLimitError } from "./spend-ledger";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -286,6 +286,24 @@ describe("Claude usage and cost", () => {
     // 50K uncached Haiku input at $0.10/M plus 50 output tokens at $0.50/M (under 100K).
     expect(book.status().settledUsd).toBeCloseTo(0.005 + 50 * 0.5e-6, 8);
     expect(book.status().openReservations).toBe(0);
+  });
+
+  it("reserves against the prompt's byte length, so a long Haiku prompt is never under-reserved", async () => {
+    // 60K three-byte characters: about 20K tokens by characters/3, but up to 180K tokens by bytes,
+    // past Haiku's 100K threshold. Admitted, the scripted reply would settle above $200.
+    const prompt = "\u20ac".repeat(60_000);
+    const { client, bodies } = fakeClient([
+      message({ usage: usage({ input_tokens: 120_000, output_tokens: 4_000 }) }),
+    ]);
+    const book = ledger();
+    book.reserve("earlier", 199.965);
+    book.settle("earlier", 199.965);
+    const call = new AnthropicMessagesProvider({ client, ledger: book }).decide(
+      request({ preparedPrompt: { instructions: "Act.", input: prompt } }),
+    );
+    await expect(call).rejects.toBeInstanceOf(SpendLimitError);
+    expect(bodies).toHaveLength(0);
+    expect(book.status().settledUsd).toBeLessThanOrEqual(200);
   });
 });
 

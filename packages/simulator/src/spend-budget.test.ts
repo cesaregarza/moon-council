@@ -138,6 +138,60 @@ describe("per-game Claude spend admission", () => {
     ).toThrow(/spend/);
   });
 
+  it("bounds the next call's prompt by its bytes, pricing a possible long Haiku prompt high", () => {
+    // A 40K estimate (bytes / 3) can be up to 120K tokens: past 100K, so long-tier rates apply.
+    // Long tier: 120K at $1/M plus 4K output at $2.50/M = $0.13; by the estimate alone, $0.01.
+    const game = ledger(0.05);
+    const next = {
+      provider: "anthropic",
+      model: "claude-haiku-5-5",
+      inputTokens: 40_000,
+      maxOutputTokens: 4_000,
+    };
+    expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, true, next)).toThrow(
+      /spend/,
+    );
+  });
+
+  it("prices cache writes of unknown TTL at the 1-hour rate", () => {
+    // 10K Opus 5.5 write tokens: $0.08 at the 1-hour rate ($8/M), $0.05 at the 5-minute rate.
+    const game = ledger(0.09);
+    const record = game.attempt("claude-opus-5-5", 1_000);
+    game.settle(record, 10_000, 0);
+    record.usage = { ...record.usage, cacheWriteInputTokens: 10_000 };
+    game.store.updateAttempt(record);
+    const next = {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      inputTokens: 0,
+      maxOutputTokens: 1_040, // $0.0208 at $20/M
+    };
+    expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, true, next)).toThrow(
+      /spend/,
+    );
+  });
+
+  it("uses the provider's actual attempt cost when it is recorded", () => {
+    const game = ledger(0.09);
+    const record = game.attempt("claude-opus-5-5", 1_000);
+    game.settle(record, 10_000, 0);
+    record.usage = { ...record.usage, cacheWriteInputTokens: 10_000 };
+    record.providerMetadata = { costUsd: 0.05 }; // all 5-minute writes
+    game.store.updateAttempt(record);
+    const next = {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      inputTokens: 0,
+      maxOutputTokens: 1_040,
+    };
+    expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, true, next)).not.toThrow();
+    record.providerMetadata = { costUsd: 0.08 }; // all 1-hour writes
+    game.store.updateAttempt(record);
+    expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, true, next)).toThrow(
+      /spend/,
+    );
+  });
+
   it("fails closed for a Claude model with no price", () => {
     const game = ledger(100);
     game.settle(game.attempt("claude-unpriced-9", 1_000), 10, 10);
