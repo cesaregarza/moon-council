@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,8 +9,9 @@ import { DecisionStore, LabRepository, openDatabase } from "@werewolf/db";
 import { DOCTOR_V2, STARTER_ROLES, reduceGame } from "@werewolf/engine";
 import { FakeDecisionProvider, type DecisionProvider, type JevRequest } from "@werewolf/llm";
 import { buildContextV2 } from "../packages/simulator/src/context-v2";
+import { actorBriefing } from "../packages/simulator/src/jev-actor";
 import { V2GameOrchestrator } from "../packages/simulator/src/orchestrator-v2";
-import { actorConfig } from "../packages/simulator/src/testing/actor-fixtures";
+import { actorConfig, refreshFixtureBrief } from "../packages/simulator/src/testing/actor-fixtures";
 import { analyzeGame, postGameAnalysisRequest } from "./game-analyze";
 import type { MomentReview } from "./lib/analyze-review";
 
@@ -21,20 +23,26 @@ afterEach(() => {
 type Distribution = Record<string, number>;
 interface ScriptedMoment {
   id: string;
-  actor: "seer" | "villager";
+  actor: "seer" | "villager" | "wolf";
   /** A player ID, or "abstain". */
   actual: string;
   /** Jev's recorded distribution when the player decided. */
   privateView: Distribution;
   /** Jev's public-record prediction, scripted for the analyzer's call. */
   publicView: Distribution;
+  /** A night action, followed by its dawn: the player found dead, or null for no death. */
+  night?: { dawn: string | null };
+  /** The actor's current decision brief (what Jev was given as current reasoning). */
+  brief?: string;
 }
 
 /**
  * A recorded game on disk: a seer who inspected a wolf, and committed ballots with recorded Jev
  * distributions, written straight into the store as the executor would have.
  */
-function recordedGame(script: (ids: { wolf: string; other: string }) => ScriptedMoment[]) {
+function recordedGame(
+  script: (ids: { wolf: string; other: string; villager: string }) => ScriptedMoment[],
+) {
   const directory = mkdtempSync(join(tmpdir(), "game-analyze-"));
   directories.push(directory);
   const dbPath = join(directory, "game.db");
@@ -70,22 +78,32 @@ function recordedGame(script: (ids: { wolf: string; other: string }) => Scripted
   });
   const inspectionId = repository.listEvents(game.id).at(-1)!.id;
   const store = new DecisionStore(repository);
-  const moments = script({ wolf, other });
+  const moments = script({ wolf, other, villager });
+  const ops: Record<string, DecisionOpportunityV1> = {};
   for (const moment of moments) {
-    const actor = moment.actor === "seer" ? seer : villager;
+    const actor = { seer, villager, wolf }[moment.actor];
     const events = repository.listEvents(game.id);
-    state = { ...reduceGame(game.id, events), phase: "day_vote" };
-    const packet = buildContextV2(state, events, actor, emptyJournalV2(), moment.id, "vote");
+    const night = moment.night !== undefined;
+    state = { ...reduceGame(game.id, events), phase: night ? "night_actions" : "day_vote" };
+    const packet = buildContextV2(
+      state,
+      events,
+      actor,
+      emptyJournalV2(),
+      moment.id,
+      night ? "night_action" : "vote",
+    );
+    if (moment.brief) refreshFixtureBrief(packet, moment.brief);
     const handle = (id: string) =>
       id === "abstain" ? "abstain" : String.fromCharCode(97 + packet.legalTargets.indexOf(id));
     const op = {
       id: moment.id,
       gameId: game.id,
       playerId: actor,
-      kind: "vote",
-      phase: "day_vote",
+      kind: night ? "night_action" : "vote",
+      phase: night ? "night_actions" : "day_vote",
       day: 1,
-      epoch: "1:day_vote",
+      epoch: night ? "1:night_actions" : "1:day_vote",
       viewId: moment.id,
       baseJournalVersion: 0,
       packet,
@@ -93,9 +111,10 @@ function recordedGame(script: (ids: { wolf: string; other: string }) => Scripted
       best: null,
       recovery: 0,
       createdAt: "2026-10-22T00:00:00.000Z",
-      taskType: "vote_choice",
+      taskType: night ? "night_choice" : "vote_choice",
     } as DecisionOpportunityV1;
     store.save(op);
+    ops[moment.id] = op;
     const attempt = store.beginAttempt(op, {
       model: "jev-latest",
       provider: "jev",
@@ -125,15 +144,39 @@ function recordedGame(script: (ids: { wolf: string; other: string }) => Scripted
         playerId: actor,
         decisionId: moment.id,
         proposal: {
-          kind: "vote",
+          kind: night ? "night_action" : "vote",
           targets:
             moment.actual === "abstain" ? null : { mode: "direct", playerIds: [moment.actual] },
         },
       },
     });
+    if (moment.night) dawn(repository, game.id, moment.night.dawn);
   }
   connection.close();
-  return { dbPath, gameId: game.id, directory, inspectionId, seer, villager, moments };
+  return { dbPath, gameId: game.id, directory, inspectionId, seer, villager, moments, ops };
+}
+
+/** The engine's night resolution: a public death (or none), then the moderator's summary. */
+function dawn(repository: LabRepository, gameId: string, dead: string | null) {
+  const at = { day: 1, phase: "night_resolution" as const };
+  if (dead)
+    repository.appendEvent(gameId, {
+      ...at,
+      type: "player.eliminated",
+      visibility: "public",
+      payload: { playerId: dead, cause: "night" },
+    });
+  repository.appendEvent(gameId, {
+    ...at,
+    type: "night.resolved",
+    visibility: "moderator",
+    payload: {
+      blockedActorIds: [],
+      protectedPlayerIds: [],
+      eliminatedPlayerIds: dead ? [dead] : [],
+      skippedUnanimousGroups: [],
+    },
+  });
 }
 
 /** Answers each public-view request from the script, translating player IDs to handles. */
@@ -168,22 +211,28 @@ function scriptedJev(moments: ScriptedMoment[]): DecisionProvider {
 }
 
 /** A review model whose citations the test controls per moment. */
-function scriptedReviewer(reviews: (momentId: string) => MomentReview) {
+function scriptedReviewer(
+  reviews: (momentId: string) => MomentReview,
+  reported = { outputTokens: 100, outputLimitEnforced: true },
+) {
   const calls: string[] = [];
+  const dossiers: Record<string, unknown>[] = [];
   const provider: DecisionProvider = {
     decide: async (request) => {
-      const momentId = JSON.parse(request.preparedPrompt!.input).moment.id as string;
+      const dossier = JSON.parse(request.preparedPrompt!.input);
+      const momentId = dossier.moment.id as string;
       calls.push(momentId);
+      dossiers.push(dossier);
       request.onUsage?.(
         {
           inputTokens: 900,
-          outputTokens: 100,
-          totalTokens: 1_000,
+          outputTokens: reported.outputTokens,
+          totalTokens: 900 + reported.outputTokens,
           cachedInputTokens: 0,
           cacheWriteInputTokens: 0,
           reasoningTokens: null,
         },
-        { provider: "fake", model: "review", outputLimitEnforced: true },
+        { provider: "fake", model: "review", outputLimitEnforced: reported.outputLimitEnforced },
       );
       request.onProviderMetadata?.({ costUsd: 0.01 });
       return {
@@ -194,15 +243,18 @@ function scriptedReviewer(reviews: (momentId: string) => MomentReview) {
       };
     },
   };
-  return { provider, calls };
+  return { provider, calls, dossiers };
 }
 
-const plain = (): MomentReview => ({
-  explanation: "Routine.",
-  citedEventIds: [],
-  knowledgeClaims: [],
-  regressionCandidate: false,
-});
+// Cast so the fixture compiles against a schema without groundTruth (tests-first commit).
+const plain = (): MomentReview =>
+  ({
+    explanation: "Routine.",
+    citedEventIds: [],
+    knowledgeClaims: [],
+    groundTruth: "",
+    regressionCandidate: false,
+  }) as MomentReview;
 
 /** The CES-1040 fixture: three noteworthy moments, three routine ones and one flat prediction. */
 const fixture = ({ wolf, other }: { wolf: string; other: string }): ScriptedMoment[] => [
@@ -246,16 +298,17 @@ const fixture = ({ wolf, other }: { wolf: string; other: string }): ScriptedMome
 async function run(
   game: ReturnType<typeof recordedGame>,
   reviewer: ReturnType<typeof scriptedReviewer>,
-  options: { cap?: number; tokenBudget?: number } = {},
+  options: Partial<Parameters<typeof analyzeGame>[0]> & { kind?: string } = {},
 ) {
+  const { kind = "fake", ...rest } = options;
   return analyzeGame({
     dbPath: game.dbPath,
     gameId: game.gameId,
     outDir: join(game.directory, "analysis"),
     jev: scriptedJev(game.moments),
     jevModel: "jev-latest",
-    review: { provider: reviewer.provider, kind: "fake", model: "review" },
-    ...options,
+    review: { provider: reviewer.provider, kind, model: "review" },
+    ...rest,
   });
 }
 
@@ -334,6 +387,13 @@ describe("post-game surprise analyzer", () => {
 
   it("keeps the automatic post-game run off unless asked, and then needs a review model", () => {
     expect(postGameAnalysisRequest({})).toBeNull();
+    // A configured review model alone never turns the run on (fails on the assertion, not a throw).
+    expect(
+      postGameAnalysisRequest({
+        "review-provider": "anthropic",
+        "review-model": "claude-opus-5-5",
+      }),
+    ).toBeNull();
     expect(() => postGameAnalysisRequest({ analyze: true })).toThrow(/--review-provider/);
     expect(
       postGameAnalysisRequest({
@@ -342,5 +402,225 @@ describe("post-game surprise analyzer", () => {
         "review-model": "claude-opus-5-5",
       }),
     ).toEqual({ kind: "anthropic", model: "claude-opus-5-5" });
+  });
+});
+
+// halcyon's controls from the PR #23 review (CES-1040, 03:25Z), as regression tests.
+describe("post-game analyzer safety and accounting", () => {
+  const dbHash = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
+
+  it("refuses to run when a report path is the database, and leaves it unchanged", async () => {
+    const game = recordedGame(fixture);
+    const outDir = join(game.directory, "analysis");
+    mkdirSync(outDir);
+    const dbPath = join(outDir, "analysis.json");
+    renameSync(game.dbPath, dbPath);
+    const before = dbHash(dbPath);
+    const reviewer = scriptedReviewer(plain);
+    await expect(run({ ...game, dbPath }, reviewer)).rejects.toThrow(/database/);
+    expect(dbHash(dbPath)).toBe(before);
+    expect(reviewer.calls).toHaveLength(0);
+  });
+
+  it("refuses a report path that links to the database or its -wal file", async () => {
+    const game = recordedGame(fixture);
+    const outDir = join(game.directory, "analysis");
+    mkdirSync(outDir);
+    const before = dbHash(game.dbPath);
+    symlinkSync(game.dbPath, join(outDir, "analysis.json"));
+    await expect(run(game, scriptedReviewer(plain))).rejects.toThrow(/analysis\.json/);
+    rmSync(join(outDir, "analysis.json"));
+    symlinkSync(`${game.dbPath}-wal`, join(outDir, "analysis.md"));
+    await expect(run(game, scriptedReviewer(plain))).rejects.toThrow(/analysis\.md/);
+    expect(dbHash(game.dbPath)).toBe(before);
+  });
+
+  it("never overwrites a file that is not a previous report", async () => {
+    const game = recordedGame(fixture);
+    const outDir = join(game.directory, "analysis");
+    mkdirSync(outDir);
+    writeFileSync(join(outDir, "analysis.md"), "my notes\n");
+    await expect(run(game, scriptedReviewer(plain))).rejects.toThrow(/previous report/);
+    expect(readFileSync(join(outDir, "analysis.md"), "utf8")).toBe("my notes\n");
+  });
+
+  it("refuses a review provider that does not enforce the output cap", async () => {
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain);
+    const refused = run(game, reviewer, { kind: "codex" });
+    await expect(refused).rejects.toMatchObject({ name: "UnenforcedOutputLimitError" });
+    expect(reviewer.calls).toHaveLength(0);
+  });
+
+  it("stops reviewing when a provider reports an unenforced cap, settling its reported usage", async () => {
+    // halcyon's control: a 10,000-token budget, a 100-token cap, and a call reporting 21,000.
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain, {
+      outputTokens: 20_100,
+      outputLimitEnforced: false,
+    });
+    const report = await run(game, reviewer, { tokenBudget: 10_000, maxOutputTokens: 100 });
+    expect(reviewer.calls).toHaveLength(1);
+    expect(report.reviews[0]).toMatchObject({
+      status: "failed",
+      error: expect.stringMatching(/output limit/),
+    });
+    expect(report.reviews.slice(1).every((review) => review.status === "skipped_budget")).toBe(
+      true,
+    );
+    expect(report.usage.review.tokens).toBe(21_000);
+  });
+
+  it.each([
+    ["tokenBudget", Number.NaN],
+    ["tokenBudget", -1],
+    ["cap", Number.NaN],
+    ["cap", -3],
+    ["recall", 1.5],
+    ["maxOutputTokens", Number.POSITIVE_INFINITY],
+  ])("refuses to start with %s = %s", async (flag, value) => {
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain);
+    const options = { [flag]: value } as Partial<Parameters<typeof analyzeGame>[0]>;
+    await expect(run(game, reviewer, options)).rejects.toThrow(flag);
+    expect(reviewer.calls).toHaveLength(0);
+  });
+
+  it("rejects a cited event the actor could not see, even with no knowledge claims", async () => {
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer((momentId) =>
+      momentId === "unexplained-vote"
+        ? {
+            ...plain(),
+            explanation: "The villager knew the wolf from the seer's inspection.",
+            citedEventIds: [game.inspectionId],
+          }
+        : plain(),
+    );
+    const report = await run(game, reviewer, { cap: 3 });
+    const review = report.reviews.find((r) => r.momentId === "unexplained-vote");
+    expect(review).toMatchObject({ status: "rejected_citation" });
+    expect(JSON.stringify(review)).toContain("could not see before deciding");
+  });
+
+  it("rejects a citation of an event after the decision", async () => {
+    const game = recordedGame(fixture);
+    const connection = openDatabase(game.dbPath);
+    const repository = new LabRepository(connection);
+    repository.appendEvent(game.gameId, {
+      day: 2,
+      phase: "day_discussion",
+      type: "speech.public",
+      visibility: "public",
+      payload: { playerId: game.seer, text: "Later.", acts: [], respondsTo: [], closing: false },
+    });
+    const futureId = repository.listEvents(game.gameId).at(-1)!.id;
+    connection.close();
+    const reviewer = scriptedReviewer((momentId) =>
+      momentId === "seer-votes-doubted-wolf" ? { ...plain(), citedEventIds: [futureId] } : plain(),
+    );
+    const report = await run(game, reviewer, { cap: 3 });
+    const review = report.reviews.find((r) => r.momentId === "seer-votes-doubted-wolf");
+    expect(review).toMatchObject({ status: "rejected_citation" });
+    expect(JSON.stringify(review)).toContain(`${futureId}, which`);
+  });
+
+  it("keeps hidden ground truth in its own field, outside the cited evidence", async () => {
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer((momentId) => ({
+      ...plain(),
+      groundTruth: momentId === "unexplained-vote" ? "The voted player was a villager." : "",
+    }));
+    const report = await run(game, reviewer, { cap: 3 });
+    expect(report.reviews.find((r) => r.momentId === "unexplained-vote")).toMatchObject({
+      status: "accepted",
+      review: { groundTruth: "The voted player was a villager." },
+    });
+  });
+
+  it("gives the reviewer the actor's decision-time briefing exactly as Jev received it", async () => {
+    const brief = "BRIEF-CANARY: the seer's own inspection found the wolf.";
+    const game = recordedGame((ids) =>
+      fixture(ids).map((moment) =>
+        moment.id === "seer-votes-doubted-wolf" ? { ...moment, brief } : moment,
+      ),
+    );
+    const reviewer = scriptedReviewer(plain);
+    await run(game, reviewer, { cap: 3 });
+    const dossier = reviewer.dossiers.find(
+      (d) => (d.moment as { id: string }).id === "seer-votes-doubted-wolf",
+    )!;
+    const expected = actorBriefing(game.ops["seer-votes-doubted-wolf"]!);
+    expect(expected.currentReasoning).toBe(brief);
+    expect(dossier.actorBriefing).toEqual(JSON.parse(JSON.stringify(expected)));
+  });
+
+  it("records Jev's tokens per call alongside the review usage", async () => {
+    const game = recordedGame(fixture);
+    const report = await run(game, scriptedReviewer(plain));
+    expect(report.usage).toMatchObject({
+      jev: { calls: 7, inputTokens: 70, outputTokens: 35, totalTokens: 105, costUsd: null },
+    });
+    const perCall = (report.usage as unknown as { jev: { perCall: unknown[] } }).jev.perCall;
+    expect(perCall).toHaveLength(7);
+    expect(perCall[0]).toEqual({
+      momentId: "seer-votes-doubted-wolf",
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+      costUsd: null,
+    });
+  });
+});
+
+describe("post-game analyzer night moments", () => {
+  // Felix's ruling on finding 2: only the wolves' kill is a night moment, scored on the dawn.
+  const nights = ({ other, villager }: { other: string; villager: string }) => {
+    return [
+      {
+        id: "kill-matches-dawn",
+        actor: "wolf" as const,
+        actual: villager,
+        privateView: { [villager]: 0.9, [other]: 0.1 },
+        publicView: { [villager]: 0.05, [other]: 0.15, no_death: 0.8 },
+        night: { dawn: villager },
+      },
+      {
+        id: "kill-protected",
+        actor: "wolf" as const,
+        actual: other,
+        privateView: { [other]: 0.95 },
+        publicView: { [other]: 0.1, no_death: 0.9 },
+        night: { dawn: null },
+      },
+      // halcyon's control: a Seer inspects, nobody dies, the public expects no death.
+      {
+        id: "seer-inspects",
+        actor: "seer" as const,
+        actual: other,
+        privateView: { [other]: 1 },
+        publicView: { no_death: 1 },
+        night: { dawn: null },
+      },
+    ];
+  };
+
+  it("scores a kill on the dawn outcome, marks a protected kill no_signal, and skips the seer", async () => {
+    const game = recordedGame(nights);
+    const report = await run(game, scriptedReviewer(plain));
+    const byId = Object.fromEntries(report.moments.map((m) => [m.id, m]));
+    expect(byId["seer-inspects"]).toBeUndefined();
+    expect(byId["kill-matches-dawn"]).toMatchObject({
+      kind: "night_action",
+      actual: game.villager,
+      selected: game.villager,
+      class: "private_knowledge",
+      score: { publicProbability: 0.05, privateProbability: 0.9 },
+    });
+    expect(byId["kill-protected"]).toMatchObject({
+      actual: "no_death",
+      class: "no_signal",
+      noSignalReason: expect.stringContaining("dawn"),
+    });
   });
 });
