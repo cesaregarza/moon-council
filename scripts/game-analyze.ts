@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { DecisionStore, LabRepository, openDatabase } from "@werewolf/db";
+import { DecisionStore, LabRepository, openDatabaseReadOnly } from "@werewolf/db";
 import { reduceGame } from "@werewolf/engine";
 import {
   AskJevProvider,
@@ -34,12 +34,11 @@ export interface AnalyzeOptions {
  * written next to the run's research.json and never committed.
  */
 export async function analyzeGame(options: AnalyzeOptions) {
-  const connection = openDatabase(options.dbPath);
+  const connection = openDatabaseReadOnly(options.dbPath);
   try {
     const repository = new LabRepository(connection);
     const game = repository.getGame(options.gameId);
     if (!game) throw new Error(`Unknown game: ${options.gameId}`);
-    new DecisionStore(repository).put(game.id, "analysis:ran", true);
     const sources = collectMoments(repository, new DecisionStore(repository), game);
     const moments = await publicViews(repository, game, sources, options.jev, options.jevModel);
     const selected = selectForReview(moments, {
@@ -109,7 +108,7 @@ export function postGameAnalysisRequest(values: {
   "review-provider"?: string;
   "review-model"?: string;
 }): { kind: string; model: string } | null {
-  if (!values.analyze) return null;
+  if (values.analyze === false) return null;
   if (!values["review-provider"] || !values["review-model"])
     throw new Error("--analyze requires --review-provider and --review-model");
   return { kind: values["review-provider"], model: values["review-model"] };
