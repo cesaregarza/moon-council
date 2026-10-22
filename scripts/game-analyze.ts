@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -12,7 +12,8 @@ import {
   type DecisionProvider,
 } from "@werewolf/llm";
 import { collectMoments, publicViews, selectForReview } from "./lib/analyze-moments";
-import { reviewMoments, type ReviewItem } from "./lib/analyze-review";
+import { assertSafeReportPaths, writeReportAtomically } from "./lib/analyze-output";
+import { assertReviewProviderBounded, reviewMoments, type ReviewItem } from "./lib/analyze-review";
 
 export interface AnalyzeOptions {
   dbPath: string;
@@ -27,6 +28,37 @@ export interface AnalyzeOptions {
   maxOutputTokens?: number;
 }
 
+/** Inclusive ranges for the numeric options; anything else refuses the run before it starts. */
+const NUMERIC_LIMITS = {
+  cap: [1, 1_000],
+  recall: [1, 1_000],
+  tokenBudget: [1, 100_000_000],
+  maxOutputTokens: [1, 1_000_000],
+} as const;
+
+function assertNumericOptions(options: AnalyzeOptions): void {
+  for (const [name, [min, max]] of Object.entries(NUMERIC_LIMITS)) {
+    const value = options[name as keyof typeof NUMERIC_LIMITS];
+    if (value !== undefined && !(Number.isInteger(value) && value >= min && value <= max))
+      throw new Error(`${name} must be an integer from ${min} to ${max}; got ${value}`);
+  }
+}
+
+function jevUsage(calls: Awaited<ReturnType<typeof publicViews>>["jevCalls"]) {
+  const total = (key: "inputTokens" | "outputTokens" | "totalTokens" | "costUsd") =>
+    calls.some((call) => call[key] === null)
+      ? null
+      : calls.reduce((sum, call) => sum + call[key]!, 0);
+  return {
+    calls: calls.length,
+    inputTokens: total("inputTokens"),
+    outputTokens: total("outputTokens"),
+    totalTokens: total("totalTokens"),
+    costUsd: total("costUsd"),
+    perCall: calls,
+  };
+}
+
 /**
  * Post-game surprise analysis (CES-1040). Opens the game database read-only, asks Jev for a
  * public-view prediction of each recorded decision, scores and ranks the moments, and sends
@@ -34,13 +66,22 @@ export interface AnalyzeOptions {
  * written next to the run's research.json and never committed.
  */
 export async function analyzeGame(options: AnalyzeOptions) {
+  assertNumericOptions(options);
+  assertReviewProviderBounded(options.review.kind);
+  assertSafeReportPaths(options.dbPath, options.outDir);
   const connection = openDatabaseReadOnly(options.dbPath);
   try {
     const repository = new LabRepository(connection);
     const game = repository.getGame(options.gameId);
     if (!game) throw new Error(`Unknown game: ${options.gameId}`);
     const sources = collectMoments(repository, new DecisionStore(repository), game);
-    const moments = await publicViews(repository, game, sources, options.jev, options.jevModel);
+    const { moments, jevCalls } = await publicViews(
+      repository,
+      game,
+      sources,
+      options.jev,
+      options.jevModel,
+    );
     const selected = selectForReview(moments, {
       cap: options.cap ?? 12,
       recall: options.recall ?? 2,
@@ -70,13 +111,16 @@ export async function analyzeGame(options: AnalyzeOptions) {
         jev: options.jevModel,
         review: { provider: options.review.kind, model: options.review.model },
       },
-      usage: { jevCalls: sources.length, review: usage },
+      usage: { jev: jevUsage(jevCalls), review: usage },
       moments: moments.map((moment) => ({
         id: moment.id,
         kind: moment.kind,
         actorId: moment.actorId,
         actual: moment.actual,
+        ...(moment.selected ? { selected: moment.selected } : {}),
         class: moment.class,
+        ...(moment.noSignalReason ? { noSignalReason: moment.noSignalReason } : {}),
+        ...(moment.wolfProbabilities ? { wolfProbabilities: moment.wolfProbabilities } : {}),
         score: moment.score,
       })),
       reviews: items.map((item, index) => ({
@@ -86,11 +130,13 @@ export async function analyzeGame(options: AnalyzeOptions) {
         ...outcomes[index]!,
       })),
     };
-    await mkdir(options.outDir, { recursive: true });
-    await writeFile(join(options.outDir, "analysis.json"), `${JSON.stringify(report, null, 2)}\n`, {
-      mode: 0o600,
-    });
-    await writeFile(join(options.outDir, "analysis.md"), markdown(report), { mode: 0o600 });
+    mkdirSync(options.outDir, { recursive: true });
+    assertSafeReportPaths(options.dbPath, options.outDir);
+    writeReportAtomically(
+      join(options.outDir, "analysis.json"),
+      `${JSON.stringify(report, null, 2)}\n`,
+    );
+    writeReportAtomically(join(options.outDir, "analysis.md"), markdown(report));
     return report;
   } finally {
     connection.close();
@@ -111,6 +157,7 @@ export function postGameAnalysisRequest(values: {
   if (!values.analyze) return null;
   if (!values["review-provider"] || !values["review-model"])
     throw new Error("--analyze requires --review-provider and --review-model");
+  assertReviewProviderBounded(values["review-provider"]);
   return { kind: values["review-provider"], model: values["review-model"] };
 }
 
@@ -119,7 +166,8 @@ function markdown(report: AnalysisReport) {
     `# Surprise analysis: game ${report.gameId}`,
     "",
     `Jev ${report.models.jev}; review ${report.models.review.provider}:${report.models.review.model}. ` +
-      `${report.moments.length} moments, ${report.usage.review.calls} reviews, ` +
+      `${report.moments.length} moments; ${report.usage.jev.calls} Jev calls, ` +
+      `${report.usage.jev.totalTokens ?? "unknown"} Jev tokens; ${report.usage.review.calls} reviews, ` +
       `${report.usage.review.tokens} review tokens, $${report.usage.review.costUsd.toFixed(4)} reported cost.`,
     "",
   ];

@@ -123,18 +123,29 @@ npm run game:analyze -- --db /native/path/game.db --game GAME_ID --out RUN_DIREC
   --review-provider anthropic --review-model MODEL
 ```
 
-The analyzer opens the database read-only. For every committed ballot and night action with a
-recorded Jev distribution, it asks Jev what the public record alone predicts, then scores each
-moment against the player's recorded choice. The moments are private knowledge, herd over knowledge,
-noise or error, routine, or no signal. The top 12 (`--cap`) go to the review model, plus 2 random
-routine moments as a recall check (`--recall`).
+The analyzer opens the database read-only. For every committed ballot with a recorded Jev
+distribution, it asks Jev what the public record alone predicts, then scores the moment against the
+player's recorded choice. Each night's wolf kill is one moment for the pack: Jev predicts who is
+found dead at dawn, and the dawn outcome is scored against the wolves' mean recorded probability. A
+save, a block or a split pack makes that night "no signal". Other night roles and non-kill pack
+points produce no moment. The moments are private knowledge, herd over knowledge, noise or error,
+routine, or no signal. The top 12 (`--cap`) go to the review model, plus 2 random routine moments as
+a recall check (`--recall`).
 
-- The review provider and model have no defaults. The review is capped by `--review-token-budget`
-  (default 200,000 tokens); reviews that would pass it are skipped and marked.
-- A citation of an event that does not exist, or a claim about what the player knew that cites an
-  event the player could not see before deciding, rejects the review and marks it.
-- `analysis.json` and `analysis.md` are written to `--out`, next to `research.json`. They hold
-  moderator data, so never commit them. They record the models, token usage and reported cost.
+- The review provider and model have no defaults. Numeric options must be positive integers in
+  range, or the run refuses to start.
+- The review is capped by `--review-token-budget` (default 200,000 tokens). A review is admitted
+  only if the budget covers its prompt (bounded by its bytes) plus `--review-max-output`, and it
+  settles to the reported usage. Codex providers do not enforce an output cap, so they are refused
+  as review providers.
+- Each review gets the player's decision-time briefing exactly as Jev received it (for a kill, each
+  wolf's). Every cited event must be one the player could see before deciding, or the review is
+  rejected and marked. Facts the player could not see belong only in its uncited `groundTruth`.
+- `analysis.json` and `analysis.md` are written to `--out`, next to `research.json`, each through a
+  temporary file and a rename. The analyzer refuses to run if a report path is the database, its WAL
+  or SHM file, a link, or any file that is not one of its own previous reports. The reports hold
+  moderator data, so never commit them. They record the models, Jev's tokens per call, and the
+  review's tokens and reported cost.
 - Both Jev and the review model spend real credit. Claude reviews count against the monthly spend
   ledger.
 - `npm run pilot -- ... --analyze --review-provider KIND --review-model MODEL` runs the analyzer
