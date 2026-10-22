@@ -259,6 +259,50 @@ describe("per-game Claude spend admission", () => {
     expect(reserved.every((usd) => (usd as number) > 0)).toBe(true);
   });
 
+  it.each([
+    ["outputTokens", { outputTokens: -1_000 }],
+    ["inputTokens", { inputTokens: -50_000 }],
+    ["cachedInputTokens", { inputTokens: -490_000, cachedInputTokens: -500_000 }],
+    ["cacheWriteInputTokens", { cacheWriteInputTokens: -10_000 }],
+  ])("holds the admitted reservation when recorded %s is invalid", (_field, bad) => {
+    // halcyon's fixtures: an invalid cost and invalid usage must not rebuild into credit.
+    const game = ledger(0.09);
+    const record = game.attempt("claude-opus-5-5", 1_000);
+    game.settle(record, 10_000, 0);
+    record.usage = { ...record.usage, cacheWriteInputTokens: 10_000, ...bad };
+    record.providerMetadata = { costUsd: -1 };
+    Object.assign(record, { reservedUsd: 0.08 });
+    game.store.updateAttempt(record);
+    const next = {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      inputTokens: 0,
+      maxOutputTokens: 1_040, // $0.0208
+    };
+    expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, true, next)).toThrow(
+      /spend/,
+    );
+  });
+
+  it("refuses admission when an unsettled Claude attempt has no admitted reservation", () => {
+    // A record written before reservations were stored: the saved prompt cannot bound it.
+    const game = ledger(0.19);
+    game.attempt("claude-haiku-5-5", 4_000); // usage unknown, no reservedUsd
+    const next = {
+      provider: "anthropic",
+      model: "claude-haiku-5-5",
+      inputTokens: 40,
+      maxOutputTokens: 160_000, // $0.080024
+    };
+    let refusal: unknown;
+    try {
+      assertV2Budget(game.store, game.gameId, game.config, 0, true, next);
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toMatchObject({ name: "UnreservedClaudeAttemptError" });
+  });
+
   it("fails closed for a Claude model with no price", () => {
     const game = ledger(100);
     game.settle(game.attempt("claude-unpriced-9", 1_000), 10, 10);
