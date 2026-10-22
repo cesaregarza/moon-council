@@ -35,6 +35,8 @@ export interface ProviderAttemptRecord {
   };
   maxOutputTokens?: number | null;
   timeoutMs?: number;
+  /** Worst-case USD admitted for this call when it began (Claude); held while usage is unknown. */
+  reservedUsd?: number;
   wireRequest?: Record<string, unknown>;
   providerMetadata?: Record<string, unknown>;
   usage: UsageV2;
@@ -102,7 +104,7 @@ export class DecisionStore {
       Partial<
         Pick<
           ProviderAttemptRecord,
-          "promptVersion" | "schemaVersion" | "maxOutputTokens" | "timeoutMs"
+          "promptVersion" | "schemaVersion" | "maxOutputTokens" | "timeoutMs" | "reservedUsd"
         >
       >,
   ): ProviderAttemptRecord {

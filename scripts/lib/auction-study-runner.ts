@@ -5,6 +5,10 @@ import { jevResponseSchema, type JevResponse } from "@werewolf/llm";
 import type { SpeakerIntentV1 } from "@werewolf/contracts";
 import { rankSpeakerAuction } from "../../packages/simulator/src/speaker-auction";
 import {
+  CONTROL_ALWAYS_WILLING,
+  declinesFloor,
+} from "../../packages/simulator/src/speaker-decline";
+import {
   studyPlayers,
   playerPrompt,
   jevPrompt,
@@ -62,8 +66,10 @@ function expectedScore(answer: JevResponse["answers"][string]): number {
   const total = probabilities.reduce((sum, [, p]) => sum + p, 0);
   return probabilities.reduce((sum, [level, p]) => sum + Number(level) * p, 0) / (4 * total);
 }
-function bidIntent(response: JevResponse): SpeakerIntentV1 {
-  const urge = expectedScore(response.answers.urge!);
+export function bidIntent(response: JevResponse): SpeakerIntentV1 {
+  const answer = response.answers.urge!;
+  // The production journal_v4 rule: a seat with nothing useful to add declines.
+  const urge = declinesFloor(answer) ? 0 : expectedScore(answer);
   return {
     urge,
     wantsToSpeak: urge > 0,
@@ -210,7 +216,7 @@ export async function runStudyDiscussion(
           bid.playerId === run.targetId &&
           run.condition.endsWith("forced") &&
           candidates.includes(bid.playerId)
-            ? { ...bid.intent, urge: 1, wantsToSpeak: true }
+            ? { ...bid.intent, urge: 1, wantsToSpeak: CONTROL_ALWAYS_WILLING }
             : bid.intent,
       }));
       const scores = rankSpeakerAuction(candidates, effective, manifest.bias, tieOrder);

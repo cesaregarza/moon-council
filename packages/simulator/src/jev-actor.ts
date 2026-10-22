@@ -10,6 +10,7 @@ import { jevBriefing } from "./jev-briefing";
 import type { JevStage } from "./jev-decision";
 import { currentDecisionBrief } from "./player-brief";
 import { assessActorChoice } from "./jev-semantics";
+import { declinesFloor } from "./speaker-decline";
 
 type Opportunity = Pick<DecisionOpportunityV1, "packet" | "playerId" | "taskType" | "jevState">;
 const perspective =
@@ -35,6 +36,20 @@ export function actorChoices(
   }
   if (task === "vote_choice") choices.abstain = "Abstain from voting.";
   return choices;
+}
+
+/** One public line per living player, so listeners can judge who has dominated the floor. */
+function floorToday(packet: PlayerContextV2): string | undefined {
+  const floor = packet.publicFloor;
+  if (!floor) return undefined;
+  const name = (id: string) => packet.players.find((p) => p.id === id)?.name ?? id;
+  return [
+    `Public floor today (Day ${floor.day}), counted from every public speech:`,
+    ...floor.players.map(
+      (p) =>
+        `${name(p.playerId)} (${p.playerId}): ${p.speeches} public speeches, ${p.accusations} accusations and ${p.challenges} challenges made, ${p.responsesOwed} responses owed.`,
+    ),
+  ].join("\n");
 }
 
 /** Actor-owned current prose; no full notebook, other seats' notes, or moderator state. */
@@ -66,6 +81,7 @@ export function actorBriefing(op: Opportunity) {
     perspective: `You are ${packet.self.name} (${packet.self.id}), ${packet.self.role.name}, alignment ${packet.self.role.alignment}. Your win condition: ${JSON.stringify(packet.self.role.winCondition)}. Decide for yourself with your authorized private knowledge; public proof is not required.`,
     currentReasoning: scheduling ? brief.attention : brief.action,
     verifiedFacts: rendered.facts,
+    ...(scheduling && packet.publicFloor ? { floorToday: floorToday(packet) } : {}),
     situation,
     task: { type: task, rules },
     ...(op.jevState?.semanticIssues
@@ -192,7 +208,10 @@ export function prepareActorJevAction(
           listen,
           memory,
           rationale,
-          ...(scoreTask ? { urge: score("urge") } : {}),
+          // A declined bid has zero urge, so normalization records wantsToSpeak: false.
+          ...(scoreTask
+            ? { urge: answers.urge && declinesFloor(answers.urge) ? 0 : score("urge") }
+            : {}),
         };
       }
       const choice = selected(value);

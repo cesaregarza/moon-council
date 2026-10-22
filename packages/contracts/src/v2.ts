@@ -105,10 +105,28 @@ export const DecisionEngineSchema = z.object({
   workflow: z.enum(["legacy_v1", "journal_v2", "journal_v3", "journal_v4"]).default("legacy_v1"),
   reasoningThreshold: z.number().min(0).max(1).default(0.5),
 });
+/** A game with Claude seats must carry a hard USD limit; there is no default. */
+function requireClaudeSpendLimit(
+  value: {
+    maxSpendUsd: number | null;
+    modelSettings: Record<string, { provider: string }>;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (
+    value.maxSpendUsd === null &&
+    Object.values(value.modelSettings).some((settings) => settings.provider === "anthropic")
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["maxSpendUsd"],
+      message: "maxSpendUsd is required when any seat uses the anthropic provider",
+    });
+}
 export const ModelSettingsSchema = z.object({
   model: z.string().min(1),
   reasoningEffort: z.string().default("medium"),
-  provider: z.enum(["fake", "codex", "codex_direct", "openai"]),
+  provider: z.enum(["fake", "codex", "codex_direct", "openai", "anthropic"]),
 });
 export const DiscussionPolicyV2Schema = DiscussionPolicySchema.extend({
   speakerSelection: z.enum(["event_queue", "listener_auction"]).default("event_queue"),
@@ -146,12 +164,15 @@ export const GameConfigV2Schema = z
     discussion: DiscussionPolicyV2Schema.default(DiscussionPolicyV2Schema.parse({})),
     deliberation: DeliberationPolicySchema.default(DeliberationPolicySchema.parse({})),
     maxTotalTokens: z.number().int().min(1_000).max(100_000_000).nullable().default(2_000_000),
+    /** Hard USD admission limit for Claude seats; required whenever any seat uses anthropic. */
+    maxSpendUsd: z.number().positive().nullable().default(null),
     modelSettings: z.record(z.string(), ModelSettingsSchema),
     decisionEngine: DecisionEngineSchema.default(DecisionEngineSchema.parse({})),
     experiment: AttentionExperimentSchema.optional(),
   })
   .superRefine((value, ctx) => {
     validateAttentionExperiment(value, ctx);
+    requireClaudeSpendLimit(value, ctx);
     if (
       value.decisionEngine.mode === "jev" &&
       !["agent_v3_1", "agent_v3_2"].includes(value.protocolVersion)
@@ -235,6 +256,7 @@ export const CreateGameV2RequestSchema = CreateGameRequestSchema.extend({
   discussion: CreateDiscussionPolicyV2Schema.default(CreateDiscussionPolicyV2Schema.parse({})),
   deliberation: NewGameDeliberationSchema.default(NewGameDeliberationSchema.parse({})),
   maxTotalTokens: z.number().int().min(1_000).max(100_000_000).nullable().default(null),
+  maxSpendUsd: z.number().positive().nullable().optional(),
   reasoningEffort: z.string().optional(),
   /** Opt in to the V3.2 delivery ladder; omitted means the V3.1 default. */
   protocolVersion: z.enum(["agent_v3_1", "agent_v3_2"]).optional(),
@@ -565,6 +587,20 @@ export interface PlayerContextV2 {
   journal: PrivateJournalV2;
   responseDocket: string[];
   closing: boolean;
+  /** journal_v4 Jev only: today's public floor, never sent to the LLM. */
+  publicFloor?: PublicFloorV2;
+}
+/** Per living player, counted from every public speech today; no private record contributes. */
+export interface PublicFloorV2 {
+  day: number;
+  players: {
+    playerId: string;
+    speeches: number;
+    accusations: number;
+    challenges: number;
+    /** Formal accusations and challenges against the player since their latest speech today. */
+    responsesOwed: number;
+  }[];
 }
 export interface DecisionOpportunityV1 {
   id: string;
