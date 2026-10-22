@@ -90,7 +90,17 @@ export interface DecisionRequest<T> {
   claudeHarness?: {
     system: Anthropic.TextBlockParam[];
     messages: Anthropic.MessageParam[];
+    /** Adds Anthropic's top-level automatic breakpoint after the newest turn. */
+    automaticCache?: boolean;
+    /** Shared new prefix: the first request goes alone, the rest wait for its first token. */
+    warmGateKey?: string;
   };
+  /** Claude only: every received reply, before parsing, so a harness can store it verbatim. */
+  onClaudeReply?: (reply: {
+    content: Anthropic.ContentBlock[];
+    stopReason: string | null;
+    usage: UsageV2;
+  }) => void;
 }
 
 export interface DecisionResult<T> {

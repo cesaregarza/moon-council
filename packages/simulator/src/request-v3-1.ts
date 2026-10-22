@@ -364,7 +364,7 @@ function mapJournal(journal: PrivateJournalV2, map: HandleMap, strict: boolean):
   };
 }
 
-function renderSource(
+export function renderSource(
   source: ContextSourceV2,
   map: HandleMap,
   digestChars: number,

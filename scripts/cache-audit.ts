@@ -20,7 +20,11 @@ export type CacheAttempt = {
   usage?: TokenUsage | null;
   provider?: string;
   model?: string;
-  providerMetadata?: { cacheDiagnostics?: { type?: string; reason?: string } | null };
+  providerMetadata?: {
+    cacheDiagnostics?: { type?: string; reason?: string } | null;
+    /** Claude session protocol: which session turn, and the read it should have made. */
+    claudeSession?: { id: string; turn: number; expectedCacheRead: number | null };
+  };
   request?: {
     instructions?: unknown;
     schema?: unknown;
@@ -344,6 +348,45 @@ export function layerPrefixStability(
   };
 }
 
+/**
+ * Claude session calls by call kind. A call that should read its session (the previous
+ * request's whole prompt) but reports fewer cached tokens is a miss: something upstream of the
+ * new turn changed, or the entry expired.
+ */
+export function claudeSessionAccounting(attempts: CacheAttempt[]) {
+  const rows = new Map<
+    string,
+    {
+      key: string;
+      calls: number;
+      inputTokens: number;
+      readTokens: number;
+      writeTokens: number;
+      misses: number;
+    }
+  >();
+  for (const attempt of attempts) {
+    const session = attempt.providerMetadata?.claudeSession;
+    if (!session) continue;
+    const row = rows.get(attempt.schemaVersion) ?? {
+      key: attempt.schemaVersion,
+      calls: 0,
+      inputTokens: 0,
+      readTokens: 0,
+      writeTokens: 0,
+      misses: 0,
+    };
+    const read = attempt.usage?.cachedInputTokens ?? 0;
+    row.calls += 1;
+    row.inputTokens += attempt.usage?.inputTokens ?? 0;
+    row.readTokens += read;
+    row.writeTokens += attempt.usage?.cacheWriteInputTokens ?? 0;
+    if (session.expectedCacheRead !== null && read < session.expectedCacheRead) row.misses += 1;
+    rows.set(attempt.schemaVersion, row);
+  }
+  return [...rows.values()].sort((a, b) => a.key.localeCompare(b.key));
+}
+
 function compact(value: number): string {
   const scales: [[number, string], [number, string], [number, string], [number, string]] = [
     [1e12, "T"],
@@ -460,6 +503,7 @@ function main(): void {
         schemaSuffix: options.schemaSuffix || null,
         ...summary,
         layerPrefixStability: stability,
+        claudeSessions: claudeSessionAccounting(attempts),
       };
     if (options.json) {
       console.log(JSON.stringify(result, null, 2));
@@ -530,6 +574,14 @@ function main(): void {
       stability.bySchema.flatMap((row) => row.layers.map((layer) => ({ key: row.key, ...layer }))),
       ["key", "layer", "bytes", "repeatedBytes", "settledRepeatedBytes"],
     );
+    printRows("Claude sessions by call kind (provider-reported)", result.claudeSessions, [
+      "key",
+      "calls",
+      "inputTokens",
+      "readTokens",
+      "writeTokens",
+      "misses",
+    ]);
   } finally {
     db.close();
   }

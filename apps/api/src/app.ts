@@ -9,6 +9,8 @@ import {
   PRESET_ROSTERS,
   rosterRoleVersion,
   StoredExperimentSpecSchema,
+  CLAUDE_SESSION_PROTOCOL,
+  isLedgerProtocolVersion,
 } from "@werewolf/contracts";
 import { DecisionStore, LabRepository, openDatabase, type DatabaseConnection } from "@werewolf/db";
 import { BODYGUARD, DOCTOR_V2, reduceGame, STARTER_ROLES, type Viewer } from "@werewolf/engine";
@@ -129,7 +131,7 @@ export async function buildApi(
     const config = GameConfigV2Schema.parse({
       ...input,
       schemaVersion: "game_config_v2",
-      protocolVersion: input.protocolVersion === "agent_v3_2" ? "agent_v3_2" : "agent_v3_1",
+      protocolVersion: input.protocolVersion ?? "agent_v3_1",
       rules: { packExecution: "any_unblocked", revealBallots: true, firstCycle: "day_first" },
       discussion: { ...input.discussion, speakerSelection: "listener_auction" },
       deliberation: {
@@ -340,7 +342,10 @@ export async function buildApi(
     );
     const protocol =
       game.config.schemaVersion === "game_config_v2" ? game.config.protocolVersion : null;
-    const split = protocol === "agent_v3" || protocol === "agent_v3_1" || protocol === "agent_v3_2";
+    const split =
+      protocol === "agent_v3" ||
+      protocol === "agent_v3_1" ||
+      (protocol !== null && isLedgerProtocolVersion(protocol));
     const exportDecisions = split
       ? decisions.map((detail) =>
           detail
@@ -354,15 +359,17 @@ export async function buildApi(
       : decisions;
     const bundle = {
       schemaVersion:
-        protocol === "agent_v3_2"
-          ? "werewolf_research_bundle_v3_2"
-          : protocol === "agent_v3_1"
-            ? "werewolf_research_bundle_v3_1"
-            : protocol === "agent_v3"
-              ? "werewolf_research_bundle_v3"
-              : game.config.schemaVersion === "game_config_v2"
-                ? "werewolf_research_bundle_v2"
-                : "werewolf_research_bundle_v1",
+        protocol === CLAUDE_SESSION_PROTOCOL
+          ? "werewolf_research_bundle_claude_session_v1"
+          : protocol === "agent_v3_2"
+            ? "werewolf_research_bundle_v3_2"
+            : protocol === "agent_v3_1"
+              ? "werewolf_research_bundle_v3_1"
+              : protocol === "agent_v3"
+                ? "werewolf_research_bundle_v3"
+                : game.config.schemaVersion === "game_config_v2"
+                  ? "werewolf_research_bundle_v2"
+                  : "werewolf_research_bundle_v1",
       perspective: query.view,
       exportedAt: new Date().toISOString(),
       ...payload,

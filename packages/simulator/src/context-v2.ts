@@ -2,6 +2,7 @@ import { journalEvidenceRevision } from "./player-brief";
 import { createHash } from "node:crypto";
 import {
   PrivateJournalV2Schema,
+  isLedgerProtocolVersion,
   type ActionProposalV2,
   type ContextSourceV2,
   type DecisionReportV2,
@@ -43,13 +44,14 @@ export function publicPayload(event: GameEventV1): Record<string, unknown> {
  */
 export function isLedgerProtocol(state: GameState): boolean {
   return (
-    state.config.schemaVersion === "game_config_v2" && state.config.protocolVersion === "agent_v3_2"
+    state.config.schemaVersion === "game_config_v2" &&
+    isLedgerProtocolVersion(state.config.protocolVersion)
   );
 }
 function citableFields(state: GameState): Record<string, string[]> {
   const protocol =
     state.config.schemaVersion === "game_config_v2" ? state.config.protocolVersion : "";
-  if (protocol !== "agent_v3_2") return publicFields;
+  if (!isLedgerProtocolVersion(protocol)) return publicFields;
   return Object.fromEntries(
     Object.entries(publicFields).filter(([type]) => type !== "phase.changed"),
   );
@@ -306,7 +308,7 @@ export function buildContextV2(
       shared.has(source.id) ? { ...source, cacheLayer: "public" as const } : source,
     );
   }
-  if (config.protocolVersion === "agent_v3_2") {
+  if (isLedgerProtocolVersion(config.protocolVersion)) {
     // L1 ledger. Every public record is delivered, so a cited record can never fall through
     // to the private layer and be duplicated per seat -- the growth that exhausted V3.1.
     // Tier assignment reads only public inputs, so L1 stays byte-identical across seats.
@@ -438,7 +440,7 @@ export function buildContextV2(
   // last-resort rather than a budget that can be raised.
   if (essentialSize > config.deliberation.maxContextTokens)
     throw new ContextLimitError(
-      config.protocolVersion === "agent_v3_2"
+      isLedgerProtocolVersion(config.protocolVersion)
         ? "context_limit: the fully demoted delivery floor, journal, and schema still cannot fit"
         : "context_limit: essential authorized facts, commitments, journal, and schema cannot fit",
     );

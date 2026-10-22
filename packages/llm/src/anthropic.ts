@@ -4,6 +4,7 @@ import { providerJsonSchema, unknownUsage, type UsageV2 } from "@werewolf/contra
 import { assertClaudePriced, claudeCostUsd, claudeReservationUsd } from "./anthropic-pricing";
 import { promptFor } from "./prompt";
 import type { DecisionProvider, DecisionRequest, DecisionResult } from "./provider";
+import { ClaudeWarmGate } from "./claude-warm-gate";
 import { ClaudeSpendLedger } from "./spend-ledger";
 
 /** `stop_reason: "refusal"`. No other model is tried: a silent switch would corrupt per-model results. */
@@ -63,7 +64,8 @@ export function claudeMessages(request: DecisionRequest<unknown>): {
   system: Anthropic.TextBlockParam[];
   messages: Anthropic.MessageParam[];
 } {
-  if (request.claudeHarness) return request.claudeHarness;
+  if (request.claudeHarness)
+    return { system: request.claudeHarness.system, messages: request.claudeHarness.messages };
   const prompt = promptFor(request);
   const format = request.apiResponseFormat;
   const text = (value: string, cached = false): Anthropic.TextBlockParam => ({
@@ -93,6 +95,7 @@ export function claudeRequest<T>(
     model: request.model,
     max_tokens: request.maxOutputTokens ?? maxTokensCap,
     ...claudeMessages(request as DecisionRequest<unknown>),
+    ...(request.claudeHarness?.automaticCache ? { cache_control: FIVE_MINUTES } : {}),
     thinking: { type: "adaptive" },
     output_config: {
       effort: claudeEffort(request.reasoningEffort),
@@ -142,7 +145,11 @@ export interface ClaudeClient {
     stream(
       body: Anthropic.MessageStreamParams,
       options?: Anthropic.RequestOptions,
-    ): { finalMessage(): Promise<Anthropic.Message>; abort(): void };
+    ): {
+      on(event: "streamEvent", listener: (event: Anthropic.MessageStreamEvent) => void): unknown;
+      finalMessage(): Promise<Anthropic.Message>;
+      abort(): void;
+    };
   };
 }
 
@@ -150,6 +157,7 @@ export interface ClaudeProviderOptions {
   client?: ClaudeClient;
   apiKey?: string;
   ledger?: Pick<ClaudeSpendLedger, "reserve" | "settle">;
+  warmGate?: ClaudeWarmGate;
   /** Output cap when a request sets none; `max_tokens` is required by the API. */
   maxTokensCap?: number;
 }
@@ -158,6 +166,7 @@ export class AnthropicMessagesProvider implements DecisionProvider {
   private readonly client: ClaudeClient;
   private readonly ledger: Pick<ClaudeSpendLedger, "reserve" | "settle">;
   private readonly maxTokensCap: number;
+  private readonly warmGate: ClaudeWarmGate;
 
   constructor(options: ClaudeProviderOptions = {}) {
     if (options.client) this.client = options.client;
@@ -168,6 +177,7 @@ export class AnthropicMessagesProvider implements DecisionProvider {
       this.client = new Anthropic({ apiKey });
     }
     this.ledger = options.ledger ?? new ClaudeSpendLedger();
+    this.warmGate = options.warmGate ?? new ClaudeWarmGate();
     this.maxTokensCap =
       options.maxTokensCap ?? Number(process.env.ANTHROPIC_MAX_OUTPUT_TOKENS || 16_000);
   }
@@ -199,7 +209,7 @@ export class AnthropicMessagesProvider implements DecisionProvider {
     const signal = AbortSignal.any(signals.filter((s): s is AbortSignal => Boolean(s)));
     try {
       request.onProviderRequest?.(body as unknown as Record<string, unknown>);
-      const message = await this.client.messages.stream(body, { signal }).finalMessage();
+      const message = await this.streamOnce(body, signal, request.claudeHarness?.warmGateKey);
       spent.usd = claudeResponseCostUsd(body.model, message.usage);
       return claudeResult(tracked, message, spent.usd);
     } catch (error) {
@@ -212,6 +222,26 @@ export class AnthropicMessagesProvider implements DecisionProvider {
       throw claudeFailure(error, signal);
     } finally {
       this.ledger.settle(reservationId, spent.usd);
+    }
+  }
+
+  /** Streams one request; a gated request releases the gate at its first content block. */
+  private async streamOnce(
+    body: Anthropic.MessageCreateParamsNonStreaming,
+    signal: AbortSignal,
+    warmGateKey: string | undefined,
+  ): Promise<Anthropic.Message> {
+    const release = warmGateKey ? await this.warmGate.enter(warmGateKey, signal) : undefined;
+    try {
+      const stream = this.client.messages.stream(body, { signal });
+      stream.on("streamEvent", (event) => {
+        if (event.type === "content_block_start") release?.(true);
+      });
+      const message = await stream.finalMessage();
+      release?.(true);
+      return message;
+    } finally {
+      release?.(false);
     }
   }
 }
@@ -228,6 +258,7 @@ function claudeResult<T>(
     model: message.model,
     outputLimitEnforced: true,
   });
+  request.onClaudeReply?.({ content: message.content, stopReason: message.stop_reason, usage });
   request.onProviderMetadata?.({
     responseId: message.id,
     model: message.model,

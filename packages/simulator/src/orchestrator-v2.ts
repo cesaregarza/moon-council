@@ -12,6 +12,7 @@ import type {
   SpeakerIntentV1,
   SpeechSubmissionV3,
 } from "@werewolf/contracts";
+import { isLedgerProtocolVersion } from "@werewolf/contracts";
 import { DecisionStore, LabRepository } from "@werewolf/db";
 import {
   checkWinners,
@@ -94,12 +95,15 @@ export function overnightEliminations(
 }
 
 const usesSplitDecisions = (protocol: string): boolean =>
-  protocol === "agent_v3" || protocol === "agent_v3_1" || protocol === "agent_v3_2";
-/** V3.1 and its V3.2 ledger successor share the handle contract and the request shape. */
+  protocol === "agent_v3" || protocol === "agent_v3_1" || isLedgerProtocolVersion(protocol);
+/**
+ * V3.1, its V3.2 ledger successor and the Claude session protocol share the handle contract
+ * and the request shape; the session harness re-packs the v3.2 request into session turns.
+ */
 const usesHandleProtocol = (protocol: string): boolean =>
-  protocol === "agent_v3_1" || protocol === "agent_v3_2";
+  protocol === "agent_v3_1" || isLedgerProtocolVersion(protocol);
 const requestForProtocol = (protocol: string) =>
-  protocol === "agent_v3_2" ? decisionRequestV32 : decisionRequestV31;
+  isLedgerProtocolVersion(protocol) ? decisionRequestV32 : decisionRequestV31;
 export class V2GameOrchestrator {
   readonly store: DecisionStore;
   private executor: DecisionExecutorV2;

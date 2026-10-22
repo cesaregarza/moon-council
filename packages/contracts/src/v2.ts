@@ -105,6 +105,34 @@ export const DecisionEngineSchema = z.object({
   workflow: z.enum(["legacy_v1", "journal_v2", "journal_v3", "journal_v4"]).default("legacy_v1"),
   reasoningThreshold: z.number().min(0).max(1).default(0.5),
 });
+/** Per-seat cached day sessions on Claude (CES-1556): the v3.2 ledger plus a session harness. */
+export const CLAUDE_SESSION_PROTOCOL = "agent_claude_session_v1" as const;
+/** Protocols whose context carries every public record as a tiered ledger. */
+export function isLedgerProtocolVersion(protocol: string): boolean {
+  return protocol === "agent_v3_2" || protocol === CLAUDE_SESSION_PROTOCOL;
+}
+
+/** The session harness exists only for Claude seats running the journal_v4 Jev workflow. */
+function requireClaudeSessionPairing(
+  value: {
+    protocolVersion: string;
+    decisionEngine: { mode: string; workflow: string };
+    modelSettings: Record<string, { provider: string }>;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.protocolVersion !== CLAUDE_SESSION_PROTOCOL) return;
+  const claudeOnly = Object.values(value.modelSettings).every((s) => s.provider === "anthropic");
+  const journalV4 =
+    value.decisionEngine.mode === "jev" && value.decisionEngine.workflow === "journal_v4";
+  if (!claudeOnly || !journalV4)
+    ctx.addIssue({
+      code: "custom",
+      path: ["protocolVersion"],
+      message: `${CLAUDE_SESSION_PROTOCOL} requires every seat on the anthropic provider and the journal_v4 Jev workflow`,
+    });
+}
+
 /** A game with Claude seats must carry a hard USD limit; there is no default. */
 function requireClaudeSpendLimit(
   value: {
@@ -152,7 +180,14 @@ export const GameConfigV2Schema = z
     safety: SafetyLimitsV2Schema.default(SafetyLimitsV2Schema.parse({})),
     preset: z.enum(["standard-8-v2", "standard-8-v3", "custom-v2"]).default("custom-v2"),
     protocolVersion: z
-      .enum(["agent_v2", "agent_v2_1", "agent_v3", "agent_v3_1", "agent_v3_2"])
+      .enum([
+        "agent_v2",
+        "agent_v2_1",
+        "agent_v3",
+        "agent_v3_1",
+        "agent_v3_2",
+        CLAUDE_SESSION_PROTOCOL,
+      ])
       .default("agent_v2"),
     rules: z
       .object({
@@ -173,9 +208,10 @@ export const GameConfigV2Schema = z
   .superRefine((value, ctx) => {
     validateAttentionExperiment(value, ctx);
     requireClaudeSpendLimit(value, ctx);
+    requireClaudeSessionPairing(value, ctx);
     if (
       value.decisionEngine.mode === "jev" &&
-      !["agent_v3_1", "agent_v3_2"].includes(value.protocolVersion)
+      !["agent_v3_1", "agent_v3_2", CLAUDE_SESSION_PROTOCOL].includes(value.protocolVersion)
     )
       ctx.addIssue({
         code: "custom",
@@ -259,7 +295,7 @@ export const CreateGameV2RequestSchema = CreateGameRequestSchema.extend({
   maxSpendUsd: z.number().positive().nullable().optional(),
   reasoningEffort: z.string().optional(),
   /** Opt in to the V3.2 delivery ladder; omitted means the V3.1 default. */
-  protocolVersion: z.enum(["agent_v3_1", "agent_v3_2"]).optional(),
+  protocolVersion: z.enum(["agent_v3_1", "agent_v3_2", CLAUDE_SESSION_PROTOCOL]).optional(),
   decisionEngine: DecisionEngineSchema.extend({
     workflow: z.enum(["legacy_v1", "journal_v2", "journal_v3", "journal_v4"]).default("journal_v4"),
   }).optional(),

@@ -5,9 +5,11 @@ import {
   type DecisionOpportunityV1,
   type DecisionReportV2,
   type GameConfigV2,
+  CLAUDE_SESSION_PROTOCOL,
 } from "@werewolf/contracts";
-import { DecisionStore, LabRepository } from "@werewolf/db";
+import { DecisionStore, LabRepository, type ProviderAttemptRecord } from "@werewolf/db";
 import { type EngineEventInput } from "@werewolf/engine";
+import { ClaudeSessions } from "./claude-session";
 import {
   AskJevProvider,
   claudeReservationUsd,
@@ -18,7 +20,7 @@ import {
 import { usesJournalWorkflow } from "./jev-actions";
 import { journalCompactionRequest, materializeCompactedJournal } from "./journal-compaction";
 import { prepareJevStage, usesJev } from "./jev-decision";
-import type { ApiResponseFormat, PreparedPrompt } from "@werewolf/llm";
+import type { ApiResponseFormat, DecisionRequest, PreparedPrompt } from "@werewolf/llm";
 import type { z } from "zod";
 import {
   canonicalizeReportReferences,
@@ -185,12 +187,59 @@ export interface ExecuteDecisionOptions {
 }
 export class DecisionExecutorV2 {
   readonly store: DecisionStore;
+  private readonly sessions: ClaudeSessions;
   constructor(
     private repository: LabRepository,
     private provider: DecisionProvider,
     private jevProvider: DecisionProvider = new AskJevProvider(),
   ) {
     this.store = new DecisionStore(repository);
+    this.sessions = new ClaudeSessions(this.store);
+  }
+  /**
+   * Claude session protocol (CES-1556): the seat's LLM calls (reflection, speech, closing) run
+   * inside its day session. Jev calls and compactions keep their own one-off requests.
+   */
+  private claudeSessionFields(call: {
+    op: DecisionOpportunityV1;
+    config: GameConfigV2;
+    provider: string;
+    sessionEligible: boolean;
+    model: string;
+    effort: string;
+    prompt: PreparedPrompt;
+    apiResponseFormat: ApiResponseFormat | undefined;
+    attempt: ProviderAttemptRecord;
+  }): Partial<DecisionRequest<unknown>> {
+    if (
+      call.config.protocolVersion !== CLAUDE_SESSION_PROTOCOL ||
+      call.provider !== "anthropic" ||
+      !call.sessionEligible
+    )
+      return {};
+    const turn = this.sessions.begin({
+      gameId: call.op.gameId,
+      playerId: call.op.playerId,
+      packet: call.op.packet,
+      model: call.model,
+      effort: call.effort,
+      kind: call.attempt.schemaVersion,
+      instructions: call.prompt.instructions,
+      formatInstructions: call.apiResponseFormat?.instructions ?? "",
+      requestInput: call.prompt.input,
+    });
+    return {
+      claudeHarness: turn.harness,
+      reasoningEffort: turn.effort,
+      onClaudeReply: (reply) => {
+        turn.commit(reply);
+        call.attempt.providerMetadata = {
+          ...call.attempt.providerMetadata,
+          claudeSession: turn.metadata,
+        };
+        this.store.updateAttempt(call.attempt);
+      },
+    };
   }
   private active(gameId: string) {
     return ["running", "stepping"].includes(this.repository.getGame(gameId)?.status ?? "");
@@ -487,9 +536,20 @@ export class DecisionExecutorV2 {
             this.store.updateAttempt(attempt);
           },
           onProviderMetadata: (metadata) => {
-            attempt.providerMetadata = metadata;
+            attempt.providerMetadata = { ...attempt.providerMetadata, ...metadata };
             this.store.updateAttempt(attempt);
           },
+          ...this.claudeSessionFields({
+            op,
+            config,
+            provider: attemptProvider,
+            sessionEligible: !compacting,
+            model: callModel,
+            effort: reasoningEffort,
+            prompt,
+            apiResponseFormat,
+            attempt,
+          }),
         });
         const result = await Promise.race([
           call,
@@ -644,12 +704,15 @@ export class DecisionExecutorV2 {
           feedback = undefined;
           continue;
         }
-        if (compacting)
+        if (compacting) {
           op.journalCompaction = {
             ...op.journalCompaction!,
             result: materializeCompactedJournal(op.journalCompaction!, submission),
             attemptId: attempt.id,
           };
+          // The journal changed outside the session: the seat's next call opens a new one.
+          this.sessions.close(op.gameId, op.playerId);
+        }
         op.best = report;
         op.bestSubmission = compacting
           ? op.journalCompaction!.sourceSubmission

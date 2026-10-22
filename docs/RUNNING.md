@@ -114,6 +114,31 @@ npm run claude:spend
 A live smoke test (one tiny call, counted in the ledger) runs only when asked:
 `npm run test:live:anthropic`.
 
+#### Claude session protocol
+
+`--protocol agent_claude_session_v1` runs each Claude seat as one cached conversation per game day.
+It requires every seat on `anthropic` and the `journal_v4` Jev workflow, and refuses any other
+pairing. The game protocol is unchanged: the same call kinds, a reflection after every speech, and
+the same auction.
+
+- Two system blocks are shared by every seat: the instructions with the frozen reference and the
+  response envelope, then the public record before today. The seat's first message holds its
+  journal, brief and private evidence at day start. Each later call appends one turn: the records
+  the seat is authorized to see since its last turn, then NOW and the request.
+- History is append-only. Earlier turns and replies, thinking blocks included, are replayed
+  byte-for-byte; thinking, effort and the response schema stay the same for the whole session.
+- A new session starts at each day, after a journal compaction, or before the prompt would pass
+  90,000 tokens on Haiku 5.5, whose price rises above 100,000.
+- At game start and day start, the first seat's request goes alone and the others wait for its first
+  streamed token, so they read the shared blocks instead of each writing them.
+- Turns are stored in the game database (moderator-only), so a resumed game rebuilds every session
+  byte-identically. `npm run cache:audit` lists session reads, writes and misses by call kind.
+
+```bash
+npm run pilot -- --provider anthropic --model claude-haiku-5-5 --decision-engine jev \
+  --protocol agent_claude_session_v1 --max-spend-usd 2
+```
+
 ## Pilot and recovery
 
 `npm run pilot -- --help` prints the supported pilot and resume forms. A fresh pilot requires a
