@@ -157,7 +157,9 @@ describe("Claude request rules", () => {
     expect(body.system).toMatchObject([{ text: "Act as the player.\n\nReturn the envelope." }]);
   });
 
-  it("sends a harness-built request unchanged and returns the full content, thinking included", async () => {
+  // Scope: #20 replays text only. Replaying thinking blocks needs the recorded-usage ceiling only
+  // a session harness has (CES-1556, PR #21); thinking in a reply is still returned in full.
+  it("sends a text-only harness request unchanged and returns the full reply, thinking included", async () => {
     const harness = {
       system: [
         { type: "text" as const, text: "frozen", cache_control: { type: "ephemeral" as const } },
@@ -327,6 +329,34 @@ describe("Claude content admission", () => {
     await expect(call).rejects.toMatchObject({ name: "UnboundedClaudeContentError" });
     expect(bodies).toHaveLength(0);
     expect(book.status()).toMatchObject({ settledUsd: 199.965, openReservations: 0 });
+  });
+});
+
+describe("Claude thinking input (text-only scope)", () => {
+  it("refuses a replayed thinking block before reserving or calling the SDK", async () => {
+    const { client, bodies } = fakeClient([message()]);
+    const book = ledger();
+    const call = new AnthropicMessagesProvider({ client, ledger: book }).decide(
+      request({
+        claudeHarness: {
+          system: [{ type: "text", text: "frozen" }],
+          messages: [
+            { role: "user", content: [{ type: "text", text: "turn 1" }] },
+            {
+              role: "assistant",
+              content: [
+                { type: "thinking", thinking: "", signature: "sig-1" },
+                { type: "text", text: '{"choice":"b"}' },
+              ],
+            },
+            { role: "user", content: [{ type: "text", text: "turn 2" }] },
+          ],
+        },
+      }),
+    );
+    await expect(call).rejects.toMatchObject({ name: "UnboundedClaudeContentError" });
+    expect(bodies).toHaveLength(0);
+    expect(book.status()).toMatchObject({ settledUsd: 0, openReservations: 0 });
   });
 });
 
