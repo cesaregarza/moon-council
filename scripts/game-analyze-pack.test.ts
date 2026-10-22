@@ -74,6 +74,7 @@ async function packNight(script: NightScript) {
   const villagers = state.players.filter((p) => p.role.id === "villager").map((p) => p.id);
   const [victim, other] = villagers as [string, string];
   const seer = state.players.find((p) => p.role.id === "seer")!.id;
+  const doctor = state.players.find((p) => p.role.id === "doctor")!.id;
   let wolfInspectionId: string | undefined;
   if (script.wolfInspection) {
     repository.appendEvent(game.id, {
@@ -103,18 +104,24 @@ async function packNight(script: NightScript) {
               probabilities: { 0: 0, 1: 0, 2: 0, 3: 1, 4: 0 },
             },
           ];
-        const criteria = q.criteria as Record<string, string>;
+        // V3.2 criteria are text naming "(pN)"; V3.1 criteria are { playerId, name } objects.
+        const criteria = q.criteria as Record<string, string | { playerId?: string }>;
         const handles = Object.keys(criteria);
-        const of = (id: string) => handles.find((h) => criteria[h]!.includes(`(${id})`));
-        const texts = Object.values(criteria).join(" ");
-        if (texts.includes("Point the pack attack at")) {
+        const of = (id: string) =>
+          handles.find((h) => {
+            const option = criteria[h]!;
+            return typeof option === "string" ? option.includes(`(${id})`) : option.playerId === id;
+          });
+        // The first night is the only one run: a wolf's choice is its pack point, the doctor's
+        // its protection.
+        if (wolves.includes(self)) {
           const round = rounds.get(self) ?? 0;
           rounds.set(self, round + 1);
           const planned = script.rounds[Math.min(round, script.rounds.length - 1)]!;
           const point = planned[wolves.indexOf(self)]!;
           return [key, choice(handles, of(point.at === "victim" ? victim : other)!, point.p)];
         }
-        if (texts.includes("Use Protect on")) {
+        if (self === doctor) {
           const pick = script.save ? of(victim) : handles.find((h) => h !== of(victim));
           return [key, choice(handles, pick ?? handles[0]!, 0.9)];
         }
