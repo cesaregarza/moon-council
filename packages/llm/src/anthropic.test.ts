@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -420,6 +420,127 @@ describe("Claude raw response accounting", () => {
         bodies[0]!.max_tokens,
       ),
     ]);
+  });
+});
+
+/**
+ * Felix's Rule U (CES-1554 ruling f8b21c5e): raw usage is parsed once into a validated record,
+ * and the trusted cost and the mapped usage both come from it. Malformed fields never become
+ * a cost, a credit or plausible usage.
+ */
+describe("Claude usage validation (Rule U)", () => {
+  const BAD: [string, unknown][] = [
+    ["null", null],
+    ["absent", undefined],
+    ["true", true],
+    ['"5"', "5"],
+    ["1.5", 1.5],
+    ["-1", -1],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["2^53", 2 ** 53],
+  ];
+  /** A reply whose usage has `field` set to `value` (deleted when undefined). */
+  const reply = (field: string, value: unknown, base: Partial<Anthropic.Usage> = {}) => {
+    const raw = usage({ input_tokens: 1_000, output_tokens: 50, ...base }) as unknown as Record<
+      string,
+      unknown
+    >;
+    if (value === undefined) delete raw[field];
+    else raw[field] = value;
+    return message({ usage: raw as unknown as Anthropic.Usage });
+  };
+  /** Runs one call from $199.965 settled; a 47K output cap holds about $0.0236. */
+  async function settleFrom(reply: Anthropic.Message) {
+    const { client, bodies } = fakeClient([reply]);
+    const book = ledger();
+    book.reserve("earlier", 199.965);
+    book.settle("earlier", 199.965);
+    const metadata: Record<string, unknown>[] = [];
+    const usages: unknown[] = [];
+    await new AnthropicMessagesProvider({ client, ledger: book })
+      .decide(
+        request({
+          maxOutputTokens: 47_000,
+          onProviderMetadata: (value) => metadata.push(value),
+          onUsage: (value) => usages.push(value),
+        }),
+      )
+      .catch(() => undefined);
+    const held = claudeReservationUsd(
+      "claude-haiku-5-5",
+      Buffer.byteLength(JSON.stringify(bodies[0]), "utf8"),
+      bodies[0]!.max_tokens,
+    );
+    return { book, metadata, usage: usages[0], held };
+  }
+
+  for (const field of ["input_tokens", "output_tokens"])
+    it.each(BAD)(
+      `treats ${field} = %s as unknown usage, settling the held reservation`,
+      async (_label, value) => {
+        const { book, metadata, usage: mapped, held } = await settleFrom(reply(field, value));
+        expect(metadata[0]).not.toHaveProperty("costUsd");
+        expect(readFileSync(book.path, "utf8")).not.toContain("null");
+        expect(book.status().settledUsd).toBeCloseTo(199.965 + held, 10);
+        expect(() => book.reserve("next", 0.03)).toThrow(SpendLimitError);
+        expect(mapped).toMatchObject({ inputTokens: null, outputTokens: null });
+      },
+    );
+
+  it.each([
+    ["null", null],
+    ["absent", undefined],
+  ])("trusts a cache count that is %s as zero", async (_label, value) => {
+    for (const field of ["cache_read_input_tokens", "cache_creation_input_tokens"]) {
+      const { metadata, usage: mapped } = await settleFrom(reply(field, value));
+      // 1,000 Haiku input at $0.10/M plus 50 output at $0.50/M.
+      expect(metadata[0]?.costUsd).toBeCloseTo(0.0001 + 0.000025, 12);
+      expect(mapped).toMatchObject({ inputTokens: 1_000, outputTokens: 50 });
+    }
+  });
+
+  it.each(BAD.filter(([label]) => !["null", "absent", "NaN", "Infinity"].includes(label)))(
+    "treats a cache count of %s as unknown usage",
+    async (_label, value) => {
+      for (const field of ["cache_read_input_tokens", "cache_creation_input_tokens"]) {
+        const { metadata, usage: mapped } = await settleFrom(reply(field, value));
+        expect(metadata[0]).not.toHaveProperty("costUsd");
+        expect(mapped).toMatchObject({ inputTokens: null, outputTokens: null });
+      }
+    },
+  );
+
+  const write = (split: unknown) =>
+    ({
+      ...usage({ input_tokens: 0, cache_creation_input_tokens: 10_000, output_tokens: 50 }),
+      cache_creation: split,
+    }) as unknown as Anthropic.Usage;
+  const priced = claudeResponseCostUsd as (
+    model: string,
+    usage: Anthropic.Usage,
+    marked?: Set<string>,
+  ) => number | null;
+
+  it.each([
+    ["5m 10000, 1h null", { ephemeral_5m_input_tokens: 10_000, ephemeral_1h_input_tokens: null }],
+    ["5m null, 1h 10000", { ephemeral_5m_input_tokens: null, ephemeral_1h_input_tokens: 10_000 }],
+    ["5m true, 1h 9999", { ephemeral_5m_input_tokens: true, ephemeral_1h_input_tokens: 9_999 }],
+    ["a missing component", { ephemeral_5m_input_tokens: 10_000 }],
+  ])("prices an incomplete split (%s) at the 1-hour marker rate", (_label, split) => {
+    // halcyon's case: 10K Opus writes + 50 output are $0.081 at 1 hour, not $0.051.
+    expect(priced("claude-opus-5-5", write(split), new Set(["1h"]))).toBeCloseTo(0.081, 10);
+  });
+
+  it("trusts a complete, valid split", () => {
+    const split = { ephemeral_5m_input_tokens: 10_000, ephemeral_1h_input_tokens: 0 };
+    expect(priced("claude-opus-5-5", write(split), new Set(["1h"]))).toBeCloseTo(0.051, 10);
+  });
+
+  it("records the largest safe count as a finite cost in a readable ledger", async () => {
+    const { book } = await settleFrom(reply("output_tokens", Number.MAX_SAFE_INTEGER));
+    expect(Number.isFinite(book.status().settledUsd)).toBe(true);
+    expect(() => book.reserve("next", 0.01)).toThrow(SpendLimitError);
   });
 });
 

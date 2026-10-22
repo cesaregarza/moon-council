@@ -65,6 +65,54 @@ describe("monthly Claude spend ledger", () => {
     expect(months["2026-11"].settledUsd).toBe(0);
   });
 
+  // Felix's Rule L: the ledger never stores a non-finite or negative amount.
+  const INVALID = [Number.NaN, Number.POSITIVE_INFINITY, -1];
+
+  it.each(INVALID)("refuses to reserve %s, leaving the file unchanged", (usd) => {
+    clock = new Date("2026-10-22T12:00:00Z");
+    const path = file();
+    const ledger = new ClaudeSpendLedger(path, 200, now);
+    ledger.reserve("a", 1);
+    const before = readFileSync(path, "utf8");
+    expect(() => ledger.reserve("b", usd)).toThrow(SpendLedgerError);
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  it.each(INVALID)("settles %s at the held reservation", (usd) => {
+    clock = new Date("2026-10-22T12:00:00Z");
+    const path = file();
+    const ledger = new ClaudeSpendLedger(path, 200, now);
+    ledger.reserve("a", 5);
+    ledger.settle("a", usd);
+    expect(readFileSync(path, "utf8")).not.toContain("null");
+    expect(JSON.parse(readFileSync(path, "utf8")).months["2026-10"].settledUsd).toBe(5);
+    expect(ledger.status()).toMatchObject({ settledUsd: 5, openReservations: 0 });
+  });
+
+  it.each(INVALID)("settles %s at a swept reservation's tombstone", (usd) => {
+    const path = file();
+    clock = new Date("2026-10-22T12:00:00Z");
+    const ledger = new ClaudeSpendLedger(path, 200, now);
+    ledger.reserve("a", 5);
+    clock = new Date("2026-10-22T13:30:00Z");
+    ledger.reserve("sweeps", 0);
+    ledger.settle("sweeps", 0);
+    ledger.settle("a", usd);
+    expect(readFileSync(path, "utf8")).not.toContain("null");
+    expect(JSON.parse(readFileSync(path, "utf8")).months["2026-10"].settledUsd).toBe(5);
+    expect(ledger.status().settledUsd).toBe(5);
+  });
+
+  it.each(INVALID)("refuses to settle %s with nothing held, writing nothing", (usd) => {
+    clock = new Date("2026-10-22T12:00:00Z");
+    const path = file();
+    const ledger = new ClaudeSpendLedger(path, 200, now);
+    ledger.reserve("a", 1);
+    const before = readFileSync(path, "utf8");
+    expect(() => ledger.settle("ghost", usd)).toThrow(SpendLedgerError);
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
   it("refuses calls on a corrupt ledger and never resets it to zero", () => {
     clock = new Date("2026-10-22T12:00:00Z");
     const path = file();
