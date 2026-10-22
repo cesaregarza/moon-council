@@ -88,12 +88,23 @@ export function claudeReservationUsd(
   });
 }
 
+const invalidCount = (value: number | null) =>
+  value !== null && !(Number.isInteger(value) && value >= 0);
+
 /**
  * Settled cost from mapped usage (inputTokens includes cache reads and writes). Usage does not
  * split writes by TTL, so writes are priced at the 1-hour rate; an unknown split is priced as
- * writes. Returns null when usage is unknown, so callers keep the reservation.
+ * writes. Returns null when usage is unknown or any count is not a non-negative integer, so
+ * callers keep the reservation instead of rebuilding a cost (or a credit) from it.
  */
 export function claudeUsageCostUsd(model: string, usage: UsageV2): number | null {
+  const counts = [
+    usage.inputTokens,
+    usage.outputTokens,
+    usage.cachedInputTokens,
+    usage.cacheWriteInputTokens,
+  ];
+  if (counts.some(invalidCount)) return null;
   if (usage.inputTokens === null || usage.outputTokens === null) return null;
   if (usage.cachedInputTokens === null || usage.cacheWriteInputTokens === null)
     return claudeReservationUsd(model, usage.inputTokens, usage.outputTokens);

@@ -67,6 +67,10 @@ export function validatePreparedReport(
 
 export class DecisionPausedError extends Error {}
 export class V2BudgetError extends Error {}
+/** An unsettled Claude attempt with no admitted reservation: nothing bounds what it may cost. */
+export class UnreservedClaudeAttemptError extends V2BudgetError {
+  override name = "UnreservedClaudeAttemptError";
+}
 export function usageTotals(store: DecisionStore, gameId: string) {
   const attempts = store.attempts(gameId);
   return {
@@ -111,8 +115,9 @@ export function claudeNextReservationUsd(next: NextCallReservation): number | un
 }
 
 /**
- * The provider's actual cost when validly recorded, else the cost from usage, else the
- * reservation admitted when the call began. A negative or non-finite cost is never credit.
+ * The provider's actual cost when validly recorded, else the cost from valid usage, else the
+ * reservation admitted when the call began. A negative or non-finite cost, or invalid usage,
+ * is never credit. With none of these, the attempt cannot be bounded and admission stops.
  */
 function claudeAttemptUsd(attempt: ProviderAttemptRecord): number {
   const actual = attempt.providerMetadata?.costUsd;
@@ -120,11 +125,8 @@ function claudeAttemptUsd(attempt: ProviderAttemptRecord): number {
   const fromUsage = claudeUsageCostUsd(attempt.model, attempt.usage);
   if (fromUsage !== null) return fromUsage;
   if (validUsd(attempt.reservedUsd)) return attempt.reservedUsd;
-  // Attempts recorded before reservations were stored: rebuilt from the saved prompt.
-  return claudeReservationUsd(
-    attempt.model,
-    promptCeilingTokens(estimatedTokens(attempt.request)),
-    attempt.maxOutputTokens ?? CLAUDE_DEFAULT_OUTPUT_CAP,
+  throw new UnreservedClaudeAttemptError(
+    `spend admission refused: Claude attempt ${attempt.id} has unknown usage and no admitted reservation`,
   );
 }
 
