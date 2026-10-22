@@ -11,6 +11,8 @@ import type { DecisionProvider } from "@werewolf/llm";
 import {
   assertV2Budget,
   claudeNextReservationUsd,
+  claudeSpendAdmission,
+  ClaudeSpendRefusedError,
   V2BudgetError,
   usageTotals,
 } from "./decisions-v2";
@@ -57,6 +59,17 @@ const active = (repository: LabRepository, gameId: string) =>
   ["running", "stepping"].includes(repository.getGame(gameId)?.status ?? "");
 const errorText = (error: unknown) =>
   (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+
+/**
+ * How a failed attempt ends narration: a Claude call the game refused at its exact reservation,
+ * before sending (CES-1556), skips it like any optional call; other budget or pause errors stop
+ * it; anything else is a failed attempt that may be repaired.
+ */
+function narrationStop(error: unknown): "skip" | "throw" | undefined {
+  if (error instanceof ClaudeSpendRefusedError) return "skip";
+  if (error instanceof NarrationPausedError || error instanceof V2BudgetError) return "throw";
+  return undefined;
+}
 
 export class NarrationV2 {
   readonly store: DecisionStore;
@@ -185,14 +198,18 @@ export class NarrationV2 {
             config.maxTotalTokens)
       );
     };
-    if (!admitsBudget(basePrompt)) {
+    /** Optional narration gives way to mandatory decisions: the fallback text is announced. */
+    const skip = () => {
       checkpoint = {
-        ...checkpoint,
+        ...checkpoint!,
         status: "skipped",
         error: "optional narration skipped to reserve mandatory decision budget",
       };
       this.store.put(options.gameId, keyOf(options.decisionId), checkpoint);
       return options.fallbackText;
+    };
+    if (!admitsBudget(basePrompt)) {
+      return skip();
     }
     let repair = priorAttempts.length > 0;
     for (let index = priorAttempts.length; index < 2; index += 1) {
@@ -207,13 +224,7 @@ export class NarrationV2 {
               }),
             };
       if (!admitsBudget(prompt)) {
-        checkpoint = {
-          ...checkpoint,
-          status: "skipped",
-          error: "optional narration skipped to reserve mandatory decision budget",
-        };
-        this.store.put(options.gameId, keyOf(options.decisionId), checkpoint);
-        return options.fallbackText;
+        return skip();
       }
       checkpoint = { ...checkpoint, lastPrompt: prompt };
       this.store.put(options.gameId, keyOf(options.decisionId), checkpoint);
@@ -300,6 +311,7 @@ export class NarrationV2 {
           signal: controller.signal,
           timeoutMs,
           onUsage,
+          admitSpend: claudeSpendAdmission(this.store, options.gameId, config, attempt),
           onProviderMetadata: (metadata) => {
             attempt.providerMetadata = { ...attempt.providerMetadata, ...metadata };
             this.store.updateAttempt(attempt);
@@ -334,7 +346,9 @@ export class NarrationV2 {
           );
         return report.text;
       } catch (error) {
-        if (error instanceof NarrationPausedError || error instanceof V2BudgetError) throw error;
+        const stop = narrationStop(error);
+        if (stop === "skip") return skip();
+        if (stop) throw error;
         if (!usageReceived)
           onUsage(unknownUsage(), {
             provider: attempt.provider,

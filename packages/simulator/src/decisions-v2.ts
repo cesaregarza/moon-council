@@ -69,6 +69,10 @@ export function validatePreparedReport(
 
 export class DecisionPausedError extends Error {}
 export class V2BudgetError extends Error {}
+/** The game refused a Claude call at the reservation its exact request needs; nothing was sent. */
+export class ClaudeSpendRefusedError extends V2BudgetError {
+  override name = "ClaudeSpendRefusedError";
+}
 /** An unsettled Claude attempt with no admitted reservation: nothing bounds what it may cost. */
 export class UnreservedClaudeAttemptError extends V2BudgetError {
   override name = "UnreservedClaudeAttemptError";
@@ -139,6 +143,61 @@ function claudeSpendUsd(store: DecisionStore, gameId: string, next?: NextCallRes
     .filter((attempt) => attempt.provider === "anthropic")
     .reduce((sum, attempt) => sum + claudeAttemptUsd(attempt), 0);
   return settled + ((next && claudeNextReservationUsd(next)) ?? 0);
+}
+
+/** The game's Claude spend alone: settled calls plus every unsettled reservation, this one included. */
+function assertClaudeSpendFits(store: DecisionStore, gameId: string, config: GameConfigV2) {
+  if (config.maxSpendUsd === null) return;
+  let spend: number;
+  try {
+    spend = claudeSpendUsd(store, gameId);
+  } catch (error) {
+    if (error instanceof UnpricedModelError)
+      throw new ClaudeSpendRefusedError(`spend admission refused: ${error.message}`);
+    throw error;
+  }
+  if (spend > config.maxSpendUsd)
+    throw new ClaudeSpendRefusedError(
+      `Claude spend admission limit reached at the request's exact reservation ($${spend.toFixed(4)} of $${config.maxSpendUsd})`,
+    );
+}
+
+/**
+ * The game's half of a Claude call's admission, run by the provider with the reservation it
+ * computed from the exact request (CES-1556). The attempt holds that figure from here on, so
+ * each parallel sibling is checked against the others' true reservations. A refused call was
+ * never sent: its attempt is closed at zero cost and holds nothing.
+ */
+export function claudeSpendAdmission(
+  store: DecisionStore,
+  gameId: string,
+  config: GameConfigV2,
+  attempt: ProviderAttemptRecord,
+): (usd: number) => void {
+  return (usd) => {
+    attempt.reservedUsd = usd;
+    store.updateAttempt(attempt);
+    try {
+      assertClaudeSpendFits(store, gameId, config);
+    } catch (error) {
+      Object.assign(attempt, {
+        reservedUsd: 0,
+        status: "invalid",
+        error: `spend admission refused before sending: ${error instanceof Error ? error.message : String(error)}`,
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          reasoningTokens: 0,
+        },
+        endedAt: new Date().toISOString(),
+      });
+      store.updateAttempt(attempt);
+      throw error;
+    }
+  };
 }
 
 export function assertV2Budget(
@@ -564,6 +623,7 @@ export class DecisionExecutorV2 {
             attempt.providerMetadata = { ...attempt.providerMetadata, ...metadata };
             this.store.updateAttempt(attempt);
           },
+          admitSpend: claudeSpendAdmission(this.store, op.gameId, config, attempt),
           ...this.claudeSessionFields({
             op,
             config,

@@ -100,6 +100,12 @@ export interface DecisionRequest<T> {
      */
     replayedTokens?: number;
   };
+  /**
+   * Claude only: called synchronously with the worst-case USD the provider computed from the
+   * exact request body, before it reserves that figure in the monthly ledger and before it sends.
+   * The caller admits it against the game's limit; throwing refuses the call.
+   */
+  admitSpend?: (usd: number) => void;
   /** Claude only: every received reply, before parsing, so a harness can store it verbatim. */
   onClaudeReply?: (reply: {
     content: Anthropic.ContentBlock[];

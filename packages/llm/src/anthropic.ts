@@ -232,6 +232,8 @@ export class AnthropicMessagesProvider implements DecisionProvider {
       promptCeilingTokens(body, replayedTokens),
       body.max_tokens,
     );
+    // One figure, in order and with no await between: the game admits it, the month reserves it.
+    request.admitSpend?.(reservation);
     this.ledger.reserve(reservationId, reservation);
     const spent = { usd: reservation }; // unknown usage keeps the worst case
     let usageReported = false;
