@@ -22,6 +22,7 @@
     "cache:audit": "tsx scripts/cache-audit.ts",
     "claude:spend": "tsx scripts/claude-spend.ts",
     "game:audit": "tsx scripts/game-audit.ts",
+    "game:analyze": "tsx scripts/game-analyze.ts",
     "codex:login": "codex login",
     "codex:status": "codex login status",
     "start:api": "npm run start -w @werewolf/api",

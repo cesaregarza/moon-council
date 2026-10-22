@@ -36,3 +36,13 @@ export function openDatabase(configured?: string): DatabaseConnection {
   migrate(db, { migrationsFolder });
   return { db, sqlite, path, close: () => sqlite.close() };
 }
+
+/**
+ * An existing database opened read-only: no migrations, no WAL switch, and SQLite refuses any
+ * write. For analysis tools that must never change a game record.
+ */
+export function openDatabaseReadOnly(path: string): DatabaseConnection {
+  const sqlite = new Database(path, { readonly: true, fileMustExist: true });
+  const db = drizzle(sqlite, { schema });
+  return { db, sqlite, path, close: () => sqlite.close() };
+}
