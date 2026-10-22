@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { providerJsonSchema, unknownUsage, type UsageV2 } from "@werewolf/contracts";
-import { assertClaudePriced, claudeCostUsd, claudeReservationUsd } from "./anthropic-pricing";
+import {
+  assertClaudePriced,
+  claudeCostUsd,
+  claudeReservationUsd,
+  isTokenCount,
+} from "./anthropic-pricing";
 import { promptFor } from "./prompt";
 import type { DecisionProvider, DecisionRequest, DecisionResult } from "./provider";
 import { ClaudeWarmGate } from "./claude-warm-gate";
@@ -104,24 +109,66 @@ export function claudeRequest<T>(
   };
 }
 
-/** Anthropic's input_tokens excludes cache reads and writes; UsageV2.inputTokens includes them. */
-export function claudeUsage(usage: Anthropic.Usage | undefined): UsageV2 {
-  if (!usage) return unknownUsage();
-  const read = usage.cache_read_input_tokens ?? 0,
-    write = usage.cache_creation_input_tokens ?? 0;
-  const inputTokens = usage.input_tokens + read + write;
+/** A reply's usage after validation (Rule U); everything downstream derives from it. */
+interface ClaudeUsageRecord {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** The TTL split, only when both components are valid and account for every write. */
+  split: { fiveMinutes: number; oneHour: number } | null;
+  thinking: number | null;
+}
+
+/** A cache count may be null or absent (zero); anything else must be a valid count. */
+const cacheCount = (value: unknown): number | undefined =>
+  value === null || value === undefined ? 0 : isTokenCount(value) ? value : undefined;
+
+/**
+ * Parses raw SDK usage once. Null means unknown usage: a required count (input or output) is
+ * not a valid count, or a cache count is invalid. A null TTL component is never zero.
+ */
+export function parseClaudeUsage(usage: unknown): ClaudeUsageRecord | null {
+  if (!usage || typeof usage !== "object") return null;
+  const raw = usage as Record<string, unknown>;
+  const cacheRead = cacheCount(raw.cache_read_input_tokens);
+  const cacheWrite = cacheCount(raw.cache_creation_input_tokens);
+  const { input_tokens: input, output_tokens: output } = raw;
+  if (!isTokenCount(input) || !isTokenCount(output)) return null;
+  if (cacheRead === undefined || cacheWrite === undefined) return null;
+  const split = (raw.cache_creation ?? {}) as Record<string, unknown>;
+  const [fiveMinutes, oneHour] = [split.ephemeral_5m_input_tokens, split.ephemeral_1h_input_tokens];
+  const complete =
+    isTokenCount(fiveMinutes) && isTokenCount(oneHour) && fiveMinutes + oneHour === cacheWrite;
+  const thinking = (raw.output_tokens_details as Record<string, unknown> | null | undefined)
+    ?.thinking_tokens;
   return {
-    inputTokens,
-    outputTokens: usage.output_tokens,
-    totalTokens: inputTokens + usage.output_tokens,
-    cachedInputTokens: read,
-    cacheWriteInputTokens: write,
-    reasoningTokens: usage.output_tokens_details?.thinking_tokens ?? null,
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    split: complete ? { fiveMinutes, oneHour } : null,
+    thinking: isTokenCount(thinking) ? thinking : null,
   };
 }
 
-const validCount = (value: number | null | undefined) =>
-  value === null || value === undefined || (Number.isInteger(value) && value >= 0);
+/** Anthropic's input_tokens excludes cache reads and writes; UsageV2.inputTokens includes them. */
+function mappedUsage(record: ClaudeUsageRecord | null): UsageV2 {
+  if (!record) return unknownUsage();
+  const inputTokens = record.input + record.cacheRead + record.cacheWrite;
+  return {
+    inputTokens,
+    outputTokens: record.output,
+    totalTokens: inputTokens + record.output,
+    cachedInputTokens: record.cacheRead,
+    cacheWriteInputTokens: record.cacheWrite,
+    reasoningTokens: record.thinking,
+  };
+}
+
+export function claudeUsage(usage: Anthropic.Usage | undefined): UsageV2 {
+  return mappedUsage(parseClaudeUsage(usage));
+}
 
 /** Cache TTLs the request marked, on blocks or as the top-level marker ("5m" when unset). */
 function markedTtls(body: Anthropic.MessageCreateParamsNonStreaming): Set<string> {
@@ -139,39 +186,36 @@ function markedTtls(body: Anthropic.MessageCreateParamsNonStreaming): Set<string
 }
 
 /**
- * Actual cost from the response, or null when any raw count is not a non-negative integer (the
- * caller then keeps its reservation). Writes use the reported TTL split when it accounts for
- * every write; otherwise they are priced at 5 minutes only if the request marked nothing else,
- * and at the 1-hour rate when its markers were mixed or unknown.
+ * Trusted cost of a validated usage record, or null when usage is unknown (the caller keeps its
+ * reservation). Writes use the TTL split when it is complete; otherwise they are priced at
+ * 5 minutes only if the request marked nothing else, and at the 1-hour rate when its markers
+ * were mixed or unknown.
  */
+function recordCostUsd(
+  model: string,
+  record: ClaudeUsageRecord | null,
+  marked?: Set<string>,
+): number | null {
+  if (!record) return null;
+  const only5m =
+    marked !== undefined && marked.size > 0 && [...marked].every((ttl) => ttl === "5m");
+  const write1h = record.split ? record.split.oneHour : only5m ? 0 : record.cacheWrite;
+  const cost = claudeCostUsd(model, {
+    uncachedInput: record.input,
+    cacheRead: record.cacheRead,
+    cacheWrite5m: record.cacheWrite - write1h,
+    cacheWrite1h: write1h,
+    output: record.output,
+  });
+  return Number.isFinite(cost) ? cost : null;
+}
+
 export function claudeResponseCostUsd(
   model: string,
   usage: Anthropic.Usage,
   marked?: Set<string>,
 ): number | null {
-  const split = usage.cache_creation;
-  const counts = [
-    usage.input_tokens,
-    usage.output_tokens,
-    usage.cache_creation_input_tokens,
-    usage.cache_read_input_tokens,
-    split?.ephemeral_5m_input_tokens,
-    split?.ephemeral_1h_input_tokens,
-  ];
-  if (!counts.every(validCount)) return null;
-  const write = usage.cache_creation_input_tokens ?? 0;
-  const reported =
-    split && split.ephemeral_5m_input_tokens + split.ephemeral_1h_input_tokens === write;
-  const only5m =
-    marked !== undefined && marked.size > 0 && [...marked].every((ttl) => ttl === "5m");
-  const write1h = reported ? split.ephemeral_1h_input_tokens : only5m ? 0 : write;
-  return claudeCostUsd(model, {
-    uncachedInput: usage.input_tokens,
-    cacheRead: usage.cache_read_input_tokens ?? 0,
-    cacheWrite5m: write - write1h,
-    cacheWrite1h: write1h,
-    output: usage.output_tokens,
-  });
+  return recordCostUsd(model, parseClaudeUsage(usage), marked);
 }
 
 /** Content whose cost its serialized bytes cannot bound (images, documents, tool traffic). */
@@ -216,6 +260,29 @@ function promptCeilingTokens(body: ClaudeBody, replayedTokens: number | undefine
   return replayedTokens + Buffer.byteLength(JSON.stringify(rest), "utf8");
 }
 
+/** We only ever send whole, positive output caps (our policy, not a claim about the API). */
+const isOutputCap = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
+export class InvalidClaudeOutputCapError extends Error {
+  override name = "InvalidClaudeOutputCapError";
+}
+
+/** The default output cap: the option, else ANTHROPIC_MAX_OUTPUT_TOKENS, else 16000. */
+function configuredOutputCap(option: number | undefined): number {
+  if (option !== undefined) {
+    if (!isOutputCap(option))
+      throw new InvalidClaudeOutputCapError(`Invalid Claude output cap: ${String(option)}`);
+    return option;
+  }
+  const raw = process.env.ANTHROPIC_MAX_OUTPUT_TOKENS;
+  if (raw === undefined || raw.trim() === "") return 16_000;
+  const cap = Number(raw);
+  if (!isOutputCap(cap))
+    throw new InvalidClaudeOutputCapError(`Invalid ANTHROPIC_MAX_OUTPUT_TOKENS: ${raw}`);
+  return cap;
+}
+
 export interface ClaudeClient {
   messages: {
     stream(
@@ -254,8 +321,7 @@ export class AnthropicMessagesProvider implements DecisionProvider {
     }
     this.ledger = options.ledger ?? new ClaudeSpendLedger();
     this.warmGate = options.warmGate ?? new ClaudeWarmGate();
-    this.maxTokensCap =
-      options.maxTokensCap ?? Number(process.env.ANTHROPIC_MAX_OUTPUT_TOKENS || 16_000);
+    this.maxTokensCap = configuredOutputCap(options.maxTokensCap);
   }
 
   /** Anthropic keeps no conversation state: every call re-sends the full prompt. */
@@ -263,6 +329,10 @@ export class AnthropicMessagesProvider implements DecisionProvider {
 
   async decide<T>(request: DecisionRequest<T>): Promise<DecisionResult<T>> {
     const body = claudeRequest(request, this.maxTokensCap);
+    if (!isOutputCap(body.max_tokens))
+      throw new InvalidClaudeOutputCapError(
+        `Claude output cap must be a positive safe integer; got ${String(body.max_tokens)}`,
+      );
     assertClaudePriced(body.model);
     const replayedTokens = request.claudeHarness?.replayedTokens;
     assertBoundedContent(body, replayedTokens);
@@ -291,9 +361,11 @@ export class AnthropicMessagesProvider implements DecisionProvider {
       request.onProviderRequest?.(body as unknown as Record<string, unknown>);
       const message = await this.streamOnce(body, signal, request.claudeHarness?.warmGateKey);
       // Invalid raw usage yields no cost: the held reservation settles, and no cost is trusted.
-      const cost = claudeResponseCostUsd(body.model, message.usage, markedTtls(body));
+      // Usage is parsed once; the settled cost and the reported usage both come from it.
+      const record = parseClaudeUsage(message.usage);
+      const cost = recordCostUsd(body.model, record, markedTtls(body));
       if (cost !== null) spent.usd = cost;
-      return claudeResult(tracked, message, cost);
+      return claudeResult(tracked, message, cost, mappedUsage(record));
     } catch (error) {
       if (!usageReported)
         request.onUsage?.(unknownUsage(), {
@@ -333,8 +405,8 @@ function claudeResult<T>(
   request: DecisionRequest<T>,
   message: Anthropic.Message,
   costUsd: number | null,
+  usage: UsageV2,
 ): DecisionResult<T> {
-  const usage = claudeUsage(message.usage);
   request.onUsage?.(usage, {
     provider: "anthropic",
     model: message.model,

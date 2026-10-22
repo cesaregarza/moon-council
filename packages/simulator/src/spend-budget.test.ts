@@ -13,6 +13,7 @@ import {
 } from "@werewolf/engine";
 import {
   AnthropicMessagesProvider,
+  claudeUsage,
   FakeDecisionProvider,
   type ClaudeClient,
   type DecisionProvider,
@@ -311,6 +312,38 @@ describe("per-game Claude spend admission", () => {
     }
     expect(refusal).toMatchObject({ name: "UnreservedClaudeAttemptError" });
   });
+
+  // Rule U, game side: usage mapped from malformed raw counts is unknown, so the game keeps
+  // the attempt's admitted reservation ($0.08 + $0.0208 > $0.09 refuses the next call).
+  for (const field of ["input_tokens", "output_tokens"])
+    it.each([null, undefined, true, "5", 1.5, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53])(
+      `holds the reservation when the reply's ${field} is %s`,
+      (value) => {
+        const raw: Record<string, unknown> = {
+          input_tokens: 1_000,
+          output_tokens: 50,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        };
+        if (value === undefined) delete raw[field];
+        else raw[field] = value;
+        const game = ledger(0.09);
+        const record = game.attempt("claude-opus-5-5", 1_000);
+        record.usage = claudeUsage(raw as never);
+        record.status = "valid";
+        Object.assign(record, { reservedUsd: 0.08 });
+        game.store.updateAttempt(record);
+        const next = {
+          provider: "anthropic",
+          model: "claude-opus-5-5",
+          inputTokens: 0,
+          maxOutputTokens: 1_040,
+        };
+        expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, true, next)).toThrow(
+          /spend/,
+        );
+      },
+    );
 
   it("fails closed for a Claude model with no price", () => {
     const game = ledger(100);
