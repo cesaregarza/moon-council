@@ -1,5 +1,6 @@
 import type { SpeakerIntentV1 } from "@werewolf/contracts";
 import { rankSpeakerAuction } from "../../packages/simulator/src/speaker-auction";
+import { CONTROL_ALWAYS_WILLING } from "../../packages/simulator/src/speaker-decline";
 
 export const IDS = ["p1", "p2", "p3", "p4"];
 export const POLICIES = ["auction", "urgency", "cyclic"] as const;
@@ -79,7 +80,7 @@ export function controlBid(
   const urge = target ? 1 : view.own ? 0.8 : 0.05;
   return {
     urge,
-    wantsToSpeak: true,
+    wantsToSpeak: CONTROL_ALWAYS_WILLING,
     willingnessToListen: IDS.filter((id) => id !== view.playerId).map((playerId) => ({
       playerId,
       willingness:

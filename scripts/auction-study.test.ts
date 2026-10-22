@@ -11,7 +11,7 @@ import {
 } from "./lib/auction-study-design";
 import { AUCTION_SCENARIOS } from "./lib/auction-study-scenarios";
 import { studyPlayers, playerPrompt, jevPrompt } from "./lib/auction-study-agents";
-import { runStudyDiscussion } from "./lib/auction-study-runner";
+import { bidIntent, runStudyDiscussion } from "./lib/auction-study-runner";
 import {
   discussionMetrics,
   factorialEffects,
@@ -156,5 +156,23 @@ describe("general speech auction study", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("study bids use the production decline rule", () => {
+  const response = (noContribution: number) => ({
+    model: "scripted",
+    answers: {
+      urge: {
+        type: "score" as const,
+        score: 3 * (1 - noContribution),
+        confidence: 1,
+        probabilities: { "0": noContribution, "1": 0, "2": 0, "3": 1 - noContribution, "4": 0 },
+      },
+    },
+  });
+  it("declines at P(no useful contribution) of at least 0.5 and bids below it", () => {
+    expect(bidIntent(response(0.6))).toMatchObject({ wantsToSpeak: false, urge: 0 });
+    expect(bidIntent(response(0.4))).toMatchObject({ wantsToSpeak: true });
   });
 });

@@ -308,6 +308,122 @@ describe("Claude usage and cost", () => {
   });
 });
 
+describe("Claude raw response accounting", () => {
+  // halcyon's adapter controls (PR #20, 05:35Z): the reply's raw usage is checked before it is
+  // trusted, and an unreported TTL split never prices writes below what the request marked.
+  const oneHourHarness = {
+    system: [
+      {
+        type: "text" as const,
+        text: "frozen",
+        cache_control: { type: "ephemeral" as const, ttl: "1h" as const },
+      },
+    ],
+    messages: [{ role: "user" as const, content: [{ type: "text" as const, text: "go" }] }],
+  };
+
+  it("prices writes of an unreported TTL split at the 1-hour rate the request marked", async () => {
+    // 10K Opus writes + 50 output: $0.081 at 1 hour, $0.051 if assumed 5 minutes.
+    const { client } = fakeClient([
+      message({
+        model: "claude-opus-5-5",
+        usage: usage({
+          input_tokens: 0,
+          cache_creation_input_tokens: 10_000,
+          cache_creation: null,
+          output_tokens: 50,
+        }),
+      }),
+    ]);
+    const book = ledger();
+    book.reserve("earlier", 199.7);
+    book.settle("earlier", 199.7);
+    const metadata: Record<string, unknown>[] = [];
+    await new AnthropicMessagesProvider({ client, ledger: book }).decide(
+      request({
+        model: "claude-opus-5-5",
+        claudeHarness: oneHourHarness,
+        onProviderMetadata: (value) => metadata.push(value),
+      }),
+    );
+    expect(metadata[0]?.costUsd).toBeCloseTo(0.081, 10);
+    expect(book.status().settledUsd).toBeCloseTo(199.781, 10);
+    expect(() => book.reserve("next", 0.23)).toThrow(SpendLimitError);
+  });
+
+  it("keeps the 5-minute rate for an unreported split when the request marked only 5 minutes", () => {
+    const write = usage({
+      input_tokens: 0,
+      cache_creation_input_tokens: 10_000,
+      cache_creation: null,
+      output_tokens: 50,
+    });
+    const priced = claudeResponseCostUsd as (
+      model: string,
+      usage: Anthropic.Usage,
+      marked?: Set<string>,
+    ) => number | null;
+    expect(priced("claude-opus-5-5", write, new Set(["5m"]))).toBeCloseTo(0.051, 10);
+    expect(priced("claude-opus-5-5", write, new Set(["5m", "1h"]))).toBeCloseTo(0.081, 10);
+    expect(priced("claude-opus-5-5", write)).toBeCloseTo(0.081, 10);
+  });
+
+  it("settles at the held reservation when raw usage holds a negative count", async () => {
+    const { client, bodies } = fakeClient([
+      message({ usage: usage({ input_tokens: 100, output_tokens: -100_000 }) }),
+    ]);
+    const book = ledger();
+    book.reserve("earlier", 199.965);
+    book.settle("earlier", 199.965);
+    const metadata: Record<string, unknown>[] = [];
+    await new AnthropicMessagesProvider({ client, ledger: book })
+      .decide(request({ onProviderMetadata: (value) => metadata.push(value) }))
+      .catch(() => undefined);
+    const held = claudeReservationUsd(
+      "claude-haiku-5-5",
+      Buffer.byteLength(JSON.stringify(bodies[0]), "utf8"),
+      bodies[0]!.max_tokens,
+    );
+    expect(book.status().settledUsd).toBeCloseTo(199.965 + held, 10);
+    expect(metadata[0]).not.toHaveProperty("costUsd");
+  });
+
+  it("emits no trusted cost when any raw count is invalid", async () => {
+    // halcyon's probe: 1,000 Opus input and output -1 computed a small positive cost that the
+    // game trusted over its $0.08 held reservation.
+    const { client } = fakeClient([
+      message({
+        model: "claude-opus-5-5",
+        usage: usage({ input_tokens: 1_000, output_tokens: -1 }),
+      }),
+    ]);
+    const metadata: Record<string, unknown>[] = [];
+    await new AnthropicMessagesProvider({ client, ledger: ledger() })
+      .decide(
+        request({ model: "claude-opus-5-5", onProviderMetadata: (value) => metadata.push(value) }),
+      )
+      .catch(() => undefined);
+    expect(metadata[0]).not.toHaveProperty("costUsd");
+  });
+
+  it("reserves against the exact serialized body sent, envelope included", async () => {
+    const { client, bodies } = fakeClient([message()]);
+    const reserved: number[] = [];
+    const book = {
+      reserve: (_id: string, usd: number) => reserved.push(usd),
+      settle: () => undefined,
+    };
+    await new AnthropicMessagesProvider({ client, ledger: book }).decide(request());
+    expect(reserved).toEqual([
+      claudeReservationUsd(
+        "claude-haiku-5-5",
+        Buffer.byteLength(JSON.stringify(bodies[0]), "utf8"),
+        bodies[0]!.max_tokens,
+      ),
+    ]);
+  });
+});
+
 describe("Claude content admission", () => {
   it("refuses image and other non-text content before reserving or calling the SDK", async () => {
     // halcyon's probe: 100 URL images cost what the images are, not what their URLs serialize to.

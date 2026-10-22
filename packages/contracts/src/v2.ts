@@ -623,6 +623,20 @@ export interface PlayerContextV2 {
   journal: PrivateJournalV2;
   responseDocket: string[];
   closing: boolean;
+  /** journal_v4 Jev only: today's public floor, never sent to the LLM. */
+  publicFloor?: PublicFloorV2;
+}
+/** Per living player, counted from every public speech today; no private record contributes. */
+export interface PublicFloorV2 {
+  day: number;
+  players: {
+    playerId: string;
+    speeches: number;
+    accusations: number;
+    challenges: number;
+    /** Formal accusations and challenges against the player since their latest speech today. */
+    responsesOwed: number;
+  }[];
 }
 export interface DecisionOpportunityV1 {
   id: string;
