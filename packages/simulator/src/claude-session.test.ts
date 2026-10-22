@@ -415,6 +415,8 @@ describe("Claude session repairs through the executor", () => {
       mandatoryRemaining: 1,
       validateCurrent: () => true,
       eventsForCommit: () => [],
+      // A per-call override: the session must still run the seat's configured "medium".
+      reasoningEffort: "high",
       requestForAttempt: (commitOnly, previous, repair) => ({
         ...decisionRequestV32(packet, task, commitOnly, previous, repair),
         schemaName: task.type,
@@ -485,9 +487,10 @@ describe("Claude session repairs through the executor", () => {
     expect(JSON.stringify(second!.messages)).toContain("Wrong task.");
     const repairTurn = JSON.stringify(second!.messages.at(-1));
     expect(repairTurn).toContain("Expected API response task journal_update");
-    expect(new DecisionStore(repository).attempts(game.id).map((a) => a.status)).toEqual([
-      "invalid",
-      "valid",
-    ]);
+    const attempts = new DecisionStore(repository).attempts(game.id);
+    expect(attempts.map((a) => a.status)).toEqual(["invalid", "valid"]);
+    // The configured effort is pinned, sent, and recorded as what actually ran.
+    expect((first!.output_config as { effort: string }).effort).toBe("medium");
+    expect(attempts.map((a) => a.reasoningEffort)).toEqual(["medium", "medium"]);
   });
 });
