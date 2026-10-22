@@ -741,6 +741,50 @@ describe("voting dynamics", () => {
     });
   });
 
+  it("counts roles named like Object.prototype keys, so role counts add up to the total", () => {
+    // halcyon's repro (PR #16, 04:16Z): constructor, __proto__ and toString are valid role names.
+    const named = players.map((p, i) =>
+      i >= 4 && i < 7
+        ? { ...p, role: { ...p.role, name: ["constructor", "__proto__", "toString"][i - 4]! } }
+        : p,
+    );
+    const { mechanics } = summarizeGameAudit(
+      game,
+      [
+        event(0, "game.created", { players: named }),
+        event(1, "game.started", {}),
+        event(2, "vote.resolved", { ballots: named.map((p) => abstain(p.id)), targetId: null }),
+      ],
+      [],
+    );
+    const dynamics = JSON.parse(JSON.stringify(mechanics)).votingDynamics;
+    const abstained = (split: Record<string, { abstained: number }>) =>
+      Object.values(split).reduce((sum, row) => sum + row.abstained, 0);
+    expect(abstained(dynamics.byDay[0].byRole)).toBe(8);
+    expect(abstained(dynamics.totals.byRole.value)).toBe(8);
+    for (const name of ["constructor", "__proto__", "toString"])
+      expect(
+        Object.hasOwn(dynamics.totals.byRole.value, name) && dynamics.totals.byRole.value[name],
+      ).toEqual({ voted: 0, abstained: 1 });
+  });
+
+  it("treats an eliminated ID absent from the tally as no recorded support", () => {
+    // A player ID such as "constructor" must not resolve an inherited tally property.
+    const named = players.map((p) => (p.id === "v1" ? { ...p, id: "constructor" } : p));
+    const { mechanics } = summarizeGameAudit(
+      game,
+      [
+        event(0, "game.created", { players: named }),
+        event(1, "game.started", {}),
+        event(2, "vote.resolved", { tally: { w1: 3 }, tied: false, targetId: "constructor" }),
+      ],
+      [],
+    );
+    expect(mechanics).toMatchObject({
+      votingDynamics: { byDay: [{ votesForEliminated: 0, minorityElimination: true }] },
+    });
+  });
+
   it("adds voting dynamics to --status without private notebooks, reading the database only", () => {
     const directory = mkdtempSync(join(tmpdir(), "game-audit-"));
     try {
