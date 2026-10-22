@@ -116,6 +116,31 @@ updates, and whether every living player reviewed each speech before the next Je
 unfinished reflection batch is pending, not a failure; legacy games without reflection events are
 marked unobserved.
 
+### Post-game surprise analysis
+
+```bash
+npm run game:analyze -- --db /native/path/game.db --game GAME_ID --out RUN_DIRECTORY \
+  --review-provider anthropic --review-model MODEL
+```
+
+The analyzer opens the database read-only. For every committed ballot and night action with a
+recorded Jev distribution, it asks Jev what the public record alone predicts, then scores each
+moment against the player's recorded choice. The moments are private knowledge, herd over knowledge,
+noise or error, routine, or no signal. The top 12 (`--cap`) go to the review model, plus 2 random
+routine moments as a recall check (`--recall`).
+
+- The review provider and model have no defaults. The review is capped by `--review-token-budget`
+  (default 200,000 tokens); reviews that would pass it are skipped and marked.
+- A citation of an event that does not exist, or a claim about what the player knew that cites an
+  event the player could not see before deciding, rejects the review and marks it.
+- `analysis.json` and `analysis.md` are written to `--out`, next to `research.json`. They hold
+  moderator data, so never commit them. They record the models, token usage and reported cost.
+- Both Jev and the review model spend real credit. Claude reviews count against the monthly spend
+  ledger.
+- `npm run pilot -- ... --analyze --review-provider KIND --review-model MODEL` runs the analyzer
+  automatically after a completed game. It is off by default, and a failure never changes the game
+  record.
+
 ## Reusable Day 1 bases
 
 For journal experiments, run Day 1 once with

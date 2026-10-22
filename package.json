@@ -21,6 +21,7 @@
     "test:live:codex": "RUN_LIVE_CODEX=1 vitest run packages/llm/src/codex.live.test.ts --reporter=verbose",
     "cache:audit": "tsx scripts/cache-audit.ts",
     "game:audit": "tsx scripts/game-audit.ts",
+    "game:analyze": "tsx scripts/game-analyze.ts",
     "codex:login": "codex login",
     "codex:status": "codex login status",
     "start:api": "npm run start -w @werewolf/api",
