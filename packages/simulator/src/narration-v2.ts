@@ -163,7 +163,8 @@ export class NarrationV2 {
     const nextCall = (prompt: Prompt) => ({
       provider: options.provider ?? "unknown",
       model: options.model,
-      inputTokens: estimatedTokens(prompt) + estimatedTokens(jsonSchema),
+      // Sized from the request exactly as it is stored: one envelope, schema included.
+      inputTokens: estimatedTokens({ ...prompt, schema: jsonSchema }),
       maxOutputTokens,
     });
     const admitsBudget = (prompt: Prompt) => {
