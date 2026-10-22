@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   GameConfigV2Schema,
   PERSONALITY_PRESETS,
@@ -15,6 +15,20 @@ import { experimentSpeakerIntent } from "./urgency-experiment";
 import { V2GameOrchestrator } from "./orchestrator-v2";
 import { buildContextV2 } from "./context-v2";
 
+/**
+ * Event and game IDs are random UUIDs, and the speaker auction's tie-break seed includes the
+ * latest public event ID. With identical synthetic bids every auction is a tie, so random IDs
+ * changed the winners from run to run (CES-1557). Deterministic IDs make each run identical.
+ */
+const uuid = vi.hoisted(() => ({ next: 0 }));
+vi.mock("node:crypto", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:crypto")>()),
+  randomUUID: () => `00000000-0000-4000-8000-${String(++uuid.next).padStart(12, "0")}`,
+}));
+beforeEach(() => {
+  uuid.next = 0;
+});
+
 const configs = () =>
   attentionConfigs({
     model: "fake",
@@ -22,7 +36,8 @@ const configs = () =>
     seed: "attention-test",
     live: false,
     maxCalls: 500,
-    maxMinutes: 1,
+    // Wall-clock budget is not under test; a loaded CI runner must not reach it mid-discussion.
+    maxMinutes: 30,
   });
 const original = {
   urge: 0.25,
