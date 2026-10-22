@@ -47,6 +47,10 @@ export type ReviewOutcome =
 
 /** Review providers whose output cap is not enforced (Codex), so a token budget cannot hold. */
 const UNENFORCED_OUTPUT_LIMIT_KINDS = new Set(["codex", "codex_direct"]);
+/** A reported cost counts only when it is a finite, non-negative number; otherwise it is unknown. */
+export const validUsd = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0;
+
 export class UnenforcedOutputLimitError extends Error {
   override name = "UnenforcedOutputLimitError";
 }
@@ -124,7 +128,8 @@ async function reviewOne(
   worstCase: number,
   options: ReviewOptions,
 ) {
-  const call = { spent: worstCase, costUsd: 0, enforced: true };
+  /** Reported cost; null once any report is not a finite, non-negative number (unknown). */
+  const call = { spent: worstCase, costUsd: 0 as number | null, enforced: true };
   try {
     const result = await options.provider.decide({
       // A generic prepared-prompt decision: providers send preparedPrompt as given.
@@ -144,7 +149,11 @@ async function reviewOne(
         call.enforced = call.enforced && metadata.outputLimitEnforced;
       },
       onProviderMetadata: (metadata) => {
-        if (typeof metadata.costUsd === "number") call.costUsd += metadata.costUsd;
+        if (metadata.costUsd === undefined) return;
+        call.costUsd =
+          call.costUsd !== null && validUsd(metadata.costUsd)
+            ? call.costUsd + metadata.costUsd
+            : null;
       },
     });
     if (!call.enforced)
@@ -174,7 +183,7 @@ async function reviewOne(
  * plus the output cap.
  */
 export async function reviewMoments(items: ReviewItem[], options: ReviewOptions) {
-  const usage = { calls: 0, tokens: 0, costUsd: 0 };
+  const usage = { calls: 0, tokens: 0, costUsd: 0 as number | null };
   const outcomes: ReviewOutcome[] = [];
   let bounded = true;
   for (const item of items) {
@@ -192,7 +201,8 @@ export async function reviewMoments(items: ReviewItem[], options: ReviewOptions)
     usage.calls += 1;
     const call = await reviewOne(item, prompt, worstCase, options);
     usage.tokens += call.spent;
-    usage.costUsd += call.costUsd;
+    usage.costUsd =
+      usage.costUsd === null || call.costUsd === null ? null : usage.costUsd + call.costUsd;
     bounded = call.enforced;
     outcomes.push(call.outcome);
   }

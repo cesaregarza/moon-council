@@ -26,6 +26,12 @@ export function checkCitations(
   events: GameEventV1[],
   deciders: Decider[],
 ): { accepted: boolean; issues: string[] } {
+  const actorIds = deciders.map(({ actorId }) => actorId);
+  if (!actorIds.length || new Set(actorIds).size !== actorIds.length)
+    return {
+      accepted: false,
+      issues: [actorIds.length ? "duplicated decider" : "no deciders to check citations against"],
+    };
   const known = new Set(events.map((event) => event.id));
   const views = new Map(
     deciders.map(({ actorId, decisionSequence }) => {

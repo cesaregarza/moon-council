@@ -168,7 +168,7 @@ function markdown(report: AnalysisReport) {
     `Jev ${report.models.jev}; review ${report.models.review.provider}:${report.models.review.model}. ` +
       `${report.moments.length} moments; ${report.usage.jev.calls} Jev calls, ` +
       `${report.usage.jev.totalTokens ?? "unknown"} Jev tokens; ${report.usage.review.calls} reviews, ` +
-      `${report.usage.review.tokens} review tokens, $${report.usage.review.costUsd.toFixed(4)} reported cost.`,
+      `${report.usage.review.tokens} review tokens, ${report.usage.review.costUsd === null ? "unknown" : `$${report.usage.review.costUsd.toFixed(4)}`} reported cost.`,
     "",
   ];
   for (const review of report.reviews) {

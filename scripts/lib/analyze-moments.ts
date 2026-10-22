@@ -10,6 +10,7 @@ import {
   type SurpriseMoment,
 } from "./surprise-scoring";
 import type { Decider } from "./analyze-citations";
+import { validUsd } from "./analyze-review";
 
 /**
  * A moment's source: a committed ballot, or one night's kill, decided by the pack's points.
@@ -120,8 +121,8 @@ interface FinalPoint {
 interface PackNight {
   id: string;
   finals: FinalPoint[];
-  /** Why the pack's membership cannot be scored, if it cannot. */
-  membership: string | undefined;
+  /** The broken invariant, when the night's records are inconsistent; never repaired. */
+  inconsistency: string | undefined;
   /** The unanimous target, or null when the pack never agreed. */
   selected: string | null;
   firstPointAt: number;
@@ -133,45 +134,62 @@ const between = (event: AuditEvent, after: number, before: number) =>
   event.sequence > after && event.sequence < before;
 
 /**
- * The decision behind a `team.point`: the decision store writes a commit's action events first,
+ * The commit behind a `team.point`: the decision store writes a commit's action events first,
  * so it is the wolf's next `decision.committed`, with no other point of its own in between.
  */
-function decisionAfter(mark: AuditEvent, events: AuditEvents, byCommit: Map<string, Committed>) {
-  const wolf = mark.payload.playerId;
+function commitAfter(mark: AuditEvent, events: AuditEvents) {
   const next = events.find(
     (event) =>
       event.sequence > mark.sequence &&
-      event.payload.playerId === wolf &&
+      event.payload.playerId === mark.payload.playerId &&
       (event.type === "decision.committed" || event.type === "team.point"),
   );
-  return next?.type === "decision.committed" ? byCommit.get(next.id) : undefined;
+  return next?.type === "decision.committed" ? next : undefined;
 }
 
-function membershipIssue(deciders: string[], finalMarks: AuditEvent[]): string | undefined {
-  if (!deciders.length) return "no deciders recorded for the pack";
+/** Wolves alive when the pack froze, from the authoritative state at that point. */
+function livingWolves(events: AuditEvents, agreedAt: number): string[] {
+  const before = events.filter((event) => event.sequence < agreedAt);
+  return reduceGame(events[0]?.gameId ?? "", before)
+    .players.filter((player) => player.alive && player.role.alignment === "werewolf")
+    .map((player) => player.id);
+}
+
+/** The first night invariant the records break, if any (CES-1040 ruling on damaged records). */
+function packInconsistency(
+  agreements: AuditEvent[],
+  deciders: string[],
+  finalMarks: AuditEvent[],
+  lateCommit: boolean,
+  living: string[],
+): string | undefined {
   const marked = finalMarks.map((mark) => String(mark.payload.playerId));
-  if (new Set(deciders).size !== deciders.length || new Set(marked).size !== marked.length)
-    return "a duplicated decider in the pack's final round";
-  return undefined;
+  const sameSet = (a: string[], b: string[]) =>
+    a.length === b.length && a.toSorted().join() === b.toSorted().join();
+  const broken = [
+    agreements.length !== 1 && `${agreements.length} agreements for one night`,
+    !deciders.length && "no deciders recorded for the pack",
+    (new Set(deciders).size !== deciders.length || new Set(marked).size !== marked.length) &&
+      "a duplicated decider in the pack's final round",
+    !sameSet([...new Set(deciders)], living) && "the pack's members differ from the living wolves",
+    lateCommit && "a final decision committed after the freeze",
+  ].find((issue): issue is string => typeof issue === "string");
+  return broken && `inconsistent pack records: ${broken}`;
 }
 
 /**
- * Reads one `team.agreement_frozen` event. Only the final round counts: the last `team.point`
- * round before the agreement. Earlier rounds the pack argued through never stand in for it.
+ * Reads one resolved night. Only the final round counts: the last `team.point` round before the
+ * (single) agreement; every point and decision used must fall inside the night, before the
+ * freeze. Any broken invariant leaves the night no_signal; earlier rounds never stand in.
  */
 function packNight(
-  agreement: AuditEvent,
+  agreements: AuditEvent[],
+  opened: number,
+  resolvedAt: number,
   events: AuditEvents,
   byCommit: Map<string, Committed>,
-): PackNight | null {
-  const resolved = events.find(
-    (event) => event.type === "night.resolved" && event.sequence > agreement.sequence,
-  );
-  if (!resolved) return null;
-  const opened =
-    events.findLast(
-      (event) => event.type === "night.resolved" && event.sequence < agreement.sequence,
-    )?.sequence ?? -1;
+): PackNight {
+  const agreement = agreements[0]!;
   const marks = events.filter(
     (event) => event.type === "team.point" && between(event, opened, agreement.sequence),
   );
@@ -179,30 +197,36 @@ function packNight(
   const finalMarks = marks.filter((mark) => mark.payload.round === finalRound);
   const { payload } = agreement;
   const deciders = Array.isArray(payload.actorIds) ? payload.actorIds.map(String) : [];
+  let lateCommit = false;
+  const finals = deciders.map((wolfId) => {
+    const mark = finalMarks.find((event) => event.payload.playerId === wolfId);
+    const commit = mark && commitAfter(mark, events);
+    if (commit && commit.sequence > agreement.sequence) lateCommit = true;
+    const inside = commit && commit.sequence < agreement.sequence;
+    return {
+      wolfId,
+      pointedAt: mark?.sequence,
+      point: inside ? byCommit.get(commit.id) : undefined,
+    };
+  });
+  const living = livingWolves(events, agreement.sequence);
   return {
     id: agreement.id,
-    finals: deciders.map((wolfId) => {
-      const mark = finalMarks.find((event) => event.payload.playerId === wolfId);
-      return {
-        wolfId,
-        pointedAt: mark?.sequence,
-        point: mark && decisionAfter(mark, events, byCommit),
-      };
-    }),
-    membership: membershipIssue(deciders, finalMarks),
+    finals,
+    inconsistency: packInconsistency(agreements, deciders, finalMarks, lateCommit, living),
     selected:
       payload.reason === "unanimous" && typeof payload.targetId === "string"
         ? payload.targetId
         : null,
     firstPointAt: marks[0]?.sequence ?? agreement.sequence,
     agreedAt: agreement.sequence,
-    resolvedAt: resolved.sequence,
+    resolvedAt,
   };
 }
 type AuditEvent = AuditEvents[number];
 
 function noSignalReason(night: PackNight, actual: string): string | undefined {
-  if (night.membership) return night.membership;
+  if (night.inconsistency) return night.inconsistency;
   if (night.finals.some(({ point }) => !point?.view))
     return "incomplete pack distributions: a living wolf has no valid final-round record";
   if (night.selected === null) return "the pack was not unanimous, so no kill target was selected";
@@ -236,7 +260,7 @@ function killMoment(night: PackNight, events: AuditEvents): MomentSource {
   const reason = noSignalReason(night, actual);
   const views = present.flatMap(({ point }) => (point.view ? [point.view] : []));
   // Never a mean over a subset of the pack.
-  const complete = !night.membership && views.length > 0 && views.length === night.finals.length;
+  const complete = !night.inconsistency && views.length > 0 && views.length === night.finals.length;
   return {
     op: present[0]?.point.op,
     pack: present.map(({ point }) => point.op),
@@ -266,15 +290,19 @@ function killMoment(night: PackNight, events: AuditEvents): MomentSource {
   };
 }
 
-/** One moment per resolved night, from the pack's frozen agreement. */
+/** One moment per resolved night that recorded a pack agreement, never more. */
 function killMoments(points: Committed[], events: AuditEvents): MomentSource[] {
   const byCommit = new Map(points.map((point) => [point.commit.id, point]));
-  return events
-    .filter((event) => event.type === "team.agreement_frozen")
-    .flatMap((agreement) => {
-      const night = packNight(agreement, events, byCommit);
-      return night ? [killMoment(night, events)] : [];
-    });
+  const resolutions = events.filter((event) => event.type === "night.resolved");
+  return resolutions.flatMap((resolved, index) => {
+    const opened = resolutions[index - 1]?.sequence ?? -1;
+    const agreements = events.filter(
+      (event) =>
+        event.type === "team.agreement_frozen" && between(event, opened, resolved.sequence),
+    );
+    if (!agreements.length) return [];
+    return [killMoment(packNight(agreements, opened, resolved.sequence, events, byCommit), events)];
+  });
 }
 
 export function collectMoments(
@@ -383,7 +411,7 @@ async function askJev(jev: DecisionProvider, request: JevRequest) {
     preparedPrompt: { instructions: "", input: JSON.stringify(request) },
     onUsage: (usage) => (reported = usage),
     onProviderMetadata: (metadata) => {
-      if (typeof metadata.costUsd === "number") costUsd = metadata.costUsd;
+      costUsd = validUsd(metadata.costUsd) ? metadata.costUsd : null;
     },
   });
   const usage = reported ?? result.usage;
