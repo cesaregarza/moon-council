@@ -113,6 +113,34 @@ describe("monthly Claude spend ledger", () => {
     expect(readFileSync(path, "utf8")).toBe(before);
   });
 
+  // Rule L covers the stored result (Felix's ruling 497ec6b7): never write a state the reader
+  // would reject.
+  it("keeps the ledger readable when settlements would overflow the month", () => {
+    // halcyon's sequence: two reservations, each settled at the largest finite amount.
+    clock = new Date("2026-10-22T12:00:00Z");
+    const path = file();
+    const ledger = new ClaudeSpendLedger(path, 200, now);
+    ledger.reserve("a", 0.05);
+    ledger.reserve("b", 0.05);
+    ledger.settle("a", Number.MAX_VALUE);
+    ledger.settle("b", Number.MAX_VALUE);
+    expect(readFileSync(path, "utf8")).not.toContain("null");
+    expect(() => ledger.status()).not.toThrow();
+    expect(Number.isFinite(ledger.status().settledUsd)).toBe(true);
+  });
+
+  it("refuses an update whose result would not be readable, leaving the file byte-identical", () => {
+    clock = new Date("2026-10-22T12:00:00Z");
+    const path = file();
+    const ledger = new ClaudeSpendLedger(path, 200, now);
+    ledger.reserve("a", 0.05);
+    ledger.settle("a", Number.MAX_VALUE);
+    const before = readFileSync(path);
+    // Nothing is held for "ghost", and adding the amount would overflow the month.
+    expect(() => ledger.settle("ghost", Number.MAX_VALUE)).toThrow(SpendLedgerError);
+    expect(readFileSync(path).equals(before)).toBe(true);
+  });
+
   it("refuses calls on a corrupt ledger and never resets it to zero", () => {
     clock = new Date("2026-10-22T12:00:00Z");
     const path = file();

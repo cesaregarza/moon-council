@@ -544,6 +544,61 @@ describe("Claude usage validation (Rule U)", () => {
   });
 });
 
+/** Felix's ruling 497ec6b7: the output cap is a positive safe integer, from any source. */
+describe("Claude output cap", () => {
+  const INVALID = [
+    ["-1", -1],
+    ["0", 0],
+    ["1.5", 1.5],
+    ["NaN", Number.NaN],
+    ["2^53", 2 ** 53],
+  ] as const;
+
+  it.each(INVALID)(
+    "refuses a request cap of %s before any reservation or SDK call",
+    async (_label, cap) => {
+      const { client, bodies } = fakeClient([message()]);
+      const book = ledger();
+      await expect(
+        new AnthropicMessagesProvider({ client, ledger: book }).decide(
+          request({ maxOutputTokens: cap }),
+        ),
+      ).rejects.toThrow(/output cap/);
+      expect(bodies).toHaveLength(0);
+      expect(book.status()).toMatchObject({ settledUsd: 0, openReservations: 0 });
+    },
+  );
+
+  it.each(INVALID)("refuses ANTHROPIC_MAX_OUTPUT_TOKENS=%s at construction", (_label, cap) => {
+    const saved = process.env.ANTHROPIC_MAX_OUTPUT_TOKENS;
+    process.env.ANTHROPIC_MAX_OUTPUT_TOKENS = String(cap);
+    try {
+      const { client } = fakeClient([]);
+      expect(() => new AnthropicMessagesProvider({ client, ledger: ledger() })).toThrow(
+        /ANTHROPIC_MAX_OUTPUT_TOKENS/,
+      );
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_MAX_OUTPUT_TOKENS;
+      else process.env.ANTHROPIC_MAX_OUTPUT_TOKENS = saved;
+    }
+  });
+
+  it("keeps the default 16000 cap", async () => {
+    const saved = process.env.ANTHROPIC_MAX_OUTPUT_TOKENS;
+    process.env.ANTHROPIC_MAX_OUTPUT_TOKENS = "16000";
+    try {
+      const { client, bodies } = fakeClient([message()]);
+      await new AnthropicMessagesProvider({ client, ledger: ledger() }).decide(
+        request({ maxOutputTokens: null }),
+      );
+      expect(bodies[0]!.max_tokens).toBe(16_000);
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_MAX_OUTPUT_TOKENS;
+      else process.env.ANTHROPIC_MAX_OUTPUT_TOKENS = saved;
+    }
+  });
+});
+
 describe("Claude content admission", () => {
   it("refuses image and other non-text content before reserving or calling the SDK", async () => {
     // halcyon's probe: 100 URL images cost what the images are, not what their URLs serialize to.
