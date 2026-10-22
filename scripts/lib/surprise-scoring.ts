@@ -13,8 +13,19 @@ export interface SurpriseMoment {
   kind: MomentKind;
   actorId: string;
   actorAlignment: "village" | "werewolf";
-  /** Option key actually chosen: a player ID or "abstain". */
+  /**
+   * The outcome both views are scored on: the ballot cast (a player ID or "abstain"), or for a
+   * wolf kill the public dawn outcome (a player ID or "no_death").
+   */
   actual: string;
+  /** For a wolf kill, the pack's unanimous target, which a protection can keep from dying. */
+  selected?: string;
+  /** For a wolf kill, every wolf whose point decided it. */
+  actorIds?: string[];
+  /** For a wolf kill, each wolf's recorded probability for the actual outcome. */
+  wolfProbabilities?: Record<string, number>;
+  /** Set when the two views describe different events, so the moment carries no signal. */
+  noSignalReason?: string;
   publicView: Record<string, number>;
   privateView: Record<string, number>;
   /** The actor's own verified results, e.g. Seer inspections, known before deciding. */
@@ -94,7 +105,8 @@ function momentClass(score: MomentScore, t: Thresholds): MomentClass {
 
 export function classifyMoment(moment: SurpriseMoment, t: Thresholds = SURPRISE_THRESHOLDS) {
   const score = scoreMoment(moment, t);
-  return { ...moment, score, class: momentClass(score, t) };
+  const momentClassValue: MomentClass = moment.noSignalReason ? "no_signal" : momentClass(score, t);
+  return { ...moment, score, class: momentClassValue };
 }
 export type ClassifiedMoment = ReturnType<typeof classifyMoment>;
 
