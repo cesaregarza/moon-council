@@ -1,5 +1,12 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { LabRepository, openDatabase } from "@werewolf/db";
+import { createActorHoldout } from "./testing/actor-holdouts";
 import {
+  readGameAudit,
   summarizeGameAudit,
   summarizeGameProgress,
   summarizeJournalWorkflow,
@@ -455,5 +462,364 @@ describe("attention dynamics", () => {
       { name: "Werewolf", speeches: 1, floorShare: 0.5 },
     ]);
     expect(JSON.stringify(summarizeGameProgress(audit))).not.toContain("Repeated himself");
+  });
+});
+
+describe("voting dynamics", () => {
+  const seat = (id: string, role: string, alignment: string) => ({
+    id,
+    name: id.toUpperCase(),
+    role: { name: role, alignment },
+  });
+  const players = [
+    seat("w1", "Werewolf", "werewolf"),
+    seat("w2", "Werewolf", "werewolf"),
+    seat("s", "Seer", "village"),
+    seat("b", "Bodyguard", "village"),
+    seat("v1", "Villager", "village"),
+    seat("v2", "Villager", "village"),
+    seat("v3", "Villager", "village"),
+    seat("v4", "Villager", "village"),
+  ];
+  const abstain = (voterId: string) => ({ voterId, targetId: null });
+  // The 2026-09-24 shape: Day 1 all abstain; Night 1 kills v4; Day 2 only the wolves vote.
+  const events = [
+    event(0, "game.created", { players }),
+    event(1, "game.started", {}),
+    event(2, "vote.resolved", { ballots: players.map((p) => abstain(p.id)), targetId: null }),
+    event(3, "player.eliminated", { playerId: "v4", cause: "night_attack" }, 2),
+    event(
+      4,
+      "vote.resolved",
+      {
+        ballots: [
+          { voterId: "w1", targetId: "v1" },
+          { voterId: "w2", targetId: "v1" },
+          ...["s", "b", "v1", "v2", "v3"].map(abstain),
+        ],
+        targetId: "v1",
+      },
+      2,
+    ),
+    event(5, "player.eliminated", { playerId: "v1", cause: "vote" }, 2),
+  ];
+
+  it("reports abstentions by faction and role, and a minority elimination of a villager", () => {
+    // toMatchObject keeps this compiling against an audit without the section.
+    const { mechanics } = summarizeGameAudit(game, events, []);
+    const byDay = [
+      {
+        day: 1,
+        living: 8,
+        voted: 0,
+        abstained: 8,
+        byFaction: { village: { voted: 0, abstained: 6 }, werewolf: { voted: 0, abstained: 2 } },
+        byRole: {
+          Bodyguard: { voted: 0, abstained: 1 },
+          Seer: { voted: 0, abstained: 1 },
+          Villager: { voted: 0, abstained: 4 },
+          Werewolf: { voted: 0, abstained: 2 },
+        },
+        eliminatedPlayerId: null,
+        eliminatedAlignment: null,
+        votesForEliminated: 0,
+        minorityElimination: false,
+      },
+      {
+        day: 2,
+        living: 7,
+        voted: 2,
+        abstained: 5,
+        byFaction: { village: { voted: 0, abstained: 5 }, werewolf: { voted: 2, abstained: 0 } },
+        byRole: {
+          Bodyguard: { voted: 0, abstained: 1 },
+          Seer: { voted: 0, abstained: 1 },
+          Villager: { voted: 0, abstained: 3 },
+          Werewolf: { voted: 2, abstained: 0 },
+        },
+        eliminatedPlayerId: "v1",
+        eliminatedAlignment: "village",
+        votesForEliminated: 2,
+        minorityElimination: true,
+      },
+    ];
+    const all = (value: number) => ({ value, knownDays: 2, totalDays: 2 });
+    const totals = {
+      days: 2,
+      voted: all(2),
+      abstained: all(13),
+      votesForEliminated: all(2),
+      eliminations: 1,
+      minorityEliminations: all(1),
+      minorityVillageVictims: all(1),
+      byFaction: {
+        value: { village: { voted: 0, abstained: 11 }, werewolf: { voted: 2, abstained: 2 } },
+        knownDays: 2,
+        totalDays: 2,
+      },
+    };
+    expect(mechanics).toMatchObject({ votingDynamics: { byDay, totals } });
+  });
+
+  it("derives an archived V1 day from its tally, never reporting missing ballots as zero", () => {
+    // halcyon's repro (PR #16 review): eight living, v1 eliminated 5-3, no per-player ballots.
+    const archived = [
+      event(0, "game.created", { players }),
+      event(1, "game.started", {}),
+      event(2, "vote.resolved", { tally: { v1: 5, w1: 3 }, tied: false, targetId: "v1" }),
+    ];
+    const { mechanics } = summarizeGameAudit(game, archived, []);
+    expect(mechanics).toMatchObject({
+      votingDynamics: {
+        byDay: [
+          {
+            day: 1,
+            basis: "tally",
+            living: 8,
+            voted: 8,
+            abstained: null,
+            byFaction: null,
+            byRole: null,
+            eliminatedPlayerId: "v1",
+            eliminatedAlignment: "village",
+            votesForEliminated: 5,
+            minorityElimination: false,
+          },
+        ],
+        totals: {
+          minorityEliminations: { value: 0, knownDays: 1, totalDays: 1 },
+          abstained: { value: null, knownDays: 0, totalDays: 1 },
+          basisDays: { ballots: 0, tally: 1, unavailable: 0 },
+        },
+      },
+    });
+  });
+
+  it("reports a day with neither ballots nor a tally as unavailable, with no minority call", () => {
+    const bare = [
+      event(0, "game.created", { players }),
+      event(1, "game.started", {}),
+      event(2, "vote.resolved", { targetId: "v1" }),
+    ];
+    const { mechanics } = summarizeGameAudit(game, bare, []);
+    expect(mechanics).toMatchObject({
+      votingDynamics: {
+        byDay: [
+          {
+            basis: "unavailable",
+            voted: null,
+            abstained: null,
+            byFaction: null,
+            byRole: null,
+            eliminatedPlayerId: "v1",
+            votesForEliminated: null,
+            minorityElimination: null,
+          },
+        ],
+      },
+    });
+  });
+
+  // halcyon's aggregate probes (PR #16 re-review, 03:33Z): totals never turn unknowns into zeros.
+  const unknown = (totalDays: number) => ({ value: null, knownDays: 0, totalDays });
+
+  it("reports totals of an unavailable day as unknown, not zero", () => {
+    const bare = [
+      event(0, "game.created", { players }),
+      event(1, "game.started", {}),
+      event(2, "vote.resolved", { targetId: "v1" }),
+    ];
+    const { mechanics } = summarizeGameAudit(game, bare, []);
+    expect(mechanics).toMatchObject({
+      votingDynamics: {
+        totals: {
+          eliminations: 1,
+          voted: unknown(1),
+          abstained: unknown(1),
+          votesForEliminated: unknown(1),
+          minorityEliminations: unknown(1),
+          minorityVillageVictims: unknown(1),
+          byFaction: unknown(1),
+          byRole: unknown(1),
+          basisDays: { ballots: 0, tally: 0, unavailable: 1 },
+        },
+      },
+    });
+  });
+
+  /** w1's role carries a weight-3 vote. */
+  const weighted = players.map((p) =>
+    p.id === "w1" ? { ...p, role: { ...p.role, passives: { voteWeight: 3 } } } : p,
+  );
+
+  it("leaves a weighted tally's minority call unknown in totals", () => {
+    // {v1: 4} with eight living: one weight-3 voter plus one other (a minority), or four voters
+    // (exactly half). The tally cannot tell them apart.
+    const { mechanics } = summarizeGameAudit(
+      game,
+      [
+        event(0, "game.created", { players: weighted }),
+        event(1, "game.started", {}),
+        event(2, "vote.resolved", { tally: { v1: 4 }, tied: false, targetId: "v1" }),
+      ],
+      [],
+    );
+    expect(mechanics).toMatchObject({
+      votingDynamics: {
+        byDay: [{ voted: null, votesForEliminated: null, minorityElimination: null }],
+        totals: { voted: unknown(1), minorityEliminations: unknown(1) },
+      },
+    });
+  });
+
+  it("distinguishes a known zero-vote day from a weighted tie in totals", () => {
+    const totalsOf = (roster: typeof players, tally: Record<string, number>) =>
+      (
+        summarizeGameAudit(
+          game,
+          [
+            event(0, "game.created", { players: roster }),
+            event(1, "game.started", {}),
+            event(2, "vote.resolved", { tally, tied: true, targetId: null }),
+          ],
+          [],
+        ).mechanics as { votingDynamics: { totals: unknown } }
+      ).votingDynamics.totals;
+    const zero = totalsOf(players, {});
+    const tie = totalsOf(weighted, { v1: 3, w2: 3 });
+    expect(zero).toMatchObject({ voted: { value: 0, knownDays: 1, totalDays: 1 } });
+    expect(tie).toMatchObject({ voted: unknown(1) });
+    expect(tie).not.toEqual(zero);
+  });
+
+  it("gives each total its own day coverage across mixed bases", () => {
+    // Day 1 ballots; Day 2 a tally while weight-3 w1 lives; w1 dies; Day 3 a unit-weight tally;
+    // Day 4 neither. Voter counts are known on 2 days, abstentions on 1, minority calls on 2.
+    const mixed = [
+      event(0, "game.created", { players: weighted }),
+      event(1, "game.started", {}),
+      event(2, "vote.resolved", {
+        ballots: [
+          { voterId: "w1", targetId: "v1" },
+          ...["w2", "s", "b", "v1", "v2", "v3", "v4"].map(abstain),
+        ],
+        targetId: "v1",
+      }),
+      event(3, "player.eliminated", { playerId: "v1", cause: "vote" }),
+      event(4, "vote.resolved", { tally: { v2: 4 }, tied: false, targetId: "v2" }, 2),
+      event(5, "player.eliminated", { playerId: "v2", cause: "vote" }, 2),
+      event(6, "player.eliminated", { playerId: "w1", cause: "night_attack" }, 3),
+      event(7, "vote.resolved", { tally: { v3: 3, w2: 1 }, tied: false, targetId: "v3" }, 3),
+      event(8, "player.eliminated", { playerId: "v3", cause: "vote" }, 3),
+      event(9, "vote.resolved", { targetId: "s" }, 4),
+    ];
+    const { mechanics } = summarizeGameAudit(game, mixed, []);
+    const of4 = (value: number, knownDays: number) => ({ value, knownDays, totalDays: 4 });
+    expect(mechanics).toMatchObject({
+      votingDynamics: {
+        totals: {
+          days: 4,
+          eliminations: 4,
+          voted: of4(5, 2),
+          abstained: of4(7, 1),
+          votesForEliminated: of4(4, 2),
+          minorityEliminations: of4(1, 2),
+          minorityVillageVictims: of4(1, 2),
+          basisDays: { ballots: 1, tally: 2, unavailable: 1 },
+        },
+      },
+    });
+    expect(mechanics).toMatchObject({
+      votingDynamics: {
+        totals: {
+          byFaction: {
+            value: { village: { voted: 0, abstained: 6 }, werewolf: { voted: 1, abstained: 1 } },
+            knownDays: 1,
+          },
+        },
+      },
+    });
+  });
+
+  it("counts roles named like Object.prototype keys, so role counts add up to the total", () => {
+    // halcyon's repro (PR #16, 04:16Z): constructor, __proto__ and toString are valid role names.
+    const named = players.map((p, i) =>
+      i >= 4 && i < 7
+        ? { ...p, role: { ...p.role, name: ["constructor", "__proto__", "toString"][i - 4]! } }
+        : p,
+    );
+    const { mechanics } = summarizeGameAudit(
+      game,
+      [
+        event(0, "game.created", { players: named }),
+        event(1, "game.started", {}),
+        event(2, "vote.resolved", { ballots: named.map((p) => abstain(p.id)), targetId: null }),
+      ],
+      [],
+    );
+    const dynamics = JSON.parse(JSON.stringify(mechanics)).votingDynamics;
+    const abstained = (split: Record<string, { abstained: number }>) =>
+      Object.values(split).reduce((sum, row) => sum + row.abstained, 0);
+    expect(abstained(dynamics.byDay[0].byRole)).toBe(8);
+    expect(abstained(dynamics.totals.byRole.value)).toBe(8);
+    for (const name of ["constructor", "__proto__", "toString"])
+      expect(
+        Object.hasOwn(dynamics.totals.byRole.value, name) && dynamics.totals.byRole.value[name],
+      ).toEqual({ voted: 0, abstained: 1 });
+  });
+
+  it("treats an eliminated ID absent from the tally as no recorded support", () => {
+    // A player ID such as "constructor" must not resolve an inherited tally property.
+    const named = players.map((p) => (p.id === "v1" ? { ...p, id: "constructor" } : p));
+    const { mechanics } = summarizeGameAudit(
+      game,
+      [
+        event(0, "game.created", { players: named }),
+        event(1, "game.started", {}),
+        event(2, "vote.resolved", { tally: { w1: 3 }, tied: false, targetId: "constructor" }),
+      ],
+      [],
+    );
+    expect(mechanics).toMatchObject({
+      votingDynamics: { byDay: [{ votesForEliminated: 0, minorityElimination: true }] },
+    });
+  });
+
+  it("adds voting dynamics to --status without private notebooks, reading the database only", () => {
+    const directory = mkdtempSync(join(tmpdir(), "game-audit-"));
+    try {
+      const path = join(directory, "lab.db");
+      const connection = openDatabase(path);
+      const repo = new LabRepository(connection);
+      const { game, actor, packet } = createActorHoldout(repo, "uncertain-last-wolf");
+      repo.appendEvent(game.id, {
+        type: "journal.v2_updated",
+        day: packet.day,
+        phase: packet.phase,
+        visibility: "player",
+        audienceIds: [actor.id],
+        payload: { playerId: actor.id, journal: { text: "CANARY-NOTEBOOK-4e1", beliefs: [] } },
+      });
+      repo.appendEvent(game.id, {
+        type: "vote.resolved",
+        day: packet.day,
+        phase: "day_resolution",
+        visibility: "public",
+        payload: {
+          ballots: packet.players.map((p) => ({ voterId: p.id, targetId: null })),
+          targetId: null,
+        },
+      });
+      connection.close();
+      const digest = () => createHash("sha256").update(readFileSync(path)).digest("hex");
+      const before = digest();
+      const status = JSON.stringify(summarizeGameProgress(readGameAudit(path, game.id)));
+      expect(JSON.parse(status).votingDynamics).toMatchObject([{ day: packet.day, voted: 0 }]);
+      expect(status).not.toContain("CANARY-NOTEBOOK-4e1");
+      expect(status).not.toContain(packet.journal.decisionBrief!.action);
+      expect(digest()).toBe(before);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
