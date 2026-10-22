@@ -19,6 +19,8 @@ const Month = z.strictObject({
     z.string(),
     z.strictObject({ usd: z.number().nonnegative(), at: z.string().datetime() }),
   ),
+  /** Reservations swept at their worst case, by ID, so a late settle can replace that amount. */
+  swept: z.record(z.string(), z.number().nonnegative()).default({}),
 });
 const Ledger = z.strictObject({
   schemaVersion: z.literal("claude_spend_ledger_v1"),
@@ -67,11 +69,20 @@ export class ClaudeSpendLedger {
     });
   }
 
-  /** Replace a reservation with the actual cost, in the month it was reserved. */
+  /**
+   * Replace a reservation with the actual cost, in the month it was reserved. A reservation already
+   * swept at its worst case has that amount replaced instead.
+   */
   settle(id: string, usd: number): void {
     this.update((ledger) => {
-      const entry = Object.values(ledger.months).find((month) => month.reservations[id]);
-      const month = entry ?? this.month(ledger);
+      const months = Object.values(ledger.months);
+      const open = months.find((month) => month.reservations[id]);
+      const swept = months.find((month) => month.swept[id] !== undefined);
+      const month = open ?? swept ?? this.month(ledger);
+      if (!open && swept) {
+        month.settledUsd = Math.max(0, month.settledUsd - swept.swept[id]!);
+        delete month.swept[id];
+      }
       delete month.reservations[id];
       month.settledUsd += usd;
     });
@@ -98,7 +109,7 @@ export class ClaudeSpendLedger {
   }
 
   private month(ledger: LedgerFile) {
-    return (ledger.months[this.key()] ??= { settledUsd: 0, reservations: {} });
+    return (ledger.months[this.key()] ??= { settledUsd: 0, reservations: {}, swept: {} });
   }
 
   private read(): LedgerFile {
@@ -134,6 +145,7 @@ export class ClaudeSpendLedger {
         for (const [id, reservation] of Object.entries(month.reservations))
           if (Date.parse(reservation.at) < cutoff) {
             month.settledUsd += reservation.usd;
+            month.swept[id] = reservation.usd;
             delete month.reservations[id];
           }
       change(ledger);

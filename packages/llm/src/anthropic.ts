@@ -133,11 +133,11 @@ export function claudeResponseCostUsd(model: string, usage: Anthropic.Usage): nu
   });
 }
 
-/** Conservative prompt size before sending: about three characters per token. */
-const estimatedPromptTokens = (body: Anthropic.MessageCreateParamsNonStreaming) =>
-  Math.ceil(
-    JSON.stringify({ system: body.system, messages: body.messages, output: body.output_config })
-      .length / 3,
+/** Upper bound on prompt tokens before sending: a token is never shorter than a UTF-8 byte. */
+const promptCeilingTokens = (body: Anthropic.MessageCreateParamsNonStreaming) =>
+  Buffer.byteLength(
+    JSON.stringify({ system: body.system, messages: body.messages, output: body.output_config }),
+    "utf8",
   );
 
 export interface ClaudeClient {
@@ -192,7 +192,7 @@ export class AnthropicMessagesProvider implements DecisionProvider {
     const reservationId = randomUUID();
     const reservation = claudeReservationUsd(
       body.model,
-      estimatedPromptTokens(body),
+      promptCeilingTokens(body),
       body.max_tokens,
     );
     this.ledger.reserve(reservationId, reservation);

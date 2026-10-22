@@ -51,6 +51,20 @@ describe("monthly Claude spend ledger", () => {
     expect(JSON.parse(readFileSync(path, "utf8")).months["2026-10"].settledUsd).toBe(199);
   });
 
+  it("settles a swept reservation in its own month, replacing the worst case", () => {
+    const path = file();
+    clock = new Date("2026-10-31T23:30:00Z");
+    const ledger = new ClaudeSpendLedger(path, 200, now);
+    ledger.reserve("a", 5);
+    clock = new Date("2026-11-01T00:45:00Z");
+    ledger.reserve("sweeps", 0); // over an hour later: "a" is swept at its $5 worst case
+    ledger.settle("sweeps", 0);
+    ledger.settle("a", 0.25);
+    const months = JSON.parse(readFileSync(path, "utf8")).months;
+    expect(months["2026-10"].settledUsd).toBeCloseTo(0.25, 10);
+    expect(months["2026-11"].settledUsd).toBe(0);
+  });
+
   it("refuses calls on a corrupt ledger and never resets it to zero", () => {
     clock = new Date("2026-10-22T12:00:00Z");
     const path = file();

@@ -127,6 +127,34 @@ describe("V2 moderator narration", () => {
     expect(narration.checkpoint(record.id, "malformed")?.status).toBe("paused");
   });
 
+  it("stores a refusal's stop reason, details and serving model on the attempt", async () => {
+    const repo = repository();
+    const record = game(repo);
+    const provider: DecisionProvider = {
+      decide: async (request) => {
+        request.onUsage?.(usage, metadata);
+        request.onProviderMetadata?.({
+          responseId: "msg_refused",
+          model: "claude-haiku-5-5-served",
+          stopReason: "refusal",
+          stopDetails: { category: "cyber", explanation: "declined" },
+          costUsd: 0.001,
+        });
+        throw new Error("Claude refused: cyber");
+      },
+    };
+    const narration = new NarrationV2(repo, provider);
+    await expect(
+      narration.narrate({ ...options(record.id), decisionId: "refused" }),
+    ).rejects.toThrow();
+    expect(narration.store.attempts(record.id, "refused")[0]?.providerMetadata).toMatchObject({
+      model: "claude-haiku-5-5-served",
+      stopReason: "refusal",
+      stopDetails: { category: "cyber" },
+      costUsd: 0.001,
+    });
+  });
+
   it("keeps a valid report pending when an operator pauses before acknowledgement", async () => {
     const repo = repository();
     const record = game(repo);

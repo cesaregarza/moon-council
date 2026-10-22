@@ -69,25 +69,29 @@ export function claudeCostUsd(model: string, tokens: ClaudeTokens): number {
   );
 }
 
-/** Worst case before sending: every prompt token written to cache, plus the whole output cap. */
+/**
+ * Worst case before sending: every prompt token written to cache at the 1-hour rate, plus the
+ * whole output cap. `promptCeilingTokens` must be an upper bound (such as the prompt's UTF-8 byte
+ * length); when it exceeds a long-context threshold, the whole call is priced at the higher tier.
+ */
 export function claudeReservationUsd(
   model: string,
-  promptTokens: number,
+  promptCeilingTokens: number,
   maxOutputTokens: number,
 ): number {
   return claudeCostUsd(model, {
     uncachedInput: 0,
     cacheRead: 0,
     cacheWrite5m: 0,
-    cacheWrite1h: promptTokens,
+    cacheWrite1h: promptCeilingTokens,
     output: maxOutputTokens,
   });
 }
 
 /**
- * Settled cost from mapped usage (inputTokens includes cache reads and writes). Writes are priced
- * at the 5-minute rate, the only TTL the provider sets; an unknown split is priced as writes.
- * Returns null when usage is unknown, so callers keep the reservation.
+ * Settled cost from mapped usage (inputTokens includes cache reads and writes). Usage does not
+ * split writes by TTL, so writes are priced at the 1-hour rate; an unknown split is priced as
+ * writes. Returns null when usage is unknown, so callers keep the reservation.
  */
 export function claudeUsageCostUsd(model: string, usage: UsageV2): number | null {
   if (usage.inputTokens === null || usage.outputTokens === null) return null;
@@ -98,8 +102,8 @@ export function claudeUsageCostUsd(model: string, usage: UsageV2): number | null
   return claudeCostUsd(model, {
     uncachedInput: Math.max(0, usage.inputTokens - read - write),
     cacheRead: read,
-    cacheWrite5m: write,
-    cacheWrite1h: 0,
+    cacheWrite5m: 0,
+    cacheWrite1h: write,
     output: usage.outputTokens,
   });
 }
