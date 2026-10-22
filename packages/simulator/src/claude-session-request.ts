@@ -94,13 +94,12 @@ export function turnText(packet: PlayerContextV2, cursors: TurnCursors, requestI
   const now = {
     day: packet.day,
     phase: packet.phase,
-    at: new Date().toISOString(),
     responseDocket: packet.responseDocket.flatMap((id) => map.toAlias.get(id) ?? []),
     ...(choices.length ? { legalChoices: Object.fromEntries(choices) } : {}),
   };
   return {
     text: [
-      JSON.stringify({ NEW_RECORDS: render(packet, fresh) }),
+      JSON.stringify({ NEW_RECORDS: render(packet, fresh).reverse() }),
       JSON.stringify({ NOW: now }),
       requestInput,
     ].join("\n"),
