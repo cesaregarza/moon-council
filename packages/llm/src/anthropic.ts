@@ -245,6 +245,29 @@ function assertTextOnly(body: Anthropic.MessageCreateParamsNonStreaming): void {
 const promptCeilingTokens = (body: Anthropic.MessageCreateParamsNonStreaming) =>
   Buffer.byteLength(JSON.stringify(body), "utf8");
 
+/** We only ever send whole, positive output caps (our policy, not a claim about the API). */
+const isOutputCap = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
+export class InvalidClaudeOutputCapError extends Error {
+  override name = "InvalidClaudeOutputCapError";
+}
+
+/** The default output cap: the option, else ANTHROPIC_MAX_OUTPUT_TOKENS, else 16000. */
+function configuredOutputCap(option: number | undefined): number {
+  if (option !== undefined) {
+    if (!isOutputCap(option))
+      throw new InvalidClaudeOutputCapError(`Invalid Claude output cap: ${String(option)}`);
+    return option;
+  }
+  const raw = process.env.ANTHROPIC_MAX_OUTPUT_TOKENS;
+  if (raw === undefined || raw.trim() === "") return 16_000;
+  const cap = Number(raw);
+  if (!isOutputCap(cap))
+    throw new InvalidClaudeOutputCapError(`Invalid ANTHROPIC_MAX_OUTPUT_TOKENS: ${raw}`);
+  return cap;
+}
+
 export interface ClaudeClient {
   messages: {
     stream(
@@ -276,8 +299,7 @@ export class AnthropicMessagesProvider implements DecisionProvider {
       this.client = new Anthropic({ apiKey });
     }
     this.ledger = options.ledger ?? new ClaudeSpendLedger();
-    this.maxTokensCap =
-      options.maxTokensCap ?? Number(process.env.ANTHROPIC_MAX_OUTPUT_TOKENS || 16_000);
+    this.maxTokensCap = configuredOutputCap(options.maxTokensCap);
   }
 
   /** Anthropic keeps no conversation state: every call re-sends the full prompt. */
@@ -285,6 +307,10 @@ export class AnthropicMessagesProvider implements DecisionProvider {
 
   async decide<T>(request: DecisionRequest<T>): Promise<DecisionResult<T>> {
     const body = claudeRequest(request, this.maxTokensCap);
+    if (!isOutputCap(body.max_tokens))
+      throw new InvalidClaudeOutputCapError(
+        `Claude output cap must be a positive safe integer; got ${String(body.max_tokens)}`,
+      );
     assertClaudePriced(body.model);
     assertTextOnly(body);
     if (request.signal?.aborted) throw new Error("Claude decision aborted");

@@ -15,14 +15,13 @@ const validAmount = (usd: number) => Number.isFinite(usd) && usd >= 0;
 const STALE_RESERVATION_MS = 60 * 60_000;
 const LOCK_WAIT_MS = 5_000;
 
+/** Every stored amount is finite and non-negative (Rule L). */
+const Amount = z.number().nonnegative().refine(Number.isFinite, "amount must be finite");
 const Month = z.strictObject({
-  settledUsd: z.number().nonnegative(),
-  reservations: z.record(
-    z.string(),
-    z.strictObject({ usd: z.number().nonnegative(), at: z.string().datetime() }),
-  ),
+  settledUsd: Amount,
+  reservations: z.record(z.string(), z.strictObject({ usd: Amount, at: z.string().datetime() })),
   /** Reservations swept at their worst case, by ID, so a late settle can replace that amount. */
-  swept: z.record(z.string(), z.number().nonnegative()).default({}),
+  swept: z.record(z.string(), Amount).default({}),
 });
 const Ledger = z.strictObject({
   schemaVersion: z.literal("claude_spend_ledger_v1"),
@@ -83,19 +82,20 @@ export class ClaudeSpendLedger {
       const open = months.find((month) => month.reservations[id]);
       const swept = months.find((month) => month.swept[id] !== undefined);
       const month = open ?? swept ?? this.month(ledger);
-      // Rule L: an invalid amount settles at what is held, never as a number of its own.
       const held = open ? open.reservations[id]!.usd : swept?.swept[id];
-      if (!validAmount(usd)) {
+      // A late settle of a swept reservation replaces its worst case.
+      const base =
+        !open && swept ? Math.max(0, month.settledUsd - swept.swept[id]!) : month.settledUsd;
+      // Rule L: an invalid amount, or one that would make the month's total non-finite, settles
+      // at what is held, never as a number of its own.
+      if (!validAmount(usd) || !Number.isFinite(base + usd)) {
         if (held === undefined)
           throw new SpendLedgerError(`Refusing to settle an invalid Claude amount: ${usd}`);
         usd = held;
       }
-      if (!open && swept) {
-        month.settledUsd = Math.max(0, month.settledUsd - swept.swept[id]!);
-        delete month.swept[id];
-      }
+      if (!open && swept) delete month.swept[id];
       delete month.reservations[id];
-      month.settledUsd += usd;
+      month.settledUsd = base + usd;
     });
   }
 
@@ -160,6 +160,11 @@ export class ClaudeSpendLedger {
             delete month.reservations[id];
           }
       change(ledger);
+      // Never write a state this ledger's own reader would reject; the file stays untouched.
+      if (!Ledger.safeParse(ledger).success)
+        throw new SpendLedgerError(
+          "Claude spend ledger update refused: the result would not be readable; nothing written",
+        );
       const temporary = `${this.path}.${process.pid}.tmp`;
       writeFileSync(temporary, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o600 });
       renameSync(temporary, this.path);
