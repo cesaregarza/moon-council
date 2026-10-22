@@ -206,6 +206,7 @@ export class DecisionExecutorV2 {
     provider: string;
     sessionEligible: boolean;
     model: string;
+    /** The seat's configured effort; the session pins it when it opens. */
     effort: string;
     prompt: PreparedPrompt;
     apiResponseFormat: ApiResponseFormat | undefined;
@@ -228,6 +229,9 @@ export class DecisionExecutorV2 {
       formatInstructions: call.apiResponseFormat?.instructions ?? "",
       requestInput: call.prompt.input,
     });
+    // Audits must see the effort that actually ran, not the one the call asked for.
+    call.attempt.reasoningEffort = turn.effort;
+    this.store.updateAttempt(call.attempt);
     return {
       claudeHarness: turn.harness,
       reasoningEffort: turn.effort,
@@ -545,7 +549,7 @@ export class DecisionExecutorV2 {
             provider: attemptProvider,
             sessionEligible: !compacting,
             model: callModel,
-            effort: reasoningEffort,
+            effort: settings.reasoningEffort,
             prompt,
             apiResponseFormat,
             attempt,
