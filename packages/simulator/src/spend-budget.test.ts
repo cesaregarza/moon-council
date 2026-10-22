@@ -233,8 +233,15 @@ describe("per-game Claude spend admission", () => {
     connections.push(connection);
     const repository = new LabRepository(connection);
     repository.seedRoles([...STARTER_ROLES, DOCTOR_V2]);
+    // Few calls keep the run short; every attempt still begins through the real path.
+    const safety = {
+      maxCycles: 4,
+      maxModelCalls: 20,
+      maxOutputTokens: 4_000,
+      maxWallClockMs: 60_000,
+    };
     const record = repository.createGame(
-      GameConfigV2Schema.parse(claudeConfig({ maxSpendUsd: 50 })),
+      GameConfigV2Schema.parse(claudeConfig({ maxSpendUsd: 50, safety })),
     );
     repository.appendEvent(
       record.id,
