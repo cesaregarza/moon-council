@@ -192,6 +192,66 @@ describe("per-game Claude spend admission", () => {
     );
   });
 
+  it("holds an in-flight call at the reservation admitted when it began", () => {
+    // halcyon's probe (PR #20 re-review): the stored prompt is far smaller than the admitted
+    // request, so rebuilding from it under-reserves. $0.177608 + $0.080024 > $0.19.
+    const game = ledger(0.19);
+    const record = game.attempt("claude-haiku-5-5", 4_000);
+    Object.assign(record, { reservedUsd: 0.177608 });
+    game.store.updateAttempt(record);
+    const next = {
+      provider: "anthropic",
+      model: "claude-haiku-5-5",
+      inputTokens: 40, // a 120-token ceiling: $0.000024
+      maxOutputTokens: 160_000, // $0.08
+    };
+    expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, true, next)).toThrow(
+      /spend/,
+    );
+  });
+
+  it("never counts a negative recorded cost as credit", () => {
+    const game = ledger(0.09);
+    const record = game.attempt("claude-opus-5-5", 1_000);
+    game.settle(record, 10_000, 0);
+    record.usage = { ...record.usage, cacheWriteInputTokens: 10_000 }; // $0.08 at 1 hour
+    record.providerMetadata = { costUsd: -1 };
+    game.store.updateAttempt(record);
+    const next = {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      inputTokens: 0,
+      maxOutputTokens: 1_040,
+    };
+    expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, true, next)).toThrow(
+      /spend/,
+    );
+  });
+
+  it("records the admitted reservation on every Claude attempt when it begins", async () => {
+    const connection = openDatabase(":memory:");
+    connections.push(connection);
+    const repository = new LabRepository(connection);
+    repository.seedRoles([...STARTER_ROLES, DOCTOR_V2]);
+    const record = repository.createGame(
+      GameConfigV2Schema.parse(claudeConfig({ maxSpendUsd: 50 })),
+    );
+    repository.appendEvent(
+      record.id,
+      createGameCreatedEvent(createGameState(record.id, record.config)),
+    );
+    repository.updateGame(record.id, { status: "running" });
+    const orchestrator = new V2GameOrchestrator(repository, new FakeDecisionProvider());
+    const store = new DecisionStore(repository);
+    for (let step = 0; step < 10 && !store.attempts(record.id).length; step += 1)
+      await orchestrator.runGameStep(record.id);
+    const attempts = store.attempts(record.id);
+    expect(attempts.length).toBeGreaterThan(0);
+    const reserved = attempts.map((attempt) => (attempt as { reservedUsd?: unknown }).reservedUsd);
+    expect(reserved).toEqual(attempts.map(() => expect.any(Number)));
+    expect(reserved.every((usd) => (usd as number) > 0)).toBe(true);
+  });
+
   it("fails closed for a Claude model with no price", () => {
     const game = ledger(100);
     game.settle(game.attempt("claude-unpriced-9", 1_000), 10, 10);
