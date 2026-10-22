@@ -1,7 +1,8 @@
 import { GameConfigV2Schema } from "@werewolf/contracts";
 import { DecisionStore, LabRepository, openDatabase, type DatabaseConnection } from "@werewolf/db";
 import { createGameCreatedEvent, createGameState, STARTER_ROLES } from "@werewolf/engine";
-import type { DecisionProvider } from "@werewolf/llm";
+import { claudeReservationUsd, type DecisionProvider } from "@werewolf/llm";
+import { estimatedTokens } from "./request-v2";
 import { afterEach, describe, expect, it } from "vitest";
 import { NarrationPausedError, NarrationV2 } from "./narration-v2";
 
@@ -182,6 +183,32 @@ describe("V2 moderator narration", () => {
     // Premise: two first-prompt reservations fit, so only the repair's real size refuses it.
     expect(2 * first.reservedUsd!).toBeLessThan(0.025);
     expect(calls).toBe(1);
+  });
+
+  it("reserves narration from the stored request's own serialized envelope", async () => {
+    // halcyon's metric note: separate prompt and schema estimates missed the combined record's
+    // JSON envelope by nine bytes. The reservation is sized from the request as stored.
+    const repo = repository();
+    const record = game(repo, { maxSpendUsd: 5 });
+    const provider: DecisionProvider = {
+      decide: async () => {
+        throw new Error("x".repeat(2_000));
+      },
+    };
+    const narration = new NarrationV2(repo, provider);
+    await narration
+      .narrate({
+        ...options(record.id),
+        decisionId: "sized",
+        model: "claude-opus-5-5",
+        provider: "anthropic",
+      })
+      .catch(() => undefined);
+    for (const attempt of narration.store.attempts(record.id, "sized"))
+      expect((attempt as { reservedUsd?: number }).reservedUsd).toBeCloseTo(
+        claudeReservationUsd("claude-opus-5-5", 3 * estimatedTokens(attempt.request), 300),
+        12,
+      );
   });
 
   it("keeps a valid report pending when an operator pauses before acknowledgement", async () => {
