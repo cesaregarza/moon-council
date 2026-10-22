@@ -543,13 +543,20 @@ describe("voting dynamics", () => {
         minorityElimination: true,
       },
     ];
+    const all = (value: number) => ({ value, knownDays: 2, totalDays: 2 });
     const totals = {
       days: 2,
-      voted: 2,
-      abstained: 13,
+      voted: all(2),
+      abstained: all(13),
+      votesForEliminated: all(2),
       eliminations: 1,
-      minorityEliminations: 1,
-      minorityVillageVictims: 1,
+      minorityEliminations: all(1),
+      minorityVillageVictims: all(1),
+      byFaction: {
+        value: { village: { voted: 0, abstained: 11 }, werewolf: { voted: 2, abstained: 2 } },
+        knownDays: 2,
+        totalDays: 2,
+      },
     };
     expect(mechanics).toMatchObject({ votingDynamics: { byDay, totals } });
   });
@@ -579,7 +586,11 @@ describe("voting dynamics", () => {
             minorityElimination: false,
           },
         ],
-        totals: { minorityEliminations: 0, coverage: { ballots: 0, tally: 1, unavailable: 0 } },
+        totals: {
+          minorityEliminations: { value: 0, knownDays: 1, totalDays: 1 },
+          abstained: { value: null, knownDays: 0, totalDays: 1 },
+          basisDays: { ballots: 0, tally: 1, unavailable: 0 },
+        },
       },
     });
   });
@@ -605,7 +616,127 @@ describe("voting dynamics", () => {
             minorityElimination: null,
           },
         ],
-        totals: { minorityEliminations: 0, coverage: { ballots: 0, tally: 0, unavailable: 1 } },
+      },
+    });
+  });
+
+  // halcyon's aggregate probes (PR #16 re-review, 03:33Z): totals never turn unknowns into zeros.
+  const unknown = (totalDays: number) => ({ value: null, knownDays: 0, totalDays });
+
+  it("reports totals of an unavailable day as unknown, not zero", () => {
+    const bare = [
+      event(0, "game.created", { players }),
+      event(1, "game.started", {}),
+      event(2, "vote.resolved", { targetId: "v1" }),
+    ];
+    const { mechanics } = summarizeGameAudit(game, bare, []);
+    expect(mechanics).toMatchObject({
+      votingDynamics: {
+        totals: {
+          eliminations: 1,
+          voted: unknown(1),
+          abstained: unknown(1),
+          votesForEliminated: unknown(1),
+          minorityEliminations: unknown(1),
+          minorityVillageVictims: unknown(1),
+          byFaction: unknown(1),
+          byRole: unknown(1),
+          basisDays: { ballots: 0, tally: 0, unavailable: 1 },
+        },
+      },
+    });
+  });
+
+  /** w1's role carries a weight-3 vote. */
+  const weighted = players.map((p) =>
+    p.id === "w1" ? { ...p, role: { ...p.role, passives: { voteWeight: 3 } } } : p,
+  );
+
+  it("leaves a weighted tally's minority call unknown in totals", () => {
+    // {v1: 4} with eight living: one weight-3 voter plus one other (a minority), or four voters
+    // (exactly half). The tally cannot tell them apart.
+    const { mechanics } = summarizeGameAudit(
+      game,
+      [
+        event(0, "game.created", { players: weighted }),
+        event(1, "game.started", {}),
+        event(2, "vote.resolved", { tally: { v1: 4 }, tied: false, targetId: "v1" }),
+      ],
+      [],
+    );
+    expect(mechanics).toMatchObject({
+      votingDynamics: {
+        byDay: [{ voted: null, votesForEliminated: null, minorityElimination: null }],
+        totals: { voted: unknown(1), minorityEliminations: unknown(1) },
+      },
+    });
+  });
+
+  it("distinguishes a known zero-vote day from a weighted tie in totals", () => {
+    const totalsOf = (roster: typeof players, tally: Record<string, number>) =>
+      (
+        summarizeGameAudit(
+          game,
+          [
+            event(0, "game.created", { players: roster }),
+            event(1, "game.started", {}),
+            event(2, "vote.resolved", { tally, tied: true, targetId: null }),
+          ],
+          [],
+        ).mechanics as { votingDynamics: { totals: unknown } }
+      ).votingDynamics.totals;
+    const zero = totalsOf(players, {});
+    const tie = totalsOf(weighted, { v1: 3, w2: 3 });
+    expect(zero).toMatchObject({ voted: { value: 0, knownDays: 1, totalDays: 1 } });
+    expect(tie).toMatchObject({ voted: unknown(1) });
+    expect(tie).not.toEqual(zero);
+  });
+
+  it("gives each total its own day coverage across mixed bases", () => {
+    // Day 1 ballots; Day 2 a tally while weight-3 w1 lives; w1 dies; Day 3 a unit-weight tally;
+    // Day 4 neither. Voter counts are known on 2 days, abstentions on 1, minority calls on 2.
+    const mixed = [
+      event(0, "game.created", { players: weighted }),
+      event(1, "game.started", {}),
+      event(2, "vote.resolved", {
+        ballots: [
+          { voterId: "w1", targetId: "v1" },
+          ...["w2", "s", "b", "v1", "v2", "v3", "v4"].map(abstain),
+        ],
+        targetId: "v1",
+      }),
+      event(3, "player.eliminated", { playerId: "v1", cause: "vote" }),
+      event(4, "vote.resolved", { tally: { v2: 4 }, tied: false, targetId: "v2" }, 2),
+      event(5, "player.eliminated", { playerId: "v2", cause: "vote" }, 2),
+      event(6, "player.eliminated", { playerId: "w1", cause: "night_attack" }, 3),
+      event(7, "vote.resolved", { tally: { v3: 3, w2: 1 }, tied: false, targetId: "v3" }, 3),
+      event(8, "player.eliminated", { playerId: "v3", cause: "vote" }, 3),
+      event(9, "vote.resolved", { targetId: "s" }, 4),
+    ];
+    const { mechanics } = summarizeGameAudit(game, mixed, []);
+    const of4 = (value: number, knownDays: number) => ({ value, knownDays, totalDays: 4 });
+    expect(mechanics).toMatchObject({
+      votingDynamics: {
+        totals: {
+          days: 4,
+          eliminations: 4,
+          voted: of4(5, 2),
+          abstained: of4(7, 1),
+          votesForEliminated: of4(4, 2),
+          minorityEliminations: of4(1, 2),
+          minorityVillageVictims: of4(1, 2),
+          basisDays: { ballots: 1, tally: 2, unavailable: 1 },
+        },
+      },
+    });
+    expect(mechanics).toMatchObject({
+      votingDynamics: {
+        totals: {
+          byFaction: {
+            value: { village: { voted: 0, abstained: 6 }, werewolf: { voted: 1, abstained: 1 } },
+            knownDays: 1,
+          },
+        },
       },
     });
   });
