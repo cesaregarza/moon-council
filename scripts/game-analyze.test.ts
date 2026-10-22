@@ -519,6 +519,56 @@ describe("post-game analyzer safety and accounting", () => {
     expect(readFileSync(`${target}.collision.tmp`, "utf8")).toBe("not ours\n");
   });
 
+  it("reports a review cost total that overflows as unknown, never Infinity", async () => {
+    // halcyon's control: each call reports the largest finite cost.
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain);
+    const reporting: DecisionProvider = {
+      decide: (request) =>
+        reviewer.provider.decide({
+          ...request,
+          onProviderMetadata: (metadata) =>
+            request.onProviderMetadata?.({ ...metadata, costUsd: Number.MAX_VALUE }),
+        }),
+    };
+    const report = await run(game, { ...reviewer, provider: reporting });
+    expect(report.usage.review.costUsd).toBeNull();
+    const markdown = readFileSync(join(game.directory, "analysis", "analysis.md"), "utf8");
+    expect(markdown).not.toContain("Infinity");
+    expect(markdown).toContain("unknown reported cost");
+  });
+
+  it.each([
+    ["an invalid cost followed by $0.02", [-1, 0.02]],
+    ["the largest finite cost", [Number.MAX_VALUE]],
+  ])("keeps Jev's cost unknown after %s", async (_label, costs) => {
+    // halcyon's control: a later valid callback must not clear an earlier unknown cost.
+    const game = recordedGame(fixture);
+    const jev = scriptedJev(game.moments);
+    const reporting: DecisionProvider = {
+      decide: async (request) => {
+        const result = await jev.decide(request);
+        for (const costUsd of costs) request.onProviderMetadata?.({ costUsd });
+        return result;
+      },
+    };
+    const report = await analyzeGame({
+      dbPath: game.dbPath,
+      gameId: game.gameId,
+      outDir: join(game.directory, "analysis"),
+      jev: reporting,
+      jevModel: "jev-latest",
+      review: { provider: scriptedReviewer(plain).provider, kind: "fake", model: "review" },
+    });
+    const jevUsage = (
+      report.usage as unknown as { jev: { costUsd: unknown; perCall: { costUsd: unknown }[] } }
+    ).jev;
+    expect(jevUsage.costUsd).toBeNull();
+    expect(costs.length > 1 ? jevUsage.perCall.map((call) => call.costUsd) : []).toEqual(
+      costs.length > 1 ? jevUsage.perCall.map(() => null) : [],
+    );
+  });
+
   it("rejects citations checked against no deciders or a duplicated decider", () => {
     const game = recordedGame(fixture);
     const connection = openDatabase(game.dbPath);

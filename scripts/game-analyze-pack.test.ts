@@ -509,6 +509,39 @@ describe("pack nights with inconsistent records", () => {
     });
   };
 
+  it.each(["agent_v3_2", "agent_v3_1"] as const)(
+    "keeps a pack kill whose freeze is missing, as no_signal (%s)",
+    async (protocol) => {
+      // halcyon's control: a real unanimous kill with only its freeze removed.
+      const night = await packNight({ protocol, rounds: unanimous });
+      edit(night, (sql) => sql.prepare("DELETE FROM events WHERE id=?").run(night.agreementId));
+      await inconsistent(night, "missing freeze");
+    },
+  );
+
+  it("refuses decisions attributed to the wrong wolf", async () => {
+    // halcyon's control: the two wolves' commit payloads carry each other's decision IDs.
+    const night = await packNight({ rounds: unanimous });
+    edit(night, (sql) => {
+      const [first, second] = night.wolves.map((wolf) => {
+        const op = night.finalOps[wolf]!;
+        return sql
+          .prepare(
+            "SELECT * FROM events WHERE game_id=? AND type='decision.committed' AND payload_json LIKE ?",
+          )
+          .get(night.gameId, `%"decisionId":"${op.id}"%`) as EventRow;
+      }) as [EventRow, EventRow];
+      const swap = (row: EventRow, decisionId: unknown) =>
+        sql
+          .prepare("UPDATE events SET payload_json=? WHERE id=?")
+          .run(JSON.stringify({ ...JSON.parse(String(row.payload_json)), decisionId }), row.id);
+      const ids = [first, second].map((row) => JSON.parse(String(row.payload_json)).decisionId);
+      swap(first, ids[1]);
+      swap(second, ids[0]);
+    });
+    await inconsistent(night, "ownership mismatch");
+  });
+
   it("refuses a final decision committed after the freeze", async () => {
     // halcyon's future-record control: the wolf's decision now lands after the night.
     const night = await packNight({ rounds: unanimous });
