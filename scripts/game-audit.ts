@@ -50,7 +50,7 @@ export interface AuditGame {
 interface EnginePlayer {
   id: string;
   name: string;
-  role: { name: string; alignment: string };
+  role: { name: string; alignment: string; passives?: { voteWeight?: number } };
 }
 
 interface AuctionScore {
@@ -101,15 +101,28 @@ function aliveAt(players: EnginePlayer[], events: AuditEvent[], sequence: number
 
 type BallotSplit = { voted: number; abstained: number };
 type Ballot = { voterId: string; targetId: string | null };
+/** Where a day's figures come from; missing ballots are never reported as zero activity. */
+type VoteBasis = "ballots" | "tally" | "unavailable";
+interface VoteFigures {
+  basis: VoteBasis;
+  voted: number | null;
+  abstained: number | null;
+  byFaction: Record<string, BallotSplit> | null;
+  byRole: Record<string, BallotSplit> | null;
+  votesForEliminated: number | null;
+}
 
 function tallyBallot(split: Record<string, BallotSplit>, key: string, voted: boolean): void {
   const row = (split[key] ??= { voted: 0, abstained: 0 });
   row[voted ? "voted" : "abstained"] += 1;
 }
 
-function dayVote(event: AuditEvent, players: EnginePlayer[], events: AuditEvent[]) {
-  const byId = new Map(players.map((player) => [player.id, player]));
-  const ballots = Array.isArray(event.payload.ballots) ? (event.payload.ballots as Ballot[]) : [];
+/** V2 games record every ballot: who voted, for whom, and who abstained. */
+function ballotFigures(
+  ballots: Ballot[],
+  byId: Map<string, EnginePlayer>,
+  eliminated: string | null,
+): VoteFigures {
   const byFaction: Record<string, BallotSplit> = {},
     byRole: Record<string, BallotSplit> = {};
   for (const ballot of ballots) {
@@ -117,27 +130,83 @@ function dayVote(event: AuditEvent, players: EnginePlayer[], events: AuditEvent[
     tallyBallot(byFaction, voter?.role.alignment ?? "unknown", ballot.targetId != null);
     tallyBallot(byRole, voter?.role.name ?? "unknown", ballot.targetId != null);
   }
-  const eliminatedPlayerId =
-    typeof event.payload.targetId === "string" ? event.payload.targetId : null;
   const voted = ballots.filter((ballot) => ballot.targetId != null).length;
-  const living = aliveAt(players, events, event.sequence).size;
-  const votesForEliminated = ballots.filter(
-    (ballot) => eliminatedPlayerId !== null && ballot.targetId === eliminatedPlayerId,
-  ).length;
   return {
-    day: event.day,
-    living,
+    basis: "ballots",
     voted,
     abstained: ballots.length - voted,
     byFaction,
     byRole,
+    votesForEliminated: ballots.filter((b) => eliminated !== null && b.targetId === eliminated)
+      .length,
+  };
+}
+
+/**
+ * Archived V1 games record only `resolveVote`'s tally: weighted support per target. Abstentions
+ * and discarded ballots never appear in it, so abstentions and the faction/role split stay
+ * unknown. Voter counts follow from the tally only when every living vote weighs 1.
+ */
+function tallyFigures(
+  tally: Record<string, number>,
+  living: EnginePlayer[],
+  eliminated: string | null,
+): VoteFigures {
+  const unitWeights = living.every((player) => (player.role.passives?.voteWeight ?? 1) === 1);
+  const support = Object.values(tally).reduce((sum, weight) => sum + weight, 0);
+  return {
+    basis: "tally",
+    voted: unitWeights ? support : null,
+    abstained: null,
+    byFaction: null,
+    byRole: null,
+    votesForEliminated: eliminated === null ? 0 : unitWeights ? (tally[eliminated] ?? 0) : null,
+  };
+}
+
+const UNAVAILABLE: VoteFigures = {
+  basis: "unavailable",
+  voted: null,
+  abstained: null,
+  byFaction: null,
+  byRole: null,
+  votesForEliminated: null,
+};
+
+function voteFigures(
+  payload: AuditEvent["payload"],
+  living: EnginePlayer[],
+  byId: Map<string, EnginePlayer>,
+  eliminated: string | null,
+): VoteFigures {
+  if (Array.isArray(payload.ballots))
+    return ballotFigures(payload.ballots as Ballot[], byId, eliminated);
+  if (payload.tally && typeof payload.tally === "object")
+    return tallyFigures(payload.tally as Record<string, number>, living, eliminated);
+  return UNAVAILABLE;
+}
+
+function dayVote(event: AuditEvent, players: EnginePlayer[], events: AuditEvent[]) {
+  const byId = new Map(players.map((player) => [player.id, player]));
+  const alive = aliveAt(players, events, event.sequence);
+  const living = players.filter((player) => alive.has(player.id));
+  const eliminatedPlayerId =
+    typeof event.payload.targetId === "string" ? event.payload.targetId : null;
+  const figures = voteFigures(event.payload, living, byId, eliminatedPlayerId);
+  return {
+    day: event.day,
+    living: living.length,
+    ...figures,
     eliminatedPlayerId,
     eliminatedAlignment: eliminatedPlayerId
       ? (byId.get(eliminatedPlayerId)?.role.alignment ?? null)
       : null,
-    votesForEliminated,
-    // Fewer than half of the living players decided the elimination ("highest nonzero tally").
-    minorityElimination: eliminatedPlayerId !== null && votesForEliminated < living / 2,
+    // Fewer than half of the living players decided the elimination ("highest nonzero tally");
+    // null when the support behind the elimination is unknown.
+    minorityElimination:
+      figures.basis === "unavailable" || figures.votesForEliminated === null
+        ? null
+        : eliminatedPlayerId !== null && figures.votesForEliminated < living.length / 2,
   };
 }
 
@@ -146,17 +215,25 @@ function votingDynamics(players: EnginePlayer[], events: AuditEvent[]) {
   const byDay = events
     .filter((event) => event.type === "vote.resolved")
     .map((event) => dayVote(event, players, events));
-  const minority = byDay.filter((day) => day.minorityElimination);
+  const minority = byDay.filter((day) => day.minorityElimination === true);
+  const sum = (values: (number | null)[]) => values.reduce<number>((t, v) => t + (v ?? 0), 0);
+  const covered = (basis: VoteBasis) => byDay.filter((day) => day.basis === basis).length;
   return {
     byDay,
     totals: {
       days: byDay.length,
-      voted: byDay.reduce((sum, day) => sum + day.voted, 0),
-      abstained: byDay.reduce((sum, day) => sum + day.abstained, 0),
+      // Sums cover the days whose figures are known; `coverage` says how many those are.
+      voted: sum(byDay.map((day) => day.voted)),
+      abstained: sum(byDay.map((day) => day.abstained)),
       eliminations: byDay.filter((day) => day.eliminatedPlayerId !== null).length,
       minorityEliminations: minority.length,
       minorityVillageVictims: minority.filter((day) => day.eliminatedAlignment === "village")
         .length,
+      coverage: {
+        ballots: covered("ballots"),
+        tally: covered("tally"),
+        unavailable: covered("unavailable"),
+      },
     },
   };
 }
@@ -739,6 +816,7 @@ export function summarizeGameProgress(audit: ReturnType<typeof summarizeGameAudi
       living: day.living,
       voted: day.voted,
       abstained: day.abstained,
+      basis: day.basis,
       eliminatedPlayerId: day.eliminatedPlayerId,
       minorityElimination: day.minorityElimination,
     })),
