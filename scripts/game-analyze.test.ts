@@ -378,13 +378,14 @@ describe("post-game surprise analyzer", () => {
     ).toBeNull();
     expect(postGameAnalysisRequest({})).toBeNull();
     expect(() => postGameAnalysisRequest({ analyze: true })).toThrow(/--review-provider/);
+    // An accepted review kind (anthropic is refused until analysis has a USD cap, CES-1040).
     expect(
       postGameAnalysisRequest({
         analyze: true,
-        "review-provider": "anthropic",
-        "review-model": "claude-opus-5-5",
+        "review-provider": "openai",
+        "review-model": "gpt-6-luna",
       }),
-    ).toEqual({ kind: "anthropic", model: "claude-opus-5-5" });
+    ).toEqual({ kind: "openai", model: "gpt-6-luna" });
   });
 });
 
