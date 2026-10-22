@@ -7,6 +7,7 @@ import {
   type DecisionOpportunityV1,
   type GameConfigV2,
   type GameEventV1,
+  type SpeakerIntentV1,
 } from "@werewolf/contracts";
 import { DecisionStore, LabRepository, openDatabase, type DatabaseConnection } from "@werewolf/db";
 import { DOCTOR_V2, STARTER_ROLES, createGameState, reduceGame } from "@werewolf/engine";
@@ -1235,4 +1236,106 @@ describe("free-form journals and journal-first Jev input", () => {
       repository.listEvents(game.id).filter((e) => e.type === "journal.compacted"),
     ).toHaveLength(1);
   });
+});
+
+describe("journal_v4 speaker-auction declines", () => {
+  /** An urge answer putting `noContribution` on level 0 and the rest on level 3. */
+  const urgeAnswer = (noContribution: number) => ({
+    type: "score",
+    score: 3 * (1 - noContribution),
+    confidence: 1,
+    probabilities: { "0": noContribution, "1": 0, "2": 0, "3": 1 - noContribution, "4": 0 },
+  });
+  function scoreIntent(workflow: "journal_v3" | "journal_v4", noContribution: number) {
+    const cfg = config({
+        decisionEngine: { mode: "jev", workflow },
+        deliberation: { maxContextTokens: 16_000, maxJournalTokens: 16_000 },
+      }),
+      state = createGameState("decline", cfg);
+    state.phase = "day_discussion";
+    const packet = buildContextV2(state, [], "p1", emptyJournalV2(), "score", "discussion");
+    packet.journal.decisionBrief = {
+      playerId: "p1",
+      evidenceRevision: String(packet.rules.journalRevision),
+      action: "No vote preference yet.",
+      attention: "I have no new contribution myself; I want to hear Player 3.",
+    };
+    const task: V3TaskSpec = {
+      type: "discussion_score",
+      eligible: true,
+      candidateIds: packet.players.map((p) => p.id),
+      revision: "initial",
+    };
+    const base = {
+      ...decisionRequestV31(packet, task, true, null, null),
+      schemaName: task.type,
+      normalize: (value: unknown) =>
+        normalizeV31Submission(packet, task, value as never, "score", true),
+    };
+    const stage = prepareJevStage({ packet, playerId: "p1", taskType: task.type }, cfg, base, true);
+    const reply = answer(JSON.parse(stage.prepared.prompt.input) as JevRequest);
+    reply.answers.urge = urgeAnswer(noContribution);
+    const submission = v31SubmissionSchema(packet, task).parse(stage.toSubmission(reply));
+    return base.normalize(submission) as unknown as { speakerIntent: SpeakerIntentV1 };
+  }
+
+  it("declines when P(no useful contribution) is at least 0.5, and bids below it", () => {
+    expect(scoreIntent("journal_v4", 0.6).speakerIntent).toMatchObject({
+      wantsToSpeak: false,
+      urge: 0,
+    });
+    expect(scoreIntent("journal_v4", 0.4).speakerIntent).toMatchObject({ wantsToSpeak: true });
+    expect(scoreIntent("journal_v4", 0.4).speakerIntent.urge).toBeCloseTo(0.45);
+  });
+
+  it("keeps archived journal_v3 scoring: positive urge still bids", () => {
+    expect(scoreIntent("journal_v3", 0.6).speakerIntent).toMatchObject({ wantsToSpeak: true });
+  });
+
+  it("excludes declining seats from a v4 auction that still resolves to a willing seat", async () => {
+    const connection = openDatabase(":memory:");
+    connections.push(connection);
+    const repository = new LabRepository(connection);
+    repository.seedRoles([...STARTER_ROLES, DOCTOR_V2]);
+    const game = repository.createGame(
+      journalConfig({
+        decisionEngine: { mode: "jev", workflow: "journal_v4" },
+        deliberation: { maxContextTokens: 32_000, maxJournalTokens: 16_000 },
+        safety: { maxCycles: 6, maxModelCalls: 2000, maxWallClockMs: 120_000 },
+        maxTotalTokens: 10_000_000,
+      }),
+    );
+    const declining = new Set(["p1", "p2", "p3"]);
+    const jev = new AskJevProvider(async (input) => {
+      const request = JSON.parse(input) as JevRequest;
+      const reply = answer(
+        request,
+        false,
+        taskType(request) === "vote_choice" ? "abstain" : undefined,
+      );
+      const actor = /\((p\d)\)/.exec(
+        String((request.state as { perspective?: string }).perspective),
+      )?.[1];
+      if (request.questions.urge) reply.answers.urge = urgeAnswer(declining.has(actor!) ? 0.6 : 0);
+      return JSON.stringify(reply);
+    });
+    const runner = new V2GameOrchestrator(repository, new RecordingLlm(), jev);
+    const resolved = () =>
+      repository.listEvents(game.id).find((e) => e.type === "discussion.auction_resolved");
+    for (let i = 0; i < 60 && !resolved(); i++) await runner.runGameStep(game.id);
+    const auction = resolved()!.payload as {
+      scores: { playerId: string }[];
+      selectedPlayerId: string | null;
+      declinedCandidateIds: string[];
+      intents: Record<string, SpeakerIntentV1>;
+    };
+    const candidates = [...auction.scores.map((s) => s.playerId), ...auction.declinedCandidateIds];
+    const declined = candidates.filter((id) => declining.has(id));
+    expect(declined.length).toBeGreaterThan(0);
+    expect(auction.declinedCandidateIds).toEqual(expect.arrayContaining(declined));
+    for (const id of declined) expect(auction.intents[id]).toMatchObject({ wantsToSpeak: false });
+    expect(auction.scores.map((s) => s.playerId).some((id) => declining.has(id))).toBe(false);
+    expect(declining.has(auction.selectedPlayerId!)).toBe(false);
+    expect(auction.selectedPlayerId).not.toBeNull();
+  }, 120_000);
 });

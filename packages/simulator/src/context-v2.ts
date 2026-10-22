@@ -9,6 +9,7 @@ import {
   type GameEventV1,
   type PlayerContextV2,
   type PrivateJournalV2,
+  type PublicFloorV2,
 } from "@werewolf/contracts";
 import { shuffled, validateNightAction, type GameState } from "@werewolf/engine";
 import { decisionRequestV2, estimatedTokens } from "./request-v2";
@@ -120,6 +121,34 @@ export function authorizedSources(
       });
   }
   return sources;
+}
+/** Today's public floor from authorized public speech only, before any context window. */
+export function publicFloor(state: GameState, sources: ContextSourceV2[]): PublicFloorV2 {
+  const living = state.players.filter((p) => p.alive);
+  const rows = new Map(
+    living.map((p) => [
+      p.id,
+      { playerId: p.id, speeches: 0, accusations: 0, challenges: 0, responsesOwed: 0 },
+    ]),
+  );
+  const speeches = sources.filter(
+    (s) => s.scope === "public" && s.type === "speech.public" && s.day === state.day,
+  );
+  for (const speech of speeches) {
+    const speaker = rows.get(String(speech.data.playerId));
+    if (speaker) {
+      speaker.speeches += 1;
+      speaker.responsesOwed = 0;
+    }
+    for (const act of Array.isArray(speech.data.acts) ? speech.data.acts : []) {
+      const { kind, targetId } = act as { kind?: unknown; targetId?: unknown };
+      if (kind !== "accusation" && kind !== "challenge") continue;
+      if (speaker) speaker[kind === "accusation" ? "accusations" : "challenges"] += 1;
+      const target = rows.get(String(targetId));
+      if (target) target.responsesOwed += 1;
+    }
+  }
+  return { day: state.day, players: [...rows.values()] };
 }
 export function buildContextV2(
   state: GameState,
@@ -261,6 +290,8 @@ export function buildContextV2(
   let all = authorizedSources(state, events, playerId);
   if (config.decisionEngine.mode === "jev" && config.decisionEngine.workflow === "journal_v4") {
     packet.rules.journalRevision = journalEvidenceRevision(all);
+    // Counted before any window, and kept out of the rules cache layer and LLM prompts.
+    packet.publicFloor = publicFloor(state, all);
   }
   // Set by the V3.2 ladder so the measured request can walk tiers back down; a no-op
   // under every other protocol.
