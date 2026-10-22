@@ -37,5 +37,5 @@ export function checkCitations(
       ),
     ),
   ];
-  return { accepted: true, issues: issues.slice(0, 0) };
+  return { accepted: issues.length === 0, issues };
 }

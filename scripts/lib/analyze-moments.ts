@@ -156,7 +156,7 @@ export function selectForReview(
   moments: ClassifiedMoment[],
   options: { cap: number; recall: number; seed: string },
 ) {
-  const noteworthy = rankNoteworthy(moments, options.cap);
+  const noteworthy = rankNoteworthy(moments, Number.MAX_SAFE_INTEGER);
   const routine = shuffled(
     moments.filter((moment) => moment.class === "routine"),
     `${options.seed}:recall`,
