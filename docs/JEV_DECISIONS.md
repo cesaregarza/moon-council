@@ -31,7 +31,10 @@ flowchart LR
   `(bias + urge) * normalized aggregate listening interest`.
 
 Scoring has no topic menu, plan field, silence choice or reasoning gate. Positive urgency makes an
-eligible player willing to speak; zero urgency declines. The selected LLM generates one speech
+eligible player willing to speak; zero urgency declines. In `journal_v4`, a player whose urgency
+answer puts at least 0.5 probability (`DECLINE_THRESHOLD`) on level 0, "No useful contribution now",
+declines: its urge is recorded as zero and the bid as not wanting to speak, so it is not an auction
+candidate. Archived workflows keep their recorded rule. The selected LLM generates one speech
 directly from its briefing and journal. It annotates accusations, challenges and replies so existing
 response rights continue to work. Closing replies retain the existing frozen-docket restriction.
 

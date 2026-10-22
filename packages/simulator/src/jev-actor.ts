@@ -10,6 +10,7 @@ import { jevBriefing } from "./jev-briefing";
 import type { JevStage } from "./jev-decision";
 import { currentDecisionBrief } from "./player-brief";
 import { assessActorChoice } from "./jev-semantics";
+import { declinesFloor } from "./speaker-decline";
 
 type Opportunity = Pick<DecisionOpportunityV1, "packet" | "playerId" | "taskType" | "jevState">;
 const perspective =
@@ -207,7 +208,10 @@ export function prepareActorJevAction(
           listen,
           memory,
           rationale,
-          ...(scoreTask ? { urge: score("urge") } : {}),
+          // A declined bid has zero urge, so normalization records wantsToSpeak: false.
+          ...(scoreTask
+            ? { urge: answers.urge && declinesFloor(answers.urge) ? 0 : score("urge") }
+            : {}),
         };
       }
       const choice = selected(value);
