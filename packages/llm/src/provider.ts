@@ -5,6 +5,7 @@ import type {
   ProviderUsageV1,
   UsageV2,
 } from "@werewolf/contracts";
+import type Anthropic from "@anthropic-ai/sdk";
 import type { z } from "zod";
 
 export type DecisionKind =
@@ -82,6 +83,14 @@ export interface DecisionRequest<T> {
   /** Exact provider body, excluding authentication; contains authorized private game data. */
   onProviderRequest?: (body: Record<string, unknown>) => void;
   onProviderMetadata?: (metadata: Record<string, unknown>) => void;
+  /**
+   * Claude only: a request a session harness built itself. System blocks, messages and their
+   * cache markers are sent unchanged instead of the layout derived from `preparedPrompt`.
+   */
+  claudeHarness?: {
+    system: Anthropic.TextBlockParam[];
+    messages: Anthropic.MessageParam[];
+  };
 }
 
 export interface DecisionResult<T> {
@@ -89,6 +98,8 @@ export interface DecisionResult<T> {
   provider: string;
   model: string;
   usage: ProviderUsageV1;
+  /** Claude only: the full response content, thinking blocks included, for verbatim replay. */
+  content?: Anthropic.ContentBlock[];
 }
 
 export interface DecisionProvider {

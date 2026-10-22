@@ -1,7 +1,8 @@
 import { GameConfigV2Schema } from "@werewolf/contracts";
 import { DecisionStore, LabRepository, openDatabase, type DatabaseConnection } from "@werewolf/db";
 import { createGameCreatedEvent, createGameState, STARTER_ROLES } from "@werewolf/engine";
-import type { DecisionProvider } from "@werewolf/llm";
+import { claudeReservationUsd, type DecisionProvider } from "@werewolf/llm";
+import { estimatedTokens } from "./request-v2";
 import { afterEach, describe, expect, it } from "vitest";
 import { NarrationPausedError, NarrationV2 } from "./narration-v2";
 
@@ -16,7 +17,7 @@ function repository(): LabRepository {
   return new LabRepository(connection);
 }
 
-function game(repository: LabRepository) {
+function game(repository: LabRepository, overrides: Record<string, unknown> = {}) {
   const ids = ["werewolf", "seer", "doctor", "villager", "villager"];
   const seats = ids.map((_, index) => ({ id: `p${index + 1}`, name: `Player ${index + 1}` }));
   const config = GameConfigV2Schema.parse({
@@ -29,6 +30,7 @@ function game(repository: LabRepository) {
       seats.map((seat) => [seat.id, { model: "fake", provider: "fake", reasoningEffort: "none" }]),
     ),
     safety: { maxCycles: 2, maxModelCalls: 20, maxOutputTokens: 300, maxWallClockMs: 60_000 },
+    ...overrides,
   });
   const record = repository.createGame(config);
   repository.appendEvent(record.id, createGameCreatedEvent(createGameState(record.id, config)));
@@ -125,6 +127,88 @@ describe("V2 moderator narration", () => {
       narration.store.attempts(record.id, "malformed").map((attempt) => attempt.status),
     ).toEqual(["invalid", "invalid"]);
     expect(narration.checkpoint(record.id, "malformed")?.status).toBe("paused");
+  });
+
+  it("stores a refusal's stop reason, details and serving model on the attempt", async () => {
+    const repo = repository();
+    const record = game(repo);
+    const provider: DecisionProvider = {
+      decide: async (request) => {
+        request.onUsage?.(usage, metadata);
+        request.onProviderMetadata?.({
+          responseId: "msg_refused",
+          model: "claude-haiku-5-5-served",
+          stopReason: "refusal",
+          stopDetails: { category: "cyber", explanation: "declined" },
+          costUsd: 0.001,
+        });
+        throw new Error("Claude refused: cyber");
+      },
+    };
+    const narration = new NarrationV2(repo, provider);
+    await expect(
+      narration.narrate({ ...options(record.id), decisionId: "refused" }),
+    ).rejects.toThrow();
+    expect(narration.store.attempts(record.id, "refused")[0]?.providerMetadata).toMatchObject({
+      model: "claude-haiku-5-5-served",
+      stopReason: "refusal",
+      stopDetails: { category: "cyber" },
+      costUsd: 0.001,
+    });
+  });
+
+  it("reserves a repair at the size of the repair prompt it sends", async () => {
+    // halcyon's control (PR #20, 04:54Z): the repair carries a 2,000-character correction, so
+    // it costs far more than the first prompt. With a $0.025 limit and the first call still
+    // reserved (usage unknown), the repair must be refused.
+    const repo = repository();
+    const record = game(repo, { maxSpendUsd: 0.025 });
+    let calls = 0;
+    const provider: DecisionProvider = {
+      decide: async () => {
+        calls += 1;
+        throw new Error("x".repeat(2_500));
+      },
+    };
+    const narration = new NarrationV2(repo, provider);
+    await narration
+      .narrate({
+        ...options(record.id),
+        decisionId: "repair",
+        model: "claude-opus-5-5",
+        provider: "anthropic",
+      })
+      .catch(() => undefined);
+    const first = narration.store.attempts(record.id, "repair")[0] as { reservedUsd?: number };
+    // Premise: two first-prompt reservations fit, so only the repair's real size refuses it.
+    expect(2 * first.reservedUsd!).toBeLessThan(0.025);
+    expect(calls).toBe(1);
+  });
+
+  it("reserves narration from the stored request's own serialized envelope", async () => {
+    // halcyon's metric note: separate prompt and schema estimates missed the combined record's
+    // JSON envelope by nine bytes. The reservation is sized from the request as stored.
+    const repo = repository();
+    const record = game(repo, { maxSpendUsd: 5 });
+    const provider: DecisionProvider = {
+      decide: async () => {
+        throw new Error("x".repeat(2_000));
+      },
+    };
+    const narration = new NarrationV2(repo, provider);
+    await narration
+      .narrate({
+        ...options(record.id),
+        decisionId: "sized",
+        model: "claude-opus-5-5",
+        provider: "anthropic",
+      })
+      .catch(() => undefined);
+    for (const attempt of narration.store.attempts(record.id, "sized"))
+      expect((attempt as { reservedUsd?: number }).reservedUsd).toBeCloseTo(
+        claudeReservationUsd("claude-opus-5-5", 3 * estimatedTokens(attempt.request), 300),
+        12,
+      );
   });
 
   it("keeps a valid report pending when an operator pauses before acknowledgement", async () => {

@@ -8,7 +8,12 @@ import {
 } from "@werewolf/contracts";
 import { DecisionStore, type LabRepository } from "@werewolf/db";
 import type { DecisionProvider } from "@werewolf/llm";
-import { assertV2Budget, V2BudgetError, usageTotals } from "./decisions-v2";
+import {
+  assertV2Budget,
+  claudeNextReservationUsd,
+  V2BudgetError,
+  usageTotals,
+} from "./decisions-v2";
 import { estimatedTokens } from "./context-v2";
 
 const NarrationSchema = z.strictObject({ text: z.string().min(1).max(800) });
@@ -153,10 +158,19 @@ export class NarrationV2 {
     const reserveTokens =
       options.mandatoryTokenReserve ??
       reserveCalls * (estimatedTokens(basePrompt) + estimatedTokens(jsonSchema) + maxOutputTokens);
-    const admitsBudget = () => {
+    // Each attempt is admitted and reserved at the prompt it actually sends: a repair carries
+    // the correction, so it is larger than the first prompt.
+    const nextCall = (prompt: Prompt) => ({
+      provider: options.provider ?? "unknown",
+      model: options.model,
+      // Sized from the request exactly as it is stored: one envelope, schema included.
+      inputTokens: estimatedTokens({ ...prompt, schema: jsonSchema }),
+      maxOutputTokens,
+    });
+    const admitsBudget = (prompt: Prompt) => {
       const usage = usageTotals(this.store, options.gameId);
       try {
-        assertV2Budget(this.store, options.gameId, config);
+        assertV2Budget(this.store, options.gameId, config, 0, true, nextCall(prompt));
       } catch (error) {
         if (!(error instanceof V2BudgetError)) throw error;
         return false;
@@ -165,14 +179,14 @@ export class NarrationV2 {
         usage.calls + 1 + reserveCalls < config.safety.maxModelCalls &&
         (config.maxTotalTokens === null ||
           usage.admissionTokens +
-            estimatedTokens(basePrompt) +
+            estimatedTokens(prompt) +
             estimatedTokens(jsonSchema) +
             maxOutputTokens +
             reserveTokens <
             config.maxTotalTokens)
       );
     };
-    if (!admitsBudget()) {
+    if (!admitsBudget(basePrompt)) {
       checkpoint = {
         ...checkpoint,
         status: "skipped",
@@ -183,15 +197,6 @@ export class NarrationV2 {
     }
     let repair = priorAttempts.length > 0;
     for (let index = priorAttempts.length; index < 2; index += 1) {
-      if (!admitsBudget()) {
-        checkpoint = {
-          ...checkpoint,
-          status: "skipped",
-          error: "optional narration skipped to reserve mandatory decision budget",
-        };
-        this.store.put(options.gameId, keyOf(options.decisionId), checkpoint);
-        return options.fallbackText;
-      }
       const prompt: Prompt =
         index === 0
           ? basePrompt
@@ -202,6 +207,15 @@ export class NarrationV2 {
                 correctionRequired: checkpoint.error,
               }),
             };
+      if (!admitsBudget(prompt)) {
+        checkpoint = {
+          ...checkpoint,
+          status: "skipped",
+          error: "optional narration skipped to reserve mandatory decision budget",
+        };
+        this.store.put(options.gameId, keyOf(options.decisionId), checkpoint);
+        return options.fallbackText;
+      }
       checkpoint = { ...checkpoint, lastPrompt: prompt };
       this.store.put(options.gameId, keyOf(options.decisionId), checkpoint);
       const opportunity = {
@@ -213,6 +227,7 @@ export class NarrationV2 {
         recovery: checkpoint.recovery,
       };
       const attempt = this.store.beginAttempt(opportunity, {
+        reservedUsd: claudeNextReservationUsd(nextCall(prompt)),
         model: options.model,
         provider: options.provider ?? "unknown",
         reasoningEffort: "none",
@@ -286,6 +301,10 @@ export class NarrationV2 {
           signal: controller.signal,
           timeoutMs,
           onUsage,
+          onProviderMetadata: (metadata) => {
+            attempt.providerMetadata = { ...attempt.providerMetadata, ...metadata };
+            this.store.updateAttempt(attempt);
+          },
         });
         const result = await Promise.race([call, abortPromise]);
         receivedResult = true;

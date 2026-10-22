@@ -1492,7 +1492,7 @@ export class V2GameOrchestrator {
             ...request,
             tokens: preparedTokenEstimate(
               request,
-              config.modelSettings[playerId]?.provider === "openai",
+              ["openai", "anthropic"].includes(config.modelSettings[playerId]?.provider ?? ""),
             ),
           };
         const stage = prepareJevStage(

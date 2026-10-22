@@ -71,6 +71,55 @@ If `codex:status` reports that you are signed out, run `npm run codex:login` and
 browser flow. A live Codex game consumes the Codex allowance associated with that ChatGPT account;
 API-key mode continues to use OpenAI Platform billing.
 
+### Claude (Anthropic)
+
+Claude seats use the Anthropic API key on the machine that runs the game. Every seat in a game uses
+the same provider.
+
+```dotenv
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=your_key
+ANTHROPIC_MODEL=claude-haiku-5-5
+ANTHROPIC_MODERATOR_MODEL=optional_separate_model_id
+# Optional: output cap used when a request sets none (default 16000).
+ANTHROPIC_MAX_OUTPUT_TOKENS=16000
+```
+
+The key is read only from the environment. It is never logged, stored in a game database or included
+in the recorded request body. Requests use adaptive thinking with an explicit effort, structured
+JSON output, and no sampling parameters or assistant prefill. Requests are text only: an image,
+document or other non-text block is refused before any spend is reserved, because its bytes cannot
+bound its cost. A refusal is recorded as a failed attempt with its category; no other model is
+tried.
+
+**Spend guard (fail closed).**
+
+- Only models in the price table (`packages/llm/src/anthropic-pricing.ts`) can be called. That table
+  covers Opus 5.5, Sonnet 5.5 and Haiku 5.5, including Haiku 5.5's higher rate for prompts above
+  100,000 tokens.
+- **Per game:** `maxSpendUsd` is required for any game with Claude seats; for a pilot, pass
+  `--max-spend-usd`. Each call is admitted only if settled spend, plus unsettled calls at the worst
+  case admitted when they began, plus this call's worst case, fits. The worst case bounds the prompt
+  by its UTF-8 byte length (a token is never shorter than a byte), prices it as 1-hour cache writes
+  at the long-context rate whenever that bound could cross the threshold, and adds the output cap.
+  Settled calls count the provider's actual cost. Reaching the limit ends the game as
+  `budget_exhausted`.
+- **Per month:** a ledger outside the repository and game databases (default
+  `~/.moon-council/claude-spend.json`, or `MOON_COUNCIL_SPEND_LEDGER`) holds UTC calendar-month
+  spend. The default limit is $200 (`MOON_COUNCIL_CLAUDE_MONTHLY_LIMIT_USD`). Each call reserves its
+  worst case before sending and settles to the actual cost afterwards, in the month it was reserved,
+  even when a stale reservation was already swept at its worst case. A corrupt or unreadable ledger,
+  or a held lock, refuses calls; it is never reset to zero.
+
+Check the month's spend at any time, with no API call:
+
+```bash
+npm run claude:spend
+```
+
+A live smoke test (one tiny call, counted in the ledger) runs only when asked:
+`npm run test:live:anthropic`.
+
 ## Pilot and recovery
 
 `npm run pilot -- --help` prints the supported pilot and resume forms. A fresh pilot requires a

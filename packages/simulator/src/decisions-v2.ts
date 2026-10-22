@@ -6,9 +6,15 @@ import {
   type DecisionReportV2,
   type GameConfigV2,
 } from "@werewolf/contracts";
-import { DecisionStore, LabRepository } from "@werewolf/db";
+import { DecisionStore, LabRepository, type ProviderAttemptRecord } from "@werewolf/db";
 import { type EngineEventInput } from "@werewolf/engine";
-import { AskJevProvider, type DecisionProvider } from "@werewolf/llm";
+import {
+  AskJevProvider,
+  claudeReservationUsd,
+  claudeUsageCostUsd,
+  UnpricedModelError,
+  type DecisionProvider,
+} from "@werewolf/llm";
 import { usesJournalWorkflow } from "./jev-actions";
 import { journalCompactionRequest, materializeCompactedJournal } from "./journal-compaction";
 import { prepareJevStage, usesJev } from "./jev-decision";
@@ -61,6 +67,10 @@ export function validatePreparedReport(
 
 export class DecisionPausedError extends Error {}
 export class V2BudgetError extends Error {}
+/** An unsettled Claude attempt with no admitted reservation: nothing bounds what it may cost. */
+export class UnreservedClaudeAttemptError extends V2BudgetError {
+  override name = "UnreservedClaudeAttemptError";
+}
 export function usageTotals(store: DecisionStore, gameId: string) {
   const attempts = store.attempts(gameId);
   return {
@@ -74,12 +84,68 @@ export function usageTotals(store: DecisionStore, gameId: string) {
     ),
   };
 }
+/** Providers that take a stable API response format and the configured output cap. */
+const usesApiResponseFormat = (provider: string) =>
+  provider === "openai" || provider === "anthropic";
+
+/** A model call about to be sent, reserved at its worst case before it is admitted. */
+export interface NextCallReservation {
+  provider: string;
+  model: string;
+  inputTokens: number;
+  maxOutputTokens: number | null;
+}
+/** Claude output cap assumed when a recorded call set none (the provider's default cap). */
+const CLAUDE_DEFAULT_OUTPUT_CAP = 16_000;
+
+/** `estimatedTokens` is UTF-8 bytes / 3; a token is never shorter than a byte, so 3x bounds it. */
+const promptCeilingTokens = (estimate: number) => 3 * estimate;
+
+const validUsd = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0;
+
+/** The worst case admitted for the next call, stored on its attempt; undefined for non-Claude. */
+export function claudeNextReservationUsd(next: NextCallReservation): number | undefined {
+  if (next.provider !== "anthropic") return undefined;
+  return claudeReservationUsd(
+    next.model,
+    promptCeilingTokens(next.inputTokens),
+    next.maxOutputTokens ?? CLAUDE_DEFAULT_OUTPUT_CAP,
+  );
+}
+
+/**
+ * The provider's actual cost when validly recorded, else the cost from valid usage, else the
+ * reservation admitted when the call began. A negative or non-finite cost, or invalid usage,
+ * is never credit. With none of these, the attempt cannot be bounded and admission stops.
+ */
+function claudeAttemptUsd(attempt: ProviderAttemptRecord): number {
+  const actual = attempt.providerMetadata?.costUsd;
+  if (validUsd(actual)) return actual;
+  const fromUsage = claudeUsageCostUsd(attempt.model, attempt.usage);
+  if (fromUsage !== null) return fromUsage;
+  if (validUsd(attempt.reservedUsd)) return attempt.reservedUsd;
+  throw new UnreservedClaudeAttemptError(
+    `spend admission refused: Claude attempt ${attempt.id} has unknown usage and no admitted reservation`,
+  );
+}
+
+/** Settled Claude calls at actual cost; unsettled ones stay reserved at their worst case. */
+function claudeSpendUsd(store: DecisionStore, gameId: string, next?: NextCallReservation): number {
+  const settled = store
+    .attempts(gameId)
+    .filter((attempt) => attempt.provider === "anthropic")
+    .reduce((sum, attempt) => sum + claudeAttemptUsd(attempt), 0);
+  return settled + ((next && claudeNextReservationUsd(next)) ?? 0);
+}
+
 export function assertV2Budget(
   store: DecisionStore,
   gameId: string,
   config: GameConfigV2,
   additionalActiveMs = 0,
   admitCall = true,
+  next?: NextCallReservation,
 ): void {
   const usage = usageTotals(store, gameId);
   if (
@@ -93,6 +159,20 @@ export function assertV2Budget(
     );
   if (store.activeRuntimeMs(gameId) >= config.safety.maxWallClockMs)
     throw new V2BudgetError("active-runtime limit reached");
+  if (config.maxSpendUsd !== null) {
+    let spend: number;
+    try {
+      spend = claudeSpendUsd(store, gameId, next);
+    } catch (error) {
+      if (error instanceof UnpricedModelError)
+        throw new V2BudgetError(`spend admission refused: ${error.message}`);
+      throw error;
+    }
+    if (spend > config.maxSpendUsd || (!next && spend >= config.maxSpendUsd))
+      throw new V2BudgetError(
+        `Claude spend admission limit reached ($${spend.toFixed(4)} of $${config.maxSpendUsd}, unsettled calls reserved at their worst case)`,
+      );
+  }
 }
 
 export interface ExecuteDecisionOptions {
@@ -301,7 +381,7 @@ export class DecisionExecutorV2 {
       const { schema, prompt, jsonSchema } = prepared;
       const settings = config.modelSettings[op.playerId]!;
       const apiResponseFormat =
-        settings.provider === "openai" &&
+        usesApiResponseFormat(settings.provider) &&
         stage?.provider !== "jev" &&
         "apiResponseFormat" in prepared
           ? prepared.apiResponseFormat
@@ -339,7 +419,7 @@ export class DecisionExecutorV2 {
         (compacting || feedback?.startsWith("OpenAI response incomplete: max_output_tokens"));
       const maxOutputTokens = releaseOutputCap
         ? null
-        : stage?.provider !== "jev" && settings.provider === "openai"
+        : stage?.provider !== "jev" && usesApiResponseFormat(settings.provider)
           ? config.safety.maxOutputTokens
           : Math.min(config.safety.maxOutputTokens, prepared.maxOutputTokens);
       // A known-truncated gameplay retry can use the remaining decision episode;
@@ -348,11 +428,20 @@ export class DecisionExecutorV2 {
         releaseOutputCap && !compacting ? policy.episodeTimeoutMs : policy.requestTimeoutMs,
         policy.episodeTimeoutMs - (Date.now() - start),
       );
+      const attemptProvider = stage?.provider === "jev" ? "jev" : settings.provider;
+      const nextCall = {
+        provider: attemptProvider,
+        model: callModel,
+        inputTokens: tokens,
+        maxOutputTokens,
+      };
+      assertV2Budget(this.store, op.gameId, config, Date.now() - start, true, nextCall);
       const attempt = this.store.beginAttempt(op, {
+        reservedUsd: claudeNextReservationUsd(nextCall),
         maxOutputTokens,
         timeoutMs,
         model: callModel,
-        provider: stage?.provider === "jev" ? "jev" : settings.provider,
+        provider: attemptProvider,
         reasoningEffort,
         optional,
         request: { ...prompt, schema: jsonSchema },
