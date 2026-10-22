@@ -1,5 +1,5 @@
-import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, statSync } from "node:fs";
-import { rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
+import { renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 
@@ -49,14 +49,24 @@ export function assertSafeReportPaths(dbPath: string, outDir: string): void {
 }
 
 /**
- * Writes a new file beside the target under an unpredictable name, then renames it over:
- * readers never see a partial report, and a failed rename leaves no temporary file behind.
+ * Writes a new file beside the target, then renames it over: readers never see a partial
+ * report. The temporary file is created exclusively, so an existing path (someone else's file)
+ * is never written or removed; only the file this call created is cleaned up after a failure.
  */
-export function writeReportAtomically(path: string, text: string): void {
-  const temporary = `${path}.${randomUUID()}.tmp`;
+export function writeReportAtomically(
+  path: string,
+  text: string,
+  name: () => string = randomUUID,
+): void {
+  const temporary = `${path}.${name()}.tmp`;
+  const fd = openSync(temporary, "wx", 0o600);
   let renamed = false;
   try {
-    writeFileSync(temporary, text, { mode: 0o600, flag: "wx" });
+    try {
+      writeFileSync(fd, text);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(temporary, path);
     renamed = true;
   } finally {

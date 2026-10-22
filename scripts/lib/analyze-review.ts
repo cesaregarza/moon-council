@@ -1,4 +1,8 @@
-import { providerJsonSchema, type GameEventV1 } from "@werewolf/contracts";
+import {
+  providerJsonSchema,
+  type DecisionOpportunityV1,
+  type GameEventV1,
+} from "@werewolf/contracts";
 import type { DecisionProvider } from "@werewolf/llm";
 import { z } from "zod";
 import { actorBriefing } from "../../packages/simulator/src/jev-actor";
@@ -57,8 +61,8 @@ export function assertReviewProviderBounded(kind: string): void {
  * The actor's briefing exactly as Jev received it, rebuilt by the same builder from the
  * decision-time packet; null when that packet had no current brief.
  */
-function decisionBriefing(op: MomentSource["op"]) {
-  return currentDecisionBrief(op.packet) && op.playerId === op.packet.self.id
+function decisionBriefing(op: DecisionOpportunityV1 | undefined) {
+  return op && currentDecisionBrief(op.packet) && op.playerId === op.packet.self.id
     ? actorBriefing(op)
     : null;
 }
@@ -89,7 +93,7 @@ function dossier(item: ReviewItem, roles: Record<string, string>) {
       : { actorBriefing: decisionBriefing(op) }),
     actorView: [
       ...new Map(
-        (pack ?? [op])
+        (pack ?? (op ? [op] : []))
           .flatMap((decision) => decision.packet.sources)
           .filter((source) => !source.id.startsWith("facts:"))
           .map((source) => [
@@ -132,11 +136,12 @@ async function reviewOne(
       reasoningEffort: "high",
       preparedPrompt: prompt,
       onUsage: (reported, metadata) => {
+        // Sticky: once a call reports an unenforced cap, a later callback cannot clear it.
         // Unreported or invalid usage keeps the worst case; accounting never becomes NaN.
         const total = reported.totalTokens;
         call.spent =
           typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : worstCase;
-        call.enforced = metadata.outputLimitEnforced;
+        call.enforced = call.enforced && metadata.outputLimitEnforced;
       },
       onProviderMetadata: (metadata) => {
         if (typeof metadata.costUsd === "number") call.costUsd += metadata.costUsd;
