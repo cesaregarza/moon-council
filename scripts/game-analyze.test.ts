@@ -23,15 +23,21 @@ afterEach(() => {
 type Distribution = Record<string, number>;
 interface ScriptedMoment {
   id: string;
-  actor: "seer" | "villager" | "wolf";
+  actor: "seer" | "villager" | "wolf" | "wolf2";
   /** A player ID, or "abstain". */
   actual: string;
   /** Jev's recorded distribution when the player decided. */
   privateView: Distribution;
-  /** Jev's public-record prediction, scripted for the analyzer's call. */
-  publicView: Distribution;
-  /** A night action, followed by its dawn: the player found dead, or null for no death. */
-  night?: { dawn: string | null };
+  /**
+   * Jev's public-record prediction, scripted for the analyzer's call; absent for a decision the
+   * analyzer makes no call for (one call per kill night, none for other night roles).
+   */
+  publicView?: Distribution;
+  /**
+   * A night decision: a wolf's pack point (the kill, as real games record it) or another role's
+   * night action. With `dawn`, the night resolves after it: the player found dead, or null.
+   */
+  night?: { point?: boolean; dawn?: string | null };
   /** The actor's current decision brief (what Jev was given as current reasoning). */
   brief?: string;
 }
@@ -41,7 +47,12 @@ interface ScriptedMoment {
  * distributions, written straight into the store as the executor would have.
  */
 function recordedGame(
-  script: (ids: { wolf: string; other: string; villager: string }) => ScriptedMoment[],
+  script: (ids: {
+    wolf: string;
+    other: string;
+    villager: string;
+    seer: string;
+  }) => ScriptedMoment[],
 ) {
   const directory = mkdtempSync(join(tmpdir(), "game-analyze-"));
   directories.push(directory);
@@ -54,7 +65,9 @@ function recordedGame(
   let state = reduceGame(game.id, repository.listEvents(game.id));
   const seer = state.players.find((p) => p.role.id === "seer")!.id;
   const villager = state.players.find((p) => p.role.id === "villager")!.id;
-  const wolf = state.players.find((p) => p.role.alignment === "werewolf")!.id;
+  const [wolf, wolf2] = state.players
+    .filter((p) => p.role.alignment === "werewolf")
+    .map((p) => p.id) as [string, string];
   const other = state.players.find((p) => p.role.id === "villager" && p.id !== villager)!.id;
   const at = { day: 1, phase: "day_vote" as const };
   repository.appendEvent(game.id, {
@@ -78,21 +91,22 @@ function recordedGame(
   });
   const inspectionId = repository.listEvents(game.id).at(-1)!.id;
   const store = new DecisionStore(repository);
-  const moments = script({ wolf, other, villager });
+  const moments = script({ wolf, other, villager, seer });
   const ops: Record<string, DecisionOpportunityV1> = {};
   for (const moment of moments) {
-    const actor = { seer, villager, wolf }[moment.actor];
+    const actor = { seer, villager, wolf, wolf2 }[moment.actor];
     const events = repository.listEvents(game.id);
     const night = moment.night !== undefined;
-    state = { ...reduceGame(game.id, events), phase: night ? "night_actions" : "day_vote" };
-    const packet = buildContextV2(
-      state,
-      events,
-      actor,
-      emptyJournalV2(),
-      moment.id,
-      night ? "night_action" : "vote",
-    );
+    const point = moment.night?.point === true;
+    const task = point
+      ? { phase: "night_team", kind: "team_point", taskType: "team_point_choice" }
+      : night
+        ? { phase: "night_actions", kind: "night_action", taskType: "night_choice" }
+        : { phase: "day_vote", kind: "vote", taskType: "vote_choice" };
+    const phase = task.phase as "night_team" | "night_actions" | "day_vote";
+    const kind = task.kind as "team_point" | "night_action" | "vote";
+    state = { ...reduceGame(game.id, events), phase };
+    const packet = buildContextV2(state, events, actor, emptyJournalV2(), moment.id, kind);
     if (moment.brief) refreshFixtureBrief(packet, moment.brief);
     const handle = (id: string) =>
       id === "abstain" ? "abstain" : String.fromCharCode(97 + packet.legalTargets.indexOf(id));
@@ -100,10 +114,10 @@ function recordedGame(
       id: moment.id,
       gameId: game.id,
       playerId: actor,
-      kind: night ? "night_action" : "vote",
-      phase: night ? "night_actions" : "day_vote",
+      kind,
+      phase,
       day: 1,
-      epoch: night ? "1:night_actions" : "1:day_vote",
+      epoch: `1:${phase}`,
       viewId: moment.id,
       baseJournalVersion: 0,
       packet,
@@ -111,7 +125,7 @@ function recordedGame(
       best: null,
       recovery: 0,
       createdAt: "2026-10-22T00:00:00.000Z",
-      taskType: night ? "night_choice" : "vote_choice",
+      taskType: task.taskType,
     } as DecisionOpportunityV1;
     store.save(op);
     ops[moment.id] = op;
@@ -144,13 +158,13 @@ function recordedGame(
         playerId: actor,
         decisionId: moment.id,
         proposal: {
-          kind: night ? "night_action" : "vote",
+          kind,
           targets:
             moment.actual === "abstain" ? null : { mode: "direct", playerIds: [moment.actual] },
         },
       },
     });
-    if (moment.night) dawn(repository, game.id, moment.night.dawn);
+    if (moment.night?.dawn !== undefined) dawn(repository, game.id, moment.night.dawn);
   }
   connection.close();
   return { dbPath, gameId: game.id, directory, inspectionId, seer, villager, moments, ops };
@@ -181,13 +195,13 @@ function dawn(repository: LabRepository, gameId: string, dead: string | null) {
 
 /** Answers each public-view request from the script, translating player IDs to handles. */
 function scriptedJev(moments: ScriptedMoment[]): DecisionProvider {
-  const queue = [...moments];
+  const queue = moments.filter((moment) => moment.publicView);
   return {
     decide: async (request) => {
       const jevRequest = JSON.parse(request.preparedPrompt!.input) as JevRequest;
       const criteria = (jevRequest.questions.prediction as { criteria: Record<string, string> })
         .criteria;
-      const view = queue.shift()!.publicView;
+      const view = queue.shift()!.publicView!;
       const handles = Object.keys(criteria);
       // "*" scripts a uniform prediction over every option the question offers.
       const probabilities = Object.fromEntries(
@@ -574,53 +588,123 @@ describe("post-game analyzer safety and accounting", () => {
 });
 
 describe("post-game analyzer night moments", () => {
-  // Felix's ruling on finding 2: only the wolves' kill is a night moment, scored on the dawn.
-  const nights = ({ other, villager }: { other: string; villager: string }) => {
-    return [
-      {
-        id: "kill-matches-dawn",
-        actor: "wolf" as const,
-        actual: villager,
-        privateView: { [villager]: 0.9, [other]: 0.1 },
-        publicView: { [villager]: 0.05, [other]: 0.15, no_death: 0.8 },
-        night: { dawn: villager },
-      },
-      {
-        id: "kill-protected",
-        actor: "wolf" as const,
-        actual: other,
-        privateView: { [other]: 0.95 },
-        publicView: { [other]: 0.1, no_death: 0.9 },
-        night: { dawn: null },
-      },
-      // halcyon's control: a Seer inspects, nobody dies, the public expects no death.
-      {
-        id: "seer-inspects",
-        actor: "seer" as const,
-        actual: other,
-        privateView: { [other]: 1 },
-        publicView: { no_death: 1 },
-        night: { dawn: null },
-      },
-    ];
-  };
+  // Felix's ruling on finding 2: the pack's kill point is the night moment, one per night,
+  // scored on the public dawn outcome.
+  const nights = ({ other, villager, seer }: { other: string; villager: string; seer: string }) => [
+    // Night 1: both wolves point at the villager, who is found dead.
+    {
+      id: "kill-matches-dawn",
+      actor: "wolf" as const,
+      actual: villager,
+      privateView: { [villager]: 0.9, [other]: 0.1 },
+      night: { point: true },
+    },
+    {
+      id: "kill-matches-dawn-2",
+      actor: "wolf2" as const,
+      actual: villager,
+      privateView: { [villager]: 0.7, [other]: 0.3 },
+      publicView: { [villager]: 0.05, [other]: 0.15, no_death: 0.8 },
+      night: { point: true, dawn: villager },
+    },
+    // Night 2: a unanimous point at another villager, saved.
+    {
+      id: "kill-saved",
+      actor: "wolf" as const,
+      actual: other,
+      privateView: { [other]: 0.95 },
+      night: { point: true },
+    },
+    {
+      id: "kill-saved-2",
+      actor: "wolf2" as const,
+      actual: other,
+      privateView: { [other]: 0.95 },
+      publicView: { [other]: 0.1, no_death: 0.9 },
+      night: { point: true, dawn: null },
+    },
+    // Night 3: the wolves disagree, so no kill.
+    {
+      id: "no-unanimity",
+      actor: "wolf" as const,
+      actual: other,
+      privateView: { [other]: 0.6, [seer]: 0.4 },
+      night: { point: true },
+    },
+    {
+      id: "no-unanimity-2",
+      actor: "wolf2" as const,
+      actual: seer,
+      privateView: { [seer]: 0.8, [other]: 0.2 },
+      publicView: { [other]: 0.2, [seer]: 0.2, no_death: 0.6 },
+      night: { point: true },
+    },
+    // halcyon's control: a Seer inspects and nobody dies; the public expects no death.
+    {
+      id: "seer-inspects",
+      actor: "seer" as const,
+      actual: other,
+      privateView: { [other]: 1 },
+      night: { dawn: null },
+    },
+  ];
 
-  it("scores a kill on the dawn outcome, marks a protected kill no_signal, and skips the seer", async () => {
+  it("scores a unanimous kill on the dawn and marks a saved or split night no_signal", async () => {
     const game = recordedGame(nights);
     const report = await run(game, scriptedReviewer(plain));
     const byId = Object.fromEntries(report.moments.map((m) => [m.id, m]));
-    expect(byId["seer-inspects"]).toBeUndefined();
+    // One moment per night, named for the pack's first point; none for the seer.
+    expect(Object.keys(byId).sort((a, b) => a.localeCompare(b))).toEqual([
+      "kill-matches-dawn",
+      "kill-saved",
+      "no-unanimity",
+    ]);
     expect(byId["kill-matches-dawn"]).toMatchObject({
       kind: "night_action",
       actual: game.villager,
       selected: game.villager,
       class: "private_knowledge",
-      score: { publicProbability: 0.05, privateProbability: 0.9 },
+      score: { publicProbability: 0.05 },
     });
-    expect(byId["kill-protected"]).toMatchObject({
+    // The pack's private probability is the mean of each wolf's recorded value.
+    const killed = byId["kill-matches-dawn"] as unknown as {
+      score: { privateProbability: number };
+      wolfProbabilities: Record<string, number>;
+    };
+    expect(killed.score.privateProbability).toBeCloseTo(0.8, 10);
+    expect(Object.values(killed.wolfProbabilities).sort((a, b) => a - b)).toEqual([0.7, 0.9]);
+    expect(byId["kill-saved"]).toMatchObject({
       actual: "no_death",
+      selected: expect.any(String),
       class: "no_signal",
       noSignalReason: expect.stringContaining("dawn"),
     });
+    expect(byId["no-unanimity"]).toMatchObject({
+      class: "no_signal",
+      noSignalReason: expect.stringContaining("unanim"),
+    });
+  });
+
+  it("gives the reviewer every living wolf's decision-time briefing for a kill", async () => {
+    const game = recordedGame((ids) =>
+      nights(ids)
+        .slice(0, 2)
+        .map((moment, index) => ({ ...moment, brief: `PACK-BRIEF-${index}: the villager.` })),
+    );
+    const reviewer = scriptedReviewer(plain);
+    await run(game, reviewer);
+    const dossier = reviewer.dossiers.find(
+      (d) => (d.moment as { id: string }).id === "kill-matches-dawn",
+    );
+    expect(dossier).toBeDefined();
+    const briefings = dossier!.actorBriefings as Record<string, { currentReasoning: string }>;
+    expect(Object.values(briefings).map((b) => b.currentReasoning)).toEqual([
+      "PACK-BRIEF-0: the villager.",
+      "PACK-BRIEF-1: the villager.",
+    ]);
+    for (const id of ["kill-matches-dawn", "kill-matches-dawn-2"]) {
+      const op = game.ops[id]!;
+      expect(briefings[op.playerId]).toEqual(JSON.parse(JSON.stringify(actorBriefing(op))));
+    }
   });
 });
