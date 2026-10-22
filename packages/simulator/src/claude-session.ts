@@ -94,7 +94,7 @@ export class ClaudeSessions {
     const pending = turn;
     return {
       harness: this.harness(opened, pending.text),
-      effort: opened.effort,
+      effort: call.effort,
       metadata: {
         id: opened.id,
         turn: opened.turns.length,
@@ -181,7 +181,7 @@ export class ClaudeSessions {
       messages: [
         { role: "user", content: [text(record.dayStart, true)] },
         ...record.turns.flatMap((turn) => [
-          { role: "user" as const, content: [text(turn.user.trimEnd() + " ")] },
+          { role: "user" as const, content: [text(turn.user)] },
           { role: "assistant" as const, content: turn.assistant },
         ]),
         { role: "user", content: [text(pendingTurn)] },
