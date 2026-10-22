@@ -94,6 +94,7 @@ export function turnText(packet: PlayerContextV2, cursors: TurnCursors, requestI
   const now = {
     day: packet.day,
     phase: packet.phase,
+    at: new Date().toISOString(),
     responseDocket: packet.responseDocket.flatMap((id) => map.toAlias.get(id) ?? []),
     ...(choices.length ? { legalChoices: Object.fromEntries(choices) } : {}),
   };
