@@ -188,7 +188,8 @@ the review model, plus 2 random routine moments as a recall check (`--recall`).
 - The review is capped by `--review-token-budget` (default 200,000 tokens). A review is admitted
   only if the budget covers its prompt (bounded by its bytes) plus `--review-max-output`, and it
   settles to the reported usage. Codex providers do not enforce an output cap, so they are refused
-  as review providers.
+  as review providers. Claude (`anthropic`) is refused too, until a per-run USD cap for analysis is
+  designed.
 - Each review gets the player's decision-time briefing exactly as Jev received it (for a kill, each
   wolf's). Every cited event must be one the player could see before deciding, or the review is
   rejected and marked. For a kill, each knowledge claim names its wolf and is checked against that

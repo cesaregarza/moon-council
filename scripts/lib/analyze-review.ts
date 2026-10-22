@@ -61,7 +61,22 @@ export function addCosts(total: number | null, part: unknown): number | null {
 export class UnenforcedOutputLimitError extends Error {
   override name = "UnenforcedOutputLimitError";
 }
+/**
+ * Review kinds whose spend has no per-run USD cap for analysis yet. Claude spend is admitted
+ * only through games with a required `maxSpendUsd` (CES-1554), so analysis refuses it until a
+ * cap is designed (Felix's ruling f9f6d39f on CES-1040).
+ */
+const UNCAPPED_SPEND_KINDS = new Set(["anthropic"]);
+export class UncappedReviewSpendError extends Error {
+  override name = "UncappedReviewSpendError";
+}
+
+/** Refuses a review provider the analysis cannot bound, before any provider is constructed. */
 export function assertReviewProviderBounded(kind: string): void {
+  if (UNCAPPED_SPEND_KINDS.has(kind))
+    throw new UncappedReviewSpendError(
+      `Review provider ${kind} is refused: a per-run USD cap for analysis is not designed yet`,
+    );
   if (UNENFORCED_OUTPUT_LIMIT_KINDS.has(kind))
     throw new UnenforcedOutputLimitError(
       `Review provider ${kind} does not enforce an output limit, so the review token budget cannot be held`,

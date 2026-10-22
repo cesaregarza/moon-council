@@ -214,6 +214,8 @@ async function main(): Promise<void> {
   if (!values["review-provider"] || !values["review-model"]) usage();
   loadProviderEnvironment();
   const kind = selectedProviderKind(values["review-provider"]);
+  // Refused before either provider is constructed.
+  assertReviewProviderBounded(kind);
   const report = await analyzeGame({
     dbPath: resolve(values.db),
     gameId: values.game,
