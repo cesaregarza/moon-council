@@ -210,29 +210,65 @@ function dayVote(event: AuditEvent, players: EnginePlayer[], events: AuditEvent[
   };
 }
 
+/** A game total over the days where the metric is known; `value` is null when none is. */
+interface DayTotal<T> {
+  value: T | null;
+  knownDays: number;
+  totalDays: number;
+}
+
+function dayTotal<T>(values: (T | null)[], add: (a: T, b: T) => T): DayTotal<T> {
+  const known = values.filter((value): value is T => value !== null);
+  return {
+    value: known.length ? known.reduce(add) : null,
+    knownDays: known.length,
+    totalDays: values.length,
+  };
+}
+
+const addCounts = (a: number, b: number) => a + b;
+function addSplits(a: Record<string, BallotSplit>, b: Record<string, BallotSplit>) {
+  const sum: Record<string, BallotSplit> = structuredClone(a);
+  for (const [key, row] of Object.entries(b)) {
+    const total = (sum[key] ??= { voted: 0, abstained: 0 });
+    total.voted += row.voted;
+    total.abstained += row.abstained;
+  }
+  return sum;
+}
+
+type DayVote = ReturnType<typeof dayVote>;
+/** 1 for a minority elimination matching `victim`, 0 otherwise; null when the call is unknown. */
+const minorityCount = (day: DayVote, victim: (day: DayVote) => boolean) =>
+  day.minorityElimination === null ? null : day.minorityElimination && victim(day) ? 1 : 0;
+
 /** Public ballots per day, so abstention and minority eliminations compare across games. */
 function votingDynamics(players: EnginePlayer[], events: AuditEvent[]) {
   const byDay = events
     .filter((event) => event.type === "vote.resolved")
     .map((event) => dayVote(event, players, events));
-  const minority = byDay.filter((day) => day.minorityElimination === true);
-  const sum = (values: (number | null)[]) => values.reduce<number>((t, v) => t + (v ?? 0), 0);
-  const covered = (basis: VoteBasis) => byDay.filter((day) => day.basis === basis).length;
+  const counts = (pick: (day: DayVote) => number | null) => dayTotal(byDay.map(pick), addCounts);
+  const splits = (pick: (day: DayVote) => Record<string, BallotSplit> | null) =>
+    dayTotal(byDay.map(pick), addSplits);
+  const basisDays = (basis: VoteBasis) => byDay.filter((day) => day.basis === basis).length;
   return {
     byDay,
     totals: {
       days: byDay.length,
-      // Sums cover the days whose figures are known; `coverage` says how many those are.
-      voted: sum(byDay.map((day) => day.voted)),
-      abstained: sum(byDay.map((day) => day.abstained)),
       eliminations: byDay.filter((day) => day.eliminatedPlayerId !== null).length,
-      minorityEliminations: minority.length,
-      minorityVillageVictims: minority.filter((day) => day.eliminatedAlignment === "village")
-        .length,
-      coverage: {
-        ballots: covered("ballots"),
-        tally: covered("tally"),
-        unavailable: covered("unavailable"),
+      voted: counts((day) => day.voted),
+      abstained: counts((day) => day.abstained),
+      votesForEliminated: counts((day) => day.votesForEliminated),
+      minorityEliminations: counts((day) => minorityCount(day, () => true)),
+      minorityVillageVictims: counts((day) =>
+        minorityCount(day, (d) => d.eliminatedAlignment === "village"),
+      ),
+      byFaction: splits((day) => day.byFaction),
+      byRole: splits((day) => day.byRole),
+      basisDays: {
+        ballots: basisDays("ballots"),
+        tally: basisDays("tally"),
+        unavailable: basisDays("unavailable"),
       },
     },
   };
