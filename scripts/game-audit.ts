@@ -112,9 +112,18 @@ interface VoteFigures {
   votesForEliminated: number | null;
 }
 
+/**
+ * Role and faction names come from the game, so a split has no prototype: a name such as
+ * "constructor" or "__proto__" is an ordinary key, and JSON writes it literally.
+ */
+const emptySplits = (): Record<string, BallotSplit> => Object.create(null);
+
+function splitRow(split: Record<string, BallotSplit>, key: string): BallotSplit {
+  return (split[key] ??= { voted: 0, abstained: 0 });
+}
+
 function tallyBallot(split: Record<string, BallotSplit>, key: string, voted: boolean): void {
-  const row = (split[key] ??= { voted: 0, abstained: 0 });
-  row[voted ? "voted" : "abstained"] += 1;
+  splitRow(split, key)[voted ? "voted" : "abstained"] += 1;
 }
 
 /** V2 games record every ballot: who voted, for whom, and who abstained. */
@@ -123,8 +132,8 @@ function ballotFigures(
   byId: Map<string, EnginePlayer>,
   eliminated: string | null,
 ): VoteFigures {
-  const byFaction: Record<string, BallotSplit> = {},
-    byRole: Record<string, BallotSplit> = {};
+  const byFaction = emptySplits(),
+    byRole = emptySplits();
   for (const ballot of ballots) {
     const voter = byId.get(ballot.voterId);
     tallyBallot(byFaction, voter?.role.alignment ?? "unknown", ballot.targetId != null);
@@ -160,7 +169,14 @@ function tallyFigures(
     abstained: null,
     byFaction: null,
     byRole: null,
-    votesForEliminated: eliminated === null ? 0 : unitWeights ? (tally[eliminated] ?? 0) : null,
+    votesForEliminated:
+      eliminated === null
+        ? 0
+        : unitWeights
+          ? Object.hasOwn(tally, eliminated)
+            ? tally[eliminated]!
+            : 0
+          : null,
   };
 }
 
@@ -228,9 +244,9 @@ function dayTotal<T>(values: (T | null)[], add: (a: T, b: T) => T): DayTotal<T> 
 
 const addCounts = (a: number, b: number) => a + b;
 function addSplits(a: Record<string, BallotSplit>, b: Record<string, BallotSplit>) {
-  const sum: Record<string, BallotSplit> = structuredClone(a);
-  for (const [key, row] of Object.entries(b)) {
-    const total = (sum[key] ??= { voted: 0, abstained: 0 });
+  const sum = emptySplits();
+  for (const [key, row] of [...Object.entries(a), ...Object.entries(b)]) {
+    const total = splitRow(sum, key);
     total.voted += row.voted;
     total.abstained += row.abstained;
   }
