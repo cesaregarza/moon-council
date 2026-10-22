@@ -12,7 +12,12 @@ export const ReviewSchema = z.strictObject({
   citedEventIds: z.array(z.string()).max(16),
   knowledgeClaims: z
     .array(
-      z.strictObject({ claim: z.string().max(400), eventIds: z.array(z.string()).min(1).max(8) }),
+      z.strictObject({
+        claim: z.string().max(400),
+        eventIds: z.array(z.string()).min(1).max(8),
+        /** Whose knowledge the claim states (one player); null for every deciding player. */
+        subjectId: z.string().nullable(),
+      }),
     )
     .max(8),
   /** What the player could not see (true roles, others' private actions); never cited. */
@@ -24,7 +29,7 @@ const REVIEW_JSON_SCHEMA = providerJsonSchema(ReviewSchema);
 
 export const REVIEW_INSTRUCTIONS = `You are reviewing one decision from a recorded Werewolf game played by AI agents. The input is moderator data: the acting player's authorized view at the time (each record with its event ID), the distribution a model predicted from the public record alone, the distribution the player's own decision model recorded, the action actually taken, and every player's true role.
 The input also holds the briefing the player's decision model received: its current reasoning and verified facts.
-Explain the decision from the player's knowledge at the time, not from the true roles. Say whether hidden information, an error, or herd behaviour shaped it. Cite event IDs exactly as given, and only events from the player's authorized view: every cited ID is checked against what the player could see before deciding. Put every statement about what the player knew or saw in knowledgeClaims. Put anything the player could not see, such as true roles or other players' private actions, only in groundTruth, with no citations. Set regressionCandidate when this decision would make a good fixed test case for future versions.`;
+Explain the decision from the player's knowledge at the time, not from the true roles. Say whether hidden information, an error, or herd behaviour shaped it. Cite event IDs exactly as given, and only events from the player's authorized view: every cited ID is checked against what the player could see before deciding. Put every statement about what the player knew or saw in knowledgeClaims, each naming its subjectId: the player whose knowledge it states (for a pack kill, one wolf), or null for knowledge every deciding player shared. Each claim is checked against its subject's own view. Put anything the player could not see, such as true roles or other players' private actions, only in groundTruth, with no citations. Set regressionCandidate when this decision would make a good fixed test case for future versions.`;
 
 export interface ReviewItem {
   source: MomentSource;
@@ -127,7 +132,10 @@ async function reviewOne(
       reasoningEffort: "high",
       preparedPrompt: prompt,
       onUsage: (reported, metadata) => {
-        call.spent = reported.totalTokens ?? worstCase;
+        // Unreported or invalid usage keeps the worst case; accounting never becomes NaN.
+        const total = reported.totalTokens;
+        call.spent =
+          typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : worstCase;
         call.enforced = metadata.outputLimitEnforced;
       },
       onProviderMetadata: (metadata) => {
@@ -139,12 +147,7 @@ async function reviewOne(
         "Review provider reported an unenforced output limit; no further reviews are admitted",
       );
     const review = ReviewSchema.parse(result.data);
-    const check = checkCitations(
-      review,
-      options.events,
-      item.moment.actorIds ?? [item.moment.actorId],
-      item.source.decisionSequence,
-    );
+    const check = checkCitations(review, options.events, item.source.deciders);
     const outcome: ReviewOutcome = {
       status: check.accepted ? "accepted" : "rejected_citation",
       review,

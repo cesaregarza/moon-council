@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, statSync } from "node:fs";
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 
 export const REPORT_FILES = ["analysis.json", "analysis.md"] as const;
@@ -47,9 +48,18 @@ export function assertSafeReportPaths(dbPath: string, outDir: string): void {
   }
 }
 
-/** Writes a new file beside the target, then renames it over: readers never see a partial report. */
+/**
+ * Writes a new file beside the target under an unpredictable name, then renames it over:
+ * readers never see a partial report, and a failed rename leaves no temporary file behind.
+ */
 export function writeReportAtomically(path: string, text: string): void {
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, text, { mode: 0o600, flag: "wx" });
-  renameSync(temporary, path);
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  let renamed = false;
+  try {
+    writeFileSync(temporary, text, { mode: 0o600, flag: "wx" });
+    renameSync(temporary, path);
+    renamed = true;
+  } finally {
+    if (!renamed) rmSync(temporary, { force: true });
+  }
 }

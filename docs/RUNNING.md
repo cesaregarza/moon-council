@@ -126,11 +126,11 @@ npm run game:analyze -- --db /native/path/game.db --game GAME_ID --out RUN_DIREC
 The analyzer opens the database read-only. For every committed ballot with a recorded Jev
 distribution, it asks Jev what the public record alone predicts, then scores the moment against the
 player's recorded choice. Each night's wolf kill is one moment for the pack: Jev predicts who is
-found dead at dawn, and the dawn outcome is scored against the wolves' mean recorded probability. A
-save, a block or a split pack makes that night "no signal". Other night roles and non-kill pack
-points produce no moment. The moments are private knowledge, herd over knowledge, noise or error,
-routine, or no signal. The top 12 (`--cap`) go to the review model, plus 2 random routine moments as
-a recall check (`--recall`).
+found dead at dawn, and the dawn outcome is scored against the mean of every living wolf's recorded
+probability in the pack's final round. A save, a block, a split pack or a missing wolf distribution
+makes that night "no signal". Other night roles and non-kill pack points produce no moment. The
+moments are private knowledge, herd over knowledge, noise or error, routine, or no signal. The top
+12 (`--cap`) go to the review model, plus 2 random routine moments as a recall check (`--recall`).
 
 - The review provider and model have no defaults. Numeric options must be positive integers in
   range, or the run refuses to start.
@@ -140,7 +140,9 @@ a recall check (`--recall`).
   as review providers.
 - Each review gets the player's decision-time briefing exactly as Jev received it (for a kill, each
   wolf's). Every cited event must be one the player could see before deciding, or the review is
-  rejected and marked. Facts the player could not see belong only in its uncited `groundTruth`.
+  rejected and marked. For a kill, each knowledge claim names its wolf and is checked against that
+  wolf's own view; a claim with no subject must hold for every wolf. Facts the player could not see
+  belong only in its uncited `groundTruth`.
 - `analysis.json` and `analysis.md` are written to `--out`, next to `research.json`, each through a
   temporary file and a rename. The analyzer refuses to run if a report path is the database, its WAL
   or SHM file, a link, or any file that is not one of its own previous reports. The reports hold
