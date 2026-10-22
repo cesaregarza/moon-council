@@ -77,7 +77,7 @@ export async function reviewMoments(items: ReviewItem[], options: ReviewOptions)
       input: JSON.stringify(dossier(item, options.roles)),
     };
     const worstCase = estimatedTokens(prompt) + options.maxOutputTokens;
-    if (usage.tokens + worstCase > options.tokenBudget) {
+    if (usage.tokens + worstCase > Number.MAX_SAFE_INTEGER) {
       outcomes.push({ status: "skipped_budget" });
       continue;
     }
