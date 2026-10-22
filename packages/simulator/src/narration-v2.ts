@@ -8,7 +8,12 @@ import {
 } from "@werewolf/contracts";
 import { DecisionStore, type LabRepository } from "@werewolf/db";
 import type { DecisionProvider } from "@werewolf/llm";
-import { assertV2Budget, V2BudgetError, usageTotals } from "./decisions-v2";
+import {
+  assertV2Budget,
+  claudeNextReservationUsd,
+  V2BudgetError,
+  usageTotals,
+} from "./decisions-v2";
 import { estimatedTokens } from "./context-v2";
 
 const NarrationSchema = z.strictObject({ text: z.string().min(1).max(800) });
@@ -153,15 +158,16 @@ export class NarrationV2 {
     const reserveTokens =
       options.mandatoryTokenReserve ??
       reserveCalls * (estimatedTokens(basePrompt) + estimatedTokens(jsonSchema) + maxOutputTokens);
+    const nextCall = () => ({
+      provider: options.provider ?? "unknown",
+      model: options.model,
+      inputTokens: estimatedTokens(basePrompt) + estimatedTokens(jsonSchema),
+      maxOutputTokens,
+    });
     const admitsBudget = () => {
       const usage = usageTotals(this.store, options.gameId);
       try {
-        assertV2Budget(this.store, options.gameId, config, 0, true, {
-          provider: options.provider ?? "unknown",
-          model: options.model,
-          inputTokens: estimatedTokens(basePrompt) + estimatedTokens(jsonSchema),
-          maxOutputTokens,
-        });
+        assertV2Budget(this.store, options.gameId, config, 0, true, nextCall());
       } catch (error) {
         if (!(error instanceof V2BudgetError)) throw error;
         return false;
@@ -218,6 +224,7 @@ export class NarrationV2 {
         recovery: checkpoint.recovery,
       };
       const attempt = this.store.beginAttempt(opportunity, {
+        reservedUsd: claudeNextReservationUsd(nextCall()),
         model: options.model,
         provider: options.provider ?? "unknown",
         reasoningEffort: "none",

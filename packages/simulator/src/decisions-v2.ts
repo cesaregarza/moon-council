@@ -97,17 +97,34 @@ const CLAUDE_DEFAULT_OUTPUT_CAP = 16_000;
 /** `estimatedTokens` is UTF-8 bytes / 3; a token is never shorter than a byte, so 3x bounds it. */
 const promptCeilingTokens = (estimate: number) => 3 * estimate;
 
-/** The provider's actual cost when recorded, else the cost from usage, else the worst case. */
+const validUsd = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0;
+
+/** The worst case admitted for the next call, stored on its attempt; undefined for non-Claude. */
+export function claudeNextReservationUsd(next: NextCallReservation): number | undefined {
+  if (next.provider !== "anthropic") return undefined;
+  return claudeReservationUsd(
+    next.model,
+    promptCeilingTokens(next.inputTokens),
+    next.maxOutputTokens ?? CLAUDE_DEFAULT_OUTPUT_CAP,
+  );
+}
+
+/**
+ * The provider's actual cost when validly recorded, else the cost from usage, else the
+ * reservation admitted when the call began. A negative or non-finite cost is never credit.
+ */
 function claudeAttemptUsd(attempt: ProviderAttemptRecord): number {
   const actual = attempt.providerMetadata?.costUsd;
-  if (typeof actual === "number") return actual;
-  return (
-    claudeUsageCostUsd(attempt.model, attempt.usage) ??
-    claudeReservationUsd(
-      attempt.model,
-      promptCeilingTokens(estimatedTokens(attempt.request)),
-      attempt.maxOutputTokens ?? CLAUDE_DEFAULT_OUTPUT_CAP,
-    )
+  if (validUsd(actual)) return actual;
+  const fromUsage = claudeUsageCostUsd(attempt.model, attempt.usage);
+  if (fromUsage !== null) return fromUsage;
+  if (validUsd(attempt.reservedUsd)) return attempt.reservedUsd;
+  // Attempts recorded before reservations were stored: rebuilt from the saved prompt.
+  return claudeReservationUsd(
+    attempt.model,
+    promptCeilingTokens(estimatedTokens(attempt.request)),
+    attempt.maxOutputTokens ?? CLAUDE_DEFAULT_OUTPUT_CAP,
   );
 }
 
@@ -117,14 +134,7 @@ function claudeSpendUsd(store: DecisionStore, gameId: string, next?: NextCallRes
     .attempts(gameId)
     .filter((attempt) => attempt.provider === "anthropic")
     .reduce((sum, attempt) => sum + claudeAttemptUsd(attempt), 0);
-  return next?.provider === "anthropic"
-    ? settled +
-        claudeReservationUsd(
-          next.model,
-          promptCeilingTokens(next.inputTokens),
-          next.maxOutputTokens ?? CLAUDE_DEFAULT_OUTPUT_CAP,
-        )
-    : settled;
+  return settled + ((next && claudeNextReservationUsd(next)) ?? 0);
 }
 
 export function assertV2Budget(
@@ -417,13 +427,15 @@ export class DecisionExecutorV2 {
         policy.episodeTimeoutMs - (Date.now() - start),
       );
       const attemptProvider = stage?.provider === "jev" ? "jev" : settings.provider;
-      assertV2Budget(this.store, op.gameId, config, Date.now() - start, true, {
+      const nextCall = {
         provider: attemptProvider,
         model: callModel,
         inputTokens: tokens,
         maxOutputTokens,
-      });
+      };
+      assertV2Budget(this.store, op.gameId, config, Date.now() - start, true, nextCall);
       const attempt = this.store.beginAttempt(op, {
+        reservedUsd: claudeNextReservationUsd(nextCall),
         maxOutputTokens,
         timeoutMs,
         model: callModel,
