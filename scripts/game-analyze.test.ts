@@ -14,6 +14,7 @@ import { actorBriefing } from "../packages/simulator/src/jev-actor";
 import { V2GameOrchestrator } from "../packages/simulator/src/orchestrator-v2";
 import { actorConfig, refreshFixtureBrief } from "../packages/simulator/src/testing/actor-fixtures";
 import { analyzeGame, postGameAnalysisRequest } from "./game-analyze";
+import { checkCitations } from "./lib/analyze-citations";
 import { writeReportAtomically } from "./lib/analyze-output";
 import type { MomentReview } from "./lib/analyze-review";
 
@@ -517,6 +518,40 @@ describe("post-game analyzer safety and accounting", () => {
     expect(() => write(target, "{}\n", () => "collision")).toThrow();
     expect(readFileSync(`${target}.collision.tmp`, "utf8")).toBe("not ours\n");
   });
+
+  it("rejects citations checked against no deciders or a duplicated decider", () => {
+    const game = recordedGame(fixture);
+    const connection = openDatabase(game.dbPath);
+    const events = new LabRepository(connection).listEvents(game.gameId);
+    connection.close();
+    const review = { citedEventIds: [game.inspectionId], knowledgeClaims: [] };
+    expect(checkCitations(review, events, []).accepted).toBe(false);
+    const late = events.at(-1)!.sequence + 1;
+    expect(
+      checkCitations(review, events, [
+        { actorId: game.seer, decisionSequence: 0 },
+        { actorId: game.seer, decisionSequence: late },
+      ]).accepted,
+    ).toBe(false);
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -0.01])(
+    "records a reported review cost of %s as unknown, never as a number",
+    async (costUsd) => {
+      const game = recordedGame(fixture);
+      const reviewer = scriptedReviewer(plain);
+      const reporting: DecisionProvider = {
+        decide: (request) =>
+          reviewer.provider.decide({
+            ...request,
+            onProviderMetadata: (metadata) =>
+              request.onProviderMetadata?.({ ...metadata, costUsd }),
+          }),
+      };
+      const report = await run(game, { ...reviewer, provider: reporting });
+      expect(report.usage.review.costUsd).toBeNull();
+    },
+  );
 
   it.each([
     ["tokenBudget", Number.NaN],

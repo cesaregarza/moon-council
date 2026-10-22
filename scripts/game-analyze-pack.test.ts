@@ -462,3 +462,91 @@ describe("pack night reviews", () => {
     expect(await status(claimed(first))).toBe("accepted");
   });
 });
+
+/**
+ * Damaged records (halcyon's fourth review): real orchestrator nights, then corrupted. Each must
+ * give one no_signal moment naming the broken invariant; nothing is repaired or guessed.
+ */
+describe("pack nights with inconsistent records", () => {
+  const unanimous: NightScript["rounds"] = [
+    [
+      { at: "victim", p: 0.9 },
+      { at: "victim", p: 0.7 },
+    ],
+  ];
+  type Sql = LabRepository["connection"]["sqlite"];
+  type EventRow = Record<string, unknown> & { id: string; sequence: number };
+  const eventRow = (sql: Sql, id: string) =>
+    sql.prepare("SELECT * FROM events WHERE id=?").get(id) as EventRow;
+  /** Opens a gap after `sequence` so a row can be inserted inside the night. */
+  function shiftAfter(sql: Sql, gameId: string, sequence: number) {
+    sql
+      .prepare("UPDATE events SET sequence = -(sequence + 1) WHERE game_id=? AND sequence > ?")
+      .run(gameId, sequence);
+    sql
+      .prepare("UPDATE events SET sequence = -sequence WHERE game_id=? AND sequence < 0")
+      .run(gameId);
+  }
+  function insertCopy(sql: Sql, row: EventRow, id: string, sequence: number) {
+    const { row_id: _rowId, ...fields } = row;
+    const columns = Object.keys(fields);
+    sql
+      .prepare(
+        `INSERT INTO events (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+      )
+      .run(
+        ...columns.map((column) =>
+          column === "id" ? id : column === "sequence" ? sequence : fields[column],
+        ),
+      );
+  }
+  const inconsistent = async (night: Night, invariant: string) => {
+    const { kills } = await analyze(night);
+    expect(kills).toHaveLength(1);
+    expect(kills[0]).toMatchObject({
+      class: "no_signal",
+      noSignalReason: expect.stringMatching(new RegExp(`inconsistent pack records.*${invariant}`)),
+    });
+  };
+
+  it("refuses a final decision committed after the freeze", async () => {
+    // halcyon's future-record control: the wolf's decision now lands after the night.
+    const night = await packNight({ rounds: unanimous });
+    edit(night, (sql) => {
+      const op = night.finalOps[night.wolves[1]!]!;
+      const commit = sql
+        .prepare(
+          "SELECT * FROM events WHERE game_id=? AND type='decision.committed' AND payload_json LIKE ?",
+        )
+        .get(night.gameId, `%"decisionId":"${op.id}"%`) as EventRow;
+      const last = sql
+        .prepare("SELECT MAX(sequence) AS n FROM events WHERE game_id=?")
+        .get(night.gameId) as { n: number };
+      sql.prepare("DELETE FROM events WHERE id=?").run(commit.id);
+      insertCopy(sql, commit, `${commit.id}-late`, last.n + 1);
+    });
+    await inconsistent(night, "after the freeze");
+  });
+
+  it("refuses a freeze naming fewer wolves than are alive", async () => {
+    const night = await packNight({ rounds: unanimous });
+    edit(night, (sql) => {
+      const row = eventRow(sql, night.agreementId!);
+      const payload = { ...JSON.parse(String(row.payload_json)), actorIds: [night.wolves[0]] };
+      sql
+        .prepare("UPDATE events SET payload_json=? WHERE id=?")
+        .run(JSON.stringify(payload), row.id);
+    });
+    await inconsistent(night, "living wolves");
+  });
+
+  it("makes one moment for a night with a duplicated freeze", async () => {
+    const night = await packNight({ rounds: unanimous });
+    edit(night, (sql) => {
+      const row = eventRow(sql, night.agreementId!);
+      shiftAfter(sql, night.gameId, row.sequence);
+      insertCopy(sql, row, `${row.id}-again`, row.sequence + 1);
+    });
+    await inconsistent(night, "2 agreements");
+  });
+});
