@@ -400,14 +400,15 @@ describe("post-game surprise analyzer", () => {
   });
 
   it("keeps the automatic post-game run off unless asked, and then needs a review model", () => {
-    expect(postGameAnalysisRequest({})).toBeNull();
-    // A configured review model alone never turns the run on (fails on the assertion, not a throw).
+    // A configured review model alone never turns the run on. Checked first, so an always-on
+    // mutant fails this assertion instead of throwing below.
     expect(
       postGameAnalysisRequest({
         "review-provider": "anthropic",
         "review-model": "claude-opus-5-5",
       }),
     ).toBeNull();
+    expect(postGameAnalysisRequest({})).toBeNull();
     expect(() => postGameAnalysisRequest({ analyze: true })).toThrow(/--review-provider/);
     expect(
       postGameAnalysisRequest({
