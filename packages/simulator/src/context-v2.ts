@@ -77,7 +77,11 @@ export function authorizedSources(
       sourcePublicIndex = publicIndex;
       data = publicPayload(event);
     }
-    if (event.visibility === "player" && event.type === "inspection.delivered") {
+    if (
+      event.visibility === "player" &&
+      event.audienceIds.includes(playerId) &&
+      event.type === "inspection.delivered"
+    ) {
       privateIndex += 1;
       sourcePrivateIndex = privateIndex;
       scope = "player";

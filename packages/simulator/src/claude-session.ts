@@ -181,7 +181,7 @@ export class ClaudeSessions {
       messages: [
         { role: "user", content: [text(record.dayStart, true)] },
         ...record.turns.flatMap((turn) => [
-          { role: "user" as const, content: [text(turn.user)] },
+          { role: "user" as const, content: [text(turn.user.trimEnd() + " ")] },
           { role: "assistant" as const, content: turn.assistant },
         ]),
         { role: "user", content: [text(pendingTurn)] },
