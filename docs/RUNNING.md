@@ -250,8 +250,11 @@ information only.
 - Before any call, the review's worst case must fit under the cap, or the run is refused by name
   (`AnalysisSpendCapError`). The worst case is `--review-token-budget` × the model's highest
   per-token price (input, cache or output, at the long-context tier where one exists) × 3. The 3 is
-  `CLAUDE_MAX_ATTEMPTS`: the Claude provider turns the SDK's own retries off and retries a 429, 529
-  or other 5xx itself, honouring `retry-after`, up to three attempts per call. Prices come from
+  `CLAUDE_MAX_ATTEMPTS`: the Claude provider turns the SDK's own retries off on every request,
+  including through an injected client, and retries a 429, 529 or other 5xx itself, up to three
+  attempts per call. A retry waits what `Retry-After` asks, clamped to 60 seconds
+  (`MAX_RETRY_WAIT_MS`). Every attempt is admitted against a game's cap through `admitSpend` and
+  passes the warm gate, so a game's cap counts every attempt too. Prices come from
   `packages/llm/src/anthropic-pricing.ts`; for `claude-haiku-5-5`, the default 200,000-token budget
   comes to $1.50.
 - A review model without a price (any OpenAI model, or an unlisted Claude model) is refused

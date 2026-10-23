@@ -27,10 +27,12 @@ export class ClaudeRateLimitError extends Error {}
 
 /**
  * Attempts per Claude call: one, plus up to two explicit retries of a retryable failure. The
- * SDK's own retries are off, so every attempt is reserved, sent and settled on its own.
+ * SDK's own retries are off on every request, injected clients included, so every attempt is
+ * admitted, reserved, sent and settled on its own. A retry waits what the API asks (Retry-After),
+ * clamped to MAX_RETRY_WAIT_MS.
  */
 export const CLAUDE_MAX_ATTEMPTS = 3;
-const MAX_RETRY_WAIT_MS = 60_000;
+export const MAX_RETRY_WAIT_MS = 60_000;
 
 type ClaudeApiError = InstanceType<typeof Anthropic.APIError>;
 /** Rate limits (429) and server errors, overload (529) included, are worth another attempt. */
@@ -39,8 +41,11 @@ const retryable = (error: unknown): error is ClaudeApiError =>
   typeof error.status === "number" &&
   (error.status === 429 || error.status >= 500);
 
-/** The wait the API asked for (retry-after-ms, then retry-after), else backoff from 0.5 s. */
-function retryDelayMs(error: ClaudeApiError, attempt: number): number {
+/**
+ * The wait the API asked for (retry-after-ms, then retry-after in seconds or as a date), clamped
+ * to MAX_RETRY_WAIT_MS; without a usable header, backoff from 0.5 s, doubling to at most 8 s.
+ */
+export function retryDelayMs(error: ClaudeApiError, attempt: number): number {
   const header = (name: string) => error.headers?.get(name) ?? "";
   const ms = Number.parseFloat(header("retry-after-ms"));
   const seconds = Number.parseFloat(header("retry-after"));
@@ -49,7 +54,7 @@ function retryDelayMs(error: ClaudeApiError, attempt: number): number {
     : Number.isFinite(seconds)
       ? seconds * 1_000
       : Date.parse(header("retry-after")) - Date.now();
-  if (asked > 0 && asked <= MAX_RETRY_WAIT_MS) return asked;
+  if (asked > 0) return Math.min(asked, MAX_RETRY_WAIT_MS);
   return Math.min(500 * 2 ** (attempt - 1), 8_000);
 }
 
@@ -263,7 +268,7 @@ export class AnthropicMessagesProvider implements DecisionProvider {
       promptCeilingTokens(body, replayedTokens),
       body.max_tokens,
     );
-    const call: ClaudeCall = { recordedUsd: 0, held: false, sent: false };
+    const call: ClaudeCall = { recordedUsd: 0, held: false, attempts: 0 };
     const reported = { usage: false, metadata: false };
     const tracked: DecisionRequest<T> = {
       ...request,
@@ -283,7 +288,8 @@ export class AnthropicMessagesProvider implements DecisionProvider {
       for (let attempt = 1; ; attempt++) {
         try {
           const sent = await this.attempt(body, reservation, signal, call, request);
-          const spend = call.held ? { heldUsd: call.recordedUsd } : { costUsd: sent.cost! };
+          const cost = call.held ? { heldUsd: call.recordedUsd } : { costUsd: sent.cost! };
+          const spend = { ...cost, attempts: call.attempts };
           return claudeResult(tracked, sent.message, spend, sent.usage);
         } catch (error) {
           if (!retryable(error) || attempt >= CLAUDE_MAX_ATTEMPTS) throw error;
@@ -291,21 +297,26 @@ export class AnthropicMessagesProvider implements DecisionProvider {
         }
       }
     } catch (error) {
-      if (call.sent && !reported.usage)
+      if (call.attempts > 0 && !reported.usage)
         request.onUsage?.(unknownUsage(), {
           provider: "anthropic",
           model: body.model,
           outputLimitEnforced: true,
         });
-      if (call.sent && !reported.metadata)
-        request.onProviderMetadata?.({ model: body.model, heldUsd: call.recordedUsd });
+      if (call.attempts > 0 && !reported.metadata)
+        request.onProviderMetadata?.({
+          model: body.model,
+          heldUsd: call.recordedUsd,
+          attempts: call.attempts,
+        });
       throw claudeFailure(error, signal);
     }
   }
 
   /**
-   * One attempt: reserve its worst case, send, then settle. It settles at its actual cost when
-   * usage parses (Rule U); a failure or unknown usage keeps the reservation.
+   * One attempt: admit and reserve its worst case, send, then settle. It settles at its actual
+   * cost when usage parses (Rule U); a failure or unknown usage keeps the reservation, and so does
+   * a settle that throws.
    */
   private async attempt(
     body: Anthropic.MessageCreateParamsNonStreaming,
@@ -315,10 +326,11 @@ export class AnthropicMessagesProvider implements DecisionProvider {
     request: Pick<DecisionRequest<unknown>, "admitSpend" | "claudeHarness">,
   ) {
     const id = randomUUID();
-    // One figure, in order and with no await between: the game admits it, the month reserves it.
-    request.admitSpend?.(reservation);
+    // In order and with no await between: the game admits the call's running total (what earlier
+    // attempts hold, plus this attempt), then the month reserves this attempt.
+    request.admitSpend?.(call.recordedUsd + reservation);
     this.ledger.reserve(id, reservation);
-    call.sent = true;
+    call.attempts += 1;
     let cost: number | null = null;
     try {
       const message = await this.streamOnce(body, signal, request.claudeHarness?.warmGateKey);
@@ -327,9 +339,15 @@ export class AnthropicMessagesProvider implements DecisionProvider {
       cost = recordCostUsd(body.model, record, markedTtls(body));
       return { message, cost, usage: mappedUsage(record) };
     } finally {
+      // Until settle returns, the ledger holds the reservation.
+      const heldBefore = call.held;
+      call.recordedUsd += reservation;
+      call.held = true;
       this.ledger.settle(id, cost ?? reservation);
-      call.recordedUsd += cost ?? reservation;
-      if (cost === null) call.held = true;
+      if (cost !== null) {
+        call.recordedUsd += cost - reservation;
+        call.held = heldBefore;
+      }
     }
   }
 
@@ -341,7 +359,8 @@ export class AnthropicMessagesProvider implements DecisionProvider {
   ): Promise<Anthropic.Message> {
     const release = warmGateKey ? await this.warmGate.enter(warmGateKey, signal) : undefined;
     try {
-      const stream = this.client.messages.stream(body, { signal });
+      // maxRetries 0 on the request itself: an injected client's own retries are off too.
+      const stream = this.client.messages.stream(body, { signal, maxRetries: 0 });
       stream.on("streamEvent", (event) => {
         if (event.type === "content_block_start") release?.(true);
       });
@@ -361,14 +380,15 @@ export class AnthropicMessagesProvider implements DecisionProvider {
 interface ClaudeCall {
   recordedUsd: number;
   held: boolean;
-  sent: boolean;
+  /** Attempts sent so far (admitted and reserved). */
+  attempts: number;
 }
 
 /** Records usage and metadata, then decodes the structured answer. */
 function claudeResult<T>(
   request: DecisionRequest<T>,
   message: Anthropic.Message,
-  spend: { costUsd: number } | { heldUsd: number },
+  spend: ({ costUsd: number } | { heldUsd: number }) & { attempts: number },
   usage: UsageV2,
 ): DecisionResult<T> {
   request.onUsage?.(usage, {
@@ -382,7 +402,8 @@ function claudeResult<T>(
     model: message.model,
     stopReason: message.stop_reason,
     stopDetails: message.stop_details ?? null,
-    // costUsd only when every attempt settled at its actual cost; otherwise what was held.
+    // costUsd only when every attempt settled at its actual cost; otherwise what was held. Also
+    // how many attempts were sent.
     ...spend,
   });
   if (message.stop_reason === "refusal")

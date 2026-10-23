@@ -121,13 +121,16 @@ export function claudeNextReservationUsd(next: NextCallReservation): number | un
 }
 
 /**
- * The provider's actual cost when validly recorded, else the cost from valid usage, else the
- * reservation admitted when the call began. A negative or non-finite cost, or invalid usage,
+ * The provider's actual cost when validly recorded; else what the ledger holds for a call with
+ * held attempts (`heldUsd`, every explicit retry included); else the cost from valid usage; else
+ * the reservation admitted when the call began. A negative or non-finite cost, or invalid usage,
  * is never credit. With none of these, the attempt cannot be bounded and admission stops.
  */
 function claudeAttemptUsd(attempt: ProviderAttemptRecord): number {
   const actual = attempt.providerMetadata?.costUsd;
   if (validUsd(actual)) return actual;
+  const held = attempt.providerMetadata?.heldUsd;
+  if (validUsd(held)) return held;
   const fromUsage = claudeUsageCostUsd(attempt.model, attempt.usage);
   if (fromUsage !== null) return fromUsage;
   if (validUsd(attempt.reservedUsd)) return attempt.reservedUsd;

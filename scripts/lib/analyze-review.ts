@@ -150,9 +150,11 @@ async function reviewOne(
     spent: worstCase,
     costUsd: null as number | null,
     heldUsd: null as number | null,
+    /** Attempts the provider reports it sent; null when it reports none. */
+    attempts: null as number | null,
     enforced: true,
   };
-  let costInvalid = false;
+  let costReported = false;
   try {
     const result = await options.provider.decide({
       // A generic prepared-prompt decision: providers send preparedPrompt as given.
@@ -174,10 +176,15 @@ async function reviewOne(
       onProviderMetadata: (metadata) => {
         if (metadata.heldUsd !== undefined)
           call.heldUsd = validUsd(metadata.heldUsd) ? metadata.heldUsd : null;
+        if (Number.isSafeInteger(metadata.attempts)) call.attempts = metadata.attempts as number;
         if (metadata.costUsd === undefined) return;
-        // Sticky: once a report is invalid, a later valid one cannot clear it.
-        costInvalid ||= !validUsd(metadata.costUsd);
-        call.costUsd = costInvalid ? null : addCosts(call.costUsd ?? 0, metadata.costUsd);
+        // Sticky: once a report is invalid or the sum overflows, a later report cannot clear it.
+        call.costUsd = costReported
+          ? addCosts(call.costUsd, metadata.costUsd)
+          : validUsd(metadata.costUsd)
+            ? metadata.costUsd
+            : null;
+        costReported = true;
       },
     });
     if (!call.enforced)
@@ -195,10 +202,12 @@ async function reviewOne(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // Refused by the spend cap: no later review is admitted. With no attempt sent, nothing was
-    // spent; after held attempts (retries), the held amount is what was spent.
+    // spent; after held attempts (retries), each counts its worst case and the held amount.
     if (error instanceof ReviewSpendLimitError) {
+      const sent = call.attempts ?? 0;
       const costUsd = call.heldUsd === null ? 0 : null;
-      return { ...call, spent: 0, costUsd, capped: true, outcome: capped(message) };
+      const outcome = capped(message);
+      return { ...call, spent: sent * worstCase, costUsd, attempts: sent, capped: true, outcome };
     }
     const outcome: ReviewOutcome = { status: "failed", error: message };
     return { ...call, outcome };
@@ -237,12 +246,13 @@ export async function reviewMoments(items: ReviewItem[], options: ReviewOptions)
     outcomes.push(call.outcome);
     usage.costUsd = addCosts(usage.costUsd, call.costUsd);
     usage.heldUsd = addCosts(usage.heldUsd, call.costUsd ?? call.heldUsd);
+    // Statistics count the attempts actually sent (one when a provider reports none).
+    usage.calls += call.attempts ?? 1;
+    usage.tokens += call.spent;
     if ("capped" in call) {
       stopped = capped();
       continue;
     }
-    usage.calls += 1;
-    usage.tokens += call.spent;
     if (!call.enforced) stopped = { status: "skipped_budget" };
   }
   return { outcomes, usage };
