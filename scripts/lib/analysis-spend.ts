@@ -12,9 +12,9 @@ export const JEV_USD_PER_MILLION_INPUT = 0.042;
 /** Headroom over the assumed Jev rate. */
 export const JEV_RATE_MARGIN = 1.5;
 /**
- * Tokens allowed per Jev call for any provider-side framing. In 2,424 logged calls (ask-jev's
- * request log, 2026-09 and 2026-10), the smallest bill was 501 tokens, so a fixed framing is at
- * most that; billed input never passed 0.567 of the request's bytes as sent.
+ * Tokens allowed per Jev call for any provider-side framing: a margin chosen from observation,
+ * not a proven bound. In 2,424 logged calls (2026-09-23 to 2026-10-21), billed input ranged from
+ * 0.216 to 0.567 of the request's bytes as sent, and the smallest bill was 501 tokens.
  */
 export const JEV_FRAMING_TOKENS = 512;
 /** One attempt plus the Anthropic SDK's default two retries (packages/llm/src/anthropic.ts). */
@@ -24,6 +24,23 @@ export const CLAUDE_MAX_ATTEMPTS = 3;
 export class MissingAnalysisSpendCapError extends Error {
   override name = "MissingAnalysisSpendCapError";
 }
+/**
+ * A paid run without the operator's acceptance that its cap enforces an estimate: input-only Jev
+ * billing, framing within the observed range, and the local Jev rate are assumptions.
+ */
+export class UnacknowledgedJevCostError extends Error {
+  override name = "UnacknowledgedJevCostError";
+}
+export const ESTIMATE_ASSUMPTIONS =
+  "an estimate assuming input-only Jev billing, framing within the observed range, and the local Jev rate; not a hard limit";
+
+export function assertEstimateAcknowledged(accepted: boolean | undefined): void {
+  if (!accepted)
+    throw new UnacknowledgedJevCostError(
+      `The analysis cap is ${ESTIMATE_ASSUMPTIONS}. Pass --accept-estimated-jev-cost to run it`,
+    );
+}
+
 /** The preflight worst case is over the run's cap; no paid call was made. */
 export class AnalysisSpendCapError extends Error {
   override name = "AnalysisSpendCapError";

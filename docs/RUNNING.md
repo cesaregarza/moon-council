@@ -169,7 +169,8 @@ marked unobserved.
 
 ```bash
 npm run game:analyze -- --db /native/path/game.db --game GAME_ID --out RUN_DIRECTORY \
-  --review-provider anthropic --review-model claude-haiku-5-5 --max-spend-usd 20
+  --review-provider anthropic --review-model claude-haiku-5-5 --max-spend-usd 20 \
+  --accept-estimated-jev-cost
 ```
 
 The analyzer opens the database read-only. For every committed ballot with a recorded Jev
@@ -201,7 +202,7 @@ the review model, plus 2 random routine moments as a recall check (`--recall`).
   or SHM file, a link, or any file that is not one of its own previous reports. The reports hold
   moderator data, so never commit them. They record the models, Jev's tokens per call, and the
   review's tokens and reported cost.
-- `npm run pilot -- ... --analyze --review-provider KIND --review-model MODEL --analysis-max-spend-usd USD`
+- `npm run pilot -- ... --analyze --review-provider KIND --review-model MODEL --analysis-max-spend-usd USD --accept-estimated-jev-cost`
   runs the analyzer automatically after a completed game. It is off by default, and a failure never
   changes the game record. The pilot's `--max-spend-usd` is the game's own Claude cap; the analysis
   has its own.
@@ -213,9 +214,16 @@ pilot, `--analysis-max-spend-usd`). Without it, the run is refused by name
 (`MissingAnalysisSpendCapError`) before Jev or any review provider is built. Cesar's policy is at
 most $20 per run. That is a policy for choosing the flag's value, not a limit in the code.
 
-The cap enforces an estimate made under the assumptions below. It is not a guaranteed ceiling on the
-bill. Before the first paid call, the analyzer builds every Jev request from the stored game and
-sums a worst case over every paid call site:
+The whole-run cap enforces an estimate under stated assumptions: input-only Jev billing, provider
+framing within the observed range, and the local Jev rate. It does not guarantee that a run stays
+under a hard limit, such as $20. A paid run therefore also needs `--accept-estimated-jev-cost`, the
+operator's explicit acceptance of those assumptions. Without it, the CLI and the pilot's preflight
+refuse by name (`UnacknowledgedJevCostError`) before any call. Live paid Jev stays refused until
+there is a supported bound, or until Cesar authorizes the risk specifically, for example by
+approving a run with that flag.
+
+Before the first paid call, the analyzer builds every Jev request from the stored game and sums an
+estimated worst case over every paid call site:
 
 | Call site                                                                                                      | Attempts                                                                                           | Worst case per call                                                                          |
 | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -225,16 +233,19 @@ sums a worst case over every paid call site:
 The recall check selects from moments Jev has already predicted, so it makes no Jev call of its own.
 No other path in the analyzer spends.
 
-- **Jev bound.** A Jev call's billed input token count is assumed never to exceed the UTF-8 byte
-  count of the full request as the client sends it, plus 512 tokens for any provider-side framing.
-  The request is measured as JSON with a one-space indent, which is never shorter than what ask-jev
-  sends (it re-serializes with Python's `", "` and `": "` separators).
-- **Evidence.** ask-jev's request logs record each request and its billed `input_tokens`: 2,421
-  calls on the desktop (2026-09-23 to 2026-10-21, all `jev-1.13.0`) and 3 on the Pi. Across these
-  2,424 calls, billed input tokens ranged from 0.216 to 0.567 of the request's bytes as sent, so the
-  bound held in every call. The smallest request (884 bytes) billed 501 tokens. A fixed framing
-  overhead is therefore at most 501 tokens, which the 512-token allowance covers even for a request
-  smaller than any logged. These are logged calls, not a vendor guarantee.
+- **Jev assumption.** A Jev call's billed input token count is assumed never to exceed the UTF-8
+  byte count of the full request as the client sends it, plus 512 tokens for any provider-side
+  framing. The request is measured as JSON with a one-space indent, which is never shorter than what
+  ask-jev sends (it re-serializes with Python's `", "` and `": "` separators).
+- **Observations.** These are empirical observations, not proven bounds. They come from ask-jev's
+  private request logs: 2,421 calls on the desktop (2026-09-23 to 2026-10-21, all `jev-1.13.0`) and
+  3 on the Pi. Only each request's byte length and its billed `input_tokens` were computed; no
+  request content was copied.
+  - Across the 2,424 calls, billed input tokens ranged from 0.216 to 0.567 of the request's bytes as
+    sent.
+  - The smallest request (884 bytes) billed 501 tokens.
+  - The 512-token framing allowance is a margin chosen from these observations, not a measured
+    ceiling.
 - **Billing semantics.** Input-only billing is the disclosed model. TypeSafe's home page
   (https://typesafe.ai) prices only input, at $42 per billion input tokens. The jev skill
   (`~/.claude/skills/jev/SKILL.md`, lines 9 and 10) documents "input-only billing". Zuplo's gateway
@@ -259,12 +270,12 @@ or review call. Otherwise Claude reviews run under a per-call check:
 - A call that would not fit is not sent. It and every later review are marked `skipped_spend_cap`
   (`ReviewSpendLimitError`).
 
-Jev's spend is bounded only by the preflight, because Jev reports tokens but no cost.
+Jev's spend is checked only against the preflight estimate, because Jev reports tokens but no cost.
 
-The report's `spend` block, also summarized in `analysis.md`, holds the cap, the estimated worst
-case (Jev, review, total) and the actual usage. The actual Jev cost is the reported input tokens at
-the assumed rate, with no margin. The actual review cost is the reported cost. Either one is unknown
-when any call's usage is unknown.
+The report's `spend` block, also summarized in `analysis.md`, holds the cap, its basis (the
+assumptions above), the estimated worst case (Jev, review, total) and the actual usage. The actual
+Jev cost is the reported input tokens at the assumed rate, with no margin. The actual review cost is
+the reported cost. Either one is unknown when any call's usage is unknown.
 
 ## Reusable Day 1 bases
 

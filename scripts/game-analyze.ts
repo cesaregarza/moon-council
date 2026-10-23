@@ -16,7 +16,9 @@ import {
 } from "@werewolf/llm";
 import {
   analysisWorstCase,
+  assertEstimateAcknowledged,
   assertSpendCap,
+  ESTIMATE_ASSUMPTIONS,
   assertWithinCap,
   jevActualUsd,
   JEV_RATE_MARGIN,
@@ -156,6 +158,7 @@ export async function analyzeGame(options: AnalyzeOptions) {
       },
       usage: { jev, review: usage },
       spend: {
+        basis: ESTIMATE_ASSUMPTIONS,
         capUsd: options.maxSpendUsd,
         estimateUsd: worstCase,
         actualUsd: { jev: jevActualUsd(jev.inputTokens), review: usage.costUsd },
@@ -206,6 +209,7 @@ export function postGameAnalysisRequest(values: {
   "review-provider"?: string;
   "review-model"?: string;
   "analysis-max-spend-usd"?: string;
+  "accept-estimated-jev-cost"?: boolean;
 }): { kind: string; model: string; maxSpendUsd: number } | null {
   if (!values.analyze) return null;
   if (!values["review-provider"] || !values["review-model"])
@@ -213,6 +217,7 @@ export function postGameAnalysisRequest(values: {
   const maxSpendUsd = dollars(values["analysis-max-spend-usd"]);
   assertSpendCap(maxSpendUsd);
   assertReviewProviderBounded(values["review-provider"], values["review-model"]);
+  assertEstimateAcknowledged(values["accept-estimated-jev-cost"]);
   return { kind: values["review-provider"], model: values["review-model"], maxSpendUsd };
 }
 
@@ -239,7 +244,7 @@ function markdown(report: AnalysisReport) {
       `${report.usage.jev.totalTokens ?? "unknown"} Jev tokens; ${report.usage.review.calls} reviews, ` +
       `${report.usage.review.tokens} review tokens, ${usd(report.usage.review.costUsd)} reported cost.`,
     "",
-    `Spend cap $${report.spend.capUsd}: ${usd(report.spend.estimateUsd.total)} worst case ` +
+    `Spend cap $${report.spend.capUsd}, ${report.spend.basis}: ${usd(report.spend.estimateUsd.total)} worst case ` +
       `(Jev ${usd(report.spend.estimateUsd.jev)}, review ${usd(report.spend.estimateUsd.review)}); ` +
       `actual Jev ${usd(report.spend.actualUsd.jev)} at the assumed rate, review ${usd(report.spend.actualUsd.review)} reported.`,
     "",
@@ -260,7 +265,7 @@ function markdown(report: AnalysisReport) {
 
 function usage(): never {
   console.error(
-    "Usage: npm run game:analyze -- --db PATH --game ID --out DIR --review-provider KIND --review-model MODEL --max-spend-usd USD [--jev-model jev-latest] [--cap 12] [--recall 2] [--review-token-budget 200000] [--review-max-output 4000]\nOpens the database read-only. Calls Jev once per decision and the review model once per selected moment; both spend real credit. The run is refused before any call when its worst case exceeds --max-spend-usd.",
+    "Usage: npm run game:analyze -- --db PATH --game ID --out DIR --review-provider KIND --review-model MODEL --max-spend-usd USD --accept-estimated-jev-cost [--jev-model jev-latest] [--cap 12] [--recall 2] [--review-token-budget 200000] [--review-max-output 4000]\nOpens the database read-only. Calls Jev once per decision and the review model once per selected moment; both spend real credit. The cap enforces an estimate under stated assumptions (see docs/RUNNING.md), not a hard limit; --accept-estimated-jev-cost acknowledges that. The run is refused before any call when its estimated worst case exceeds --max-spend-usd.",
   );
   process.exit(2);
 }
@@ -274,6 +279,7 @@ async function main(): Promise<void> {
       "review-provider": { type: "string" },
       "review-model": { type: "string" },
       "max-spend-usd": { type: "string" },
+      "accept-estimated-jev-cost": { type: "boolean" },
       "jev-model": { type: "string", default: "jev-latest" },
       cap: { type: "string", default: "12" },
       recall: { type: "string", default: "2" },
@@ -290,6 +296,7 @@ async function main(): Promise<void> {
   loadProviderEnvironment();
   const kind = selectedProviderKind(values["review-provider"]);
   assertReviewProviderBounded(kind, values["review-model"]);
+  assertEstimateAcknowledged(values["accept-estimated-jev-cost"]);
   const report = await analyzeGame({
     dbPath: resolve(values.db),
     gameId: values.game,
