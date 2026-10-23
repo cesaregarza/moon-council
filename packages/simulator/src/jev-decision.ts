@@ -6,6 +6,7 @@ import {
   type DiscussionPlanV3,
   type GameConfigV2,
   type MemorySuggestionsV3,
+  CLAUDE_SESSION_PROTOCOL,
 } from "@werewolf/contracts";
 import {
   jevResponseSchema,
@@ -42,7 +43,7 @@ export function usesJev(op: JevOpportunity, config: GameConfigV2): boolean {
   return (
     config.decisionEngine.mode === "jev" &&
     TASKS.has(op.taskType ?? "") &&
-    ["agent_v3_1", "agent_v3_2"].includes(config.protocolVersion)
+    ["agent_v3_1", "agent_v3_2", CLAUDE_SESSION_PROTOCOL].includes(config.protocolVersion)
   );
 }
 

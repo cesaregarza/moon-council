@@ -185,6 +185,36 @@ describe("V2 moderator narration", () => {
     expect(calls).toBe(1);
   });
 
+  it("skips optional narration when the game refuses its exact Claude reservation", async () => {
+    // The provider admits its exact reservation before sending (CES-1556); a refusal skips the
+    // optional announcement instead of ending the game.
+    const repo = repository();
+    const record = game(repo, { maxSpendUsd: 0.025 });
+    let sent = 0;
+    const provider: DecisionProvider = {
+      decide: async (request) => {
+        (request as { admitSpend?: (usd: number) => void }).admitSpend?.(1);
+        sent += 1;
+        return {
+          data: { text: "Sent anyway." },
+          provider: "anthropic",
+          model: "m",
+          usage: {},
+        } as never;
+      },
+    };
+    const narration = new NarrationV2(repo, provider);
+    const text = await narration.narrate({
+      ...options(record.id),
+      decisionId: "refused",
+      model: "claude-haiku-5-5",
+      provider: "anthropic",
+    });
+    expect(text).toBe("The day begins.");
+    expect(sent).toBe(0);
+    expect(narration.checkpoint(record.id, "refused")?.status).toBe("skipped");
+  });
+
   it("reserves narration from the stored request's own serialized envelope", async () => {
     // halcyon's metric note: separate prompt and schema estimates missed the combined record's
     // JSON envelope by nine bytes. The reservation is sized from the request as stored.

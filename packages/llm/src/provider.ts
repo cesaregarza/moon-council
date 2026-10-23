@@ -90,7 +90,28 @@ export interface DecisionRequest<T> {
   claudeHarness?: {
     system: Anthropic.TextBlockParam[];
     messages: Anthropic.MessageParam[];
+    /** Adds Anthropic's top-level automatic breakpoint after the newest turn. */
+    automaticCache?: boolean;
+    /** Shared new prefix: the first request goes alone, the rest wait for its first token. */
+    warmGateKey?: string;
+    /**
+     * Recorded tokens of the previous turn (its prompt plus its reply) that bound everything
+     * before the last message, thinking blocks included; absent on a session's first turn.
+     */
+    replayedTokens?: number;
   };
+  /**
+   * Claude only: called synchronously with the worst-case USD the provider computed from the
+   * exact request body, before it reserves that figure in the monthly ledger and before it sends.
+   * The caller admits it against the game's limit; throwing refuses the call.
+   */
+  admitSpend?: (usd: number) => void;
+  /** Claude only: every received reply, before parsing, so a harness can store it verbatim. */
+  onClaudeReply?: (reply: {
+    content: Anthropic.ContentBlock[];
+    stopReason: string | null;
+    usage: UsageV2;
+  }) => void;
 }
 
 export interface DecisionResult<T> {
