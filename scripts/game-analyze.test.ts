@@ -388,14 +388,20 @@ describe("post-game surprise analyzer", () => {
     ).toBeNull();
     expect(postGameAnalysisRequest({})).toBeNull();
     expect(() => postGameAnalysisRequest({ analyze: true })).toThrow(/--review-provider/);
-    // An accepted request: a priced review model and the analysis's own cap (CES-1564).
+    // An accepted request: a priced review model, the analysis's own cap, and the operator's
+    // acceptance that the cap is an estimate (CES-1564). Cast so this compiles before the flag.
+    const request = {
+      analyze: true,
+      "review-provider": "anthropic",
+      "review-model": "claude-haiku-5-5",
+      "analysis-max-spend-usd": "20",
+    };
+    expect(() => postGameAnalysisRequest(request)).toThrow(/accept-estimated-jev-cost/);
     expect(
       postGameAnalysisRequest({
-        analyze: true,
-        "review-provider": "anthropic",
-        "review-model": "claude-haiku-5-5",
-        "analysis-max-spend-usd": "20",
-      }),
+        ...request,
+        "accept-estimated-jev-cost": true,
+      } as Parameters<typeof postGameAnalysisRequest>[0]),
     ).toEqual({ kind: "anthropic", model: "claude-haiku-5-5", maxSpendUsd: 20 });
   });
 });

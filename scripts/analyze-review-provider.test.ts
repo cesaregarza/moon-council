@@ -71,6 +71,11 @@ const analyzeArgs = (provider: string, ...extra: string[]) => [
   ...review(provider),
   ...extra,
 ];
+/**
+ * The operator's explicit acceptance that the cap enforces an estimate (input-only Jev billing,
+ * framing within the observed range, the local Jev rate), not a hard limit.
+ */
+const ACKNOWLEDGED = "--accept-estimated-jev-cost";
 const nothingConstructed = () => {
   expect(calls.created).toEqual([]);
   expect(calls.anthropic).toBe(0);
@@ -96,6 +101,31 @@ describe("analysis review provider", () => {
     nothingConstructed();
   });
 
+  it("refuses a paid CLI run without the estimated-cost acknowledgement, before Jev or any provider", async () => {
+    const run = runScript("game-analyze.ts", analyzeArgs("fake", "--max-spend-usd", "20"));
+    await expect(run).rejects.toMatchObject({ name: "UnacknowledgedJevCostError" });
+    nothingConstructed();
+  });
+
+  it("refuses a pilot analysis without the estimated-cost acknowledgement, before any game", async () => {
+    const run = runScript("pilot.ts", [
+      "--provider",
+      "fake",
+      "--analyze",
+      ...review("anthropic"),
+      "--analysis-max-spend-usd",
+      "20",
+      "--db",
+      "$DIR/game.db",
+      "--out",
+      "$DIR/out",
+      "--mode",
+      "bogus",
+    ]);
+    await expect(run).rejects.toMatchObject({ name: "UnacknowledgedJevCostError" });
+    nothingConstructed();
+  });
+
   it("refuses an analysis without its spend cap in the pilot's preflight, before any game", async () => {
     const run = runScript("pilot.ts", [
       "--provider",
@@ -115,7 +145,10 @@ describe("analysis review provider", () => {
   });
 
   it("constructs Claude only through the run's spend cap in the CLI", async () => {
-    const run = runScript("game-analyze.ts", analyzeArgs("anthropic", "--max-spend-usd", "20"));
+    const run = runScript(
+      "game-analyze.ts",
+      analyzeArgs("anthropic", "--max-spend-usd", "20", ACKNOWLEDGED),
+    );
     // The missing database (or a missing key) stops the run after construction.
     await expect(run).rejects.toThrow();
     expect(calls.created).toEqual([]);
@@ -123,7 +156,10 @@ describe("analysis review provider", () => {
   });
 
   it("still constructs an existing review kind in the CLI", async () => {
-    const run = runScript("game-analyze.ts", analyzeArgs("fake", "--max-spend-usd", "20"));
+    const run = runScript(
+      "game-analyze.ts",
+      analyzeArgs("fake", "--max-spend-usd", "20", ACKNOWLEDGED),
+    );
     // The missing database stops the run after the review provider is built.
     await expect(run).rejects.toThrow();
     expect(calls.created).toEqual(["fake"]);
