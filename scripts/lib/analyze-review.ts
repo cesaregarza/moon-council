@@ -135,15 +135,24 @@ export interface ReviewOptions {
   roles: Record<string, string>;
 }
 
-/** One review call: settled tokens are the reported usage, or the worst case when unknown. */
+/**
+ * One review call: settled tokens are the reported usage, or the worst case when unknown. Its
+ * cost is the reported `costUsd`, or null (unknown) when none is reported or any report is not a
+ * finite, non-negative number; `heldUsd` is what the provider's ledger recorded instead.
+ */
 async function reviewOne(
   item: ReviewItem,
   prompt: { instructions: string; input: string },
   worstCase: number,
   options: ReviewOptions,
 ) {
-  /** Reported cost; null once any report is not a finite, non-negative number (unknown). */
-  const call = { spent: worstCase, costUsd: 0 as number | null, enforced: true };
+  const call = {
+    spent: worstCase,
+    costUsd: null as number | null,
+    heldUsd: null as number | null,
+    enforced: true,
+  };
+  let costInvalid = false;
   try {
     const result = await options.provider.decide({
       // A generic prepared-prompt decision: providers send preparedPrompt as given.
@@ -163,8 +172,12 @@ async function reviewOne(
         call.enforced = call.enforced && metadata.outputLimitEnforced;
       },
       onProviderMetadata: (metadata) => {
+        if (metadata.heldUsd !== undefined)
+          call.heldUsd = validUsd(metadata.heldUsd) ? metadata.heldUsd : null;
         if (metadata.costUsd === undefined) return;
-        call.costUsd = addCosts(call.costUsd, metadata.costUsd);
+        // Sticky: once a report is invalid, a later valid one cannot clear it.
+        costInvalid ||= !validUsd(metadata.costUsd);
+        call.costUsd = costInvalid ? null : addCosts(call.costUsd ?? 0, metadata.costUsd);
       },
     });
     if (!call.enforced)
@@ -181,9 +194,12 @@ async function reviewOne(
     return { ...call, outcome };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    // Refused before sending: nothing was spent, and no later review is admitted.
-    if (error instanceof ReviewSpendLimitError)
-      return { spent: 0, costUsd: 0, enforced: true, capped: true, outcome: capped(message) };
+    // Refused by the spend cap: no later review is admitted. With no attempt sent, nothing was
+    // spent; after held attempts (retries), the held amount is what was spent.
+    if (error instanceof ReviewSpendLimitError) {
+      const costUsd = call.heldUsd === null ? 0 : null;
+      return { ...call, spent: 0, costUsd, capped: true, outcome: capped(message) };
+    }
     const outcome: ReviewOutcome = { status: "failed", error: message };
     return { ...call, outcome };
   }
@@ -200,7 +216,8 @@ const capped = (error?: string): ReviewOutcome => ({
  * plus the output cap.
  */
 export async function reviewMoments(items: ReviewItem[], options: ReviewOptions) {
-  const usage = { calls: 0, tokens: 0, costUsd: 0 as number | null };
+  /** Reported cost, and what the ledger recorded; each unknown (null) once any call's is. */
+  const usage = { calls: 0, tokens: 0, costUsd: 0 as number | null, heldUsd: 0 as number | null };
   const outcomes: ReviewOutcome[] = [];
   /** Once set, the outcome of every remaining item: an unenforced cap, or the spend cap. */
   let stopped: ReviewOutcome | null = null;
@@ -218,13 +235,14 @@ export async function reviewMoments(items: ReviewItem[], options: ReviewOptions)
     }
     const call = await reviewOne(item, prompt, worstCase, options);
     outcomes.push(call.outcome);
+    usage.costUsd = addCosts(usage.costUsd, call.costUsd);
+    usage.heldUsd = addCosts(usage.heldUsd, call.costUsd ?? call.heldUsd);
     if ("capped" in call) {
       stopped = capped();
       continue;
     }
     usage.calls += 1;
     usage.tokens += call.spent;
-    usage.costUsd = addCosts(usage.costUsd, call.costUsd);
     if (!call.enforced) stopped = { status: "skipped_budget" };
   }
   return { outcomes, usage };

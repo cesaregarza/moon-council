@@ -216,20 +216,26 @@ information only.
   Without it, the run is refused by name (`MissingAnalysisSpendCapError`) before Jev or any review
   provider is built. A free review (`fake`) needs no cap. Cesar's policy is at most $20 per run;
   that is a policy for choosing the flag's value, not a limit in the code.
+- `--review-token-budget` must be a positive integer, or the run is refused by name
+  (`InvalidReviewTokenBudgetError`) before anything is built.
 - Before any call, the review's worst case must fit under the cap, or the run is refused by name
   (`AnalysisSpendCapError`). The worst case is `--review-token-budget` × the model's highest
-  per-token price (input, cache or output, at the long-context tier where one exists) × 3. The 3
-  covers one attempt plus the Anthropic SDK's default two retries. Prices come from
+  per-token price (input, cache or output, at the long-context tier where one exists) × 3. The 3 is
+  `CLAUDE_MAX_ATTEMPTS`: the Claude provider turns the SDK's own retries off and retries a 429, 529
+  or other 5xx itself, honouring `retry-after`, up to three attempts per call. Prices come from
   `packages/llm/src/anthropic-pricing.ts`; for `claude-haiku-5-5`, the default 200,000-token budget
   comes to $1.50.
 - A review model without a price (any OpenAI model, or an unlisted Claude model) is refused
   (`UnpricedReviewModelError`), because its spend cannot be bounded.
-- Each Claude review reserves its own worst case, priced by the provider from its request bytes and
-  output cap, against the cap and the monthly spend ledger. It settles to the reported cost; unknown
-  usage keeps the reservation. A call that would not fit is not sent. It and every later review are
-  marked `skipped_spend_cap` (`ReviewSpendLimitError`).
+- Each Claude attempt reserves its own worst case, priced by the provider from its request bytes and
+  output cap, against the cap and the monthly spend ledger. It settles to its actual cost; a failed
+  attempt or unknown usage keeps the reservation. An attempt that would not fit is not sent; its
+  review and every later one are marked `skipped_spend_cap` (`ReviewSpendLimitError`).
+- A review's cost is known only when every attempt settled at its actual cost. Otherwise it is
+  unknown, and the provider reports `heldUsd`, the total the ledger recorded for the call.
 - The report's `spend` block, also summarized in `analysis.md`, holds the cap, the review's worst
-  case, and its reported cost.
+  case, its reported cost (`reviewActualUsd`, unknown once any review's cost is unknown), and what
+  the ledger recorded (`reviewHeldUsd`). `analysis.md` shows an unknown cost as "unknown (held $X)".
 
 ## Reusable Day 1 bases
 

@@ -1,15 +1,16 @@
-import { CLAUDE_PRICES, type ClaudeSpendLedger } from "@werewolf/llm";
+import { CLAUDE_MAX_ATTEMPTS, CLAUDE_PRICES, type ClaudeSpendLedger } from "@werewolf/llm";
 
 /** A cost counts only when it is a finite, non-negative number; otherwise it is unknown. */
 export const validUsd = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
 
-/** One attempt plus the Anthropic SDK's default two retries (packages/llm/src/anthropic.ts). */
-export const CLAUDE_MAX_ATTEMPTS = 3;
-
-/** A paid review (Claude) needs a per-run cap; Jev's cost is not counted (Cesar, 2026-10-23). */
+/** A Claude review needs a per-run cap; Jev's cost is not counted (Cesar, 2026-10-23). */
 export class MissingAnalysisSpendCapError extends Error {
   override name = "MissingAnalysisSpendCapError";
+}
+/** The review token budget is not a positive integer. */
+export class InvalidReviewTokenBudgetError extends Error {
+  override name = "InvalidReviewTokenBudgetError";
 }
 /** The review's worst case is over the run's cap; no call was made. */
 export class AnalysisSpendCapError extends Error {
@@ -44,21 +45,26 @@ export function reviewUsdPerToken(kind: string, model: string): number {
 }
 
 /**
- * Refuses a review spend the run cannot bound, before any call: a paid review needs a positive
- * cap, and its worst case (the whole token budget at the highest price, every attempt) must fit.
- * Returns that worst case. Jev's cost is not counted (Cesar's decision, 2026-10-23).
+ * Refuses a review spend the run cannot bound, before any call. A Claude review always needs a
+ * positive cap; the review token budget must be a positive integer; and the worst case (the whole
+ * budget at the highest price, every attempt) must fit under any cap. Returns that worst case.
+ * Jev's cost is not counted (Cesar's decision, 2026-10-23).
  */
 export function assertReviewSpendBounded(
   review: { kind: string; model: string; tokenBudget: number },
   maxSpendUsd: number | undefined,
 ): number {
-  const worstCase = review.tokenBudget * reviewUsdPerToken(review.kind, review.model);
-  if (maxSpendUsd === undefined) {
-    if (worstCase === 0) return 0;
+  const usdPerToken = reviewUsdPerToken(review.kind, review.model);
+  if (maxSpendUsd === undefined && review.kind === "anthropic")
     throw new MissingAnalysisSpendCapError(
       `Review provider ${review.kind} spends real credit: pass a per-run USD cap (--max-spend-usd; in the pilot, --analysis-max-spend-usd)`,
     );
-  }
+  if (!(Number.isSafeInteger(review.tokenBudget) && review.tokenBudget > 0))
+    throw new InvalidReviewTokenBudgetError(
+      `The review token budget must be a positive integer; got ${review.tokenBudget}`,
+    );
+  const worstCase = review.tokenBudget * usdPerToken;
+  if (maxSpendUsd === undefined) return worstCase;
   if (!(Number.isFinite(maxSpendUsd) && maxSpendUsd > 0))
     throw new Error(`The analysis spend cap must be a positive dollar amount; got ${maxSpendUsd}`);
   if (worstCase > maxSpendUsd)

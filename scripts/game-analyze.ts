@@ -154,6 +154,7 @@ export async function analyzeGame(options: AnalyzeOptions) {
         capUsd: options.maxSpendUsd ?? null,
         reviewWorstCaseUsd,
         reviewActualUsd: usage.costUsd,
+        reviewHeldUsd: usage.heldUsd,
       },
       moments: moments.map((moment) => ({
         id: moment.id,
@@ -221,6 +222,11 @@ export function reviewProvider(kind: DecisionProviderKind): {
 }
 
 const usd = (value: number | null) => (value === null ? "unknown" : `$${value.toFixed(4)}`);
+/** The review's actual cost, or "unknown (held $X)" with what the ledger recorded instead. */
+const actualCost = (spend: { reviewActualUsd: number | null; reviewHeldUsd: number | null }) =>
+  spend.reviewActualUsd === null && spend.reviewHeldUsd !== null
+    ? `unknown (held ${usd(spend.reviewHeldUsd)})`
+    : usd(spend.reviewActualUsd);
 
 function markdown(report: AnalysisReport) {
   const lines = [
@@ -232,7 +238,7 @@ function markdown(report: AnalysisReport) {
       `${report.usage.review.tokens} review tokens, ${usd(report.usage.review.costUsd)} reported cost.`,
     "",
     `Review spend cap ${usd(report.spend.capUsd)}: ${usd(report.spend.reviewWorstCaseUsd)} worst case, ` +
-      `${usd(report.spend.reviewActualUsd)} reported. Jev's cost is not counted toward the cap.`,
+      `${actualCost(report.spend)} reported. Jev's cost is not counted toward the cap.`,
     "",
   ];
   for (const review of report.reviews) {

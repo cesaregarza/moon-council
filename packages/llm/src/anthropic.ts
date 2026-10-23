@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import Anthropic from "@anthropic-ai/sdk";
 import { providerJsonSchema, unknownUsage, type UsageV2 } from "@werewolf/contracts";
 import {
@@ -22,8 +23,36 @@ export class ClaudeRefusalError extends Error {
     );
   }
 }
-/** Rate limited after the SDK's own retries, which honour retry-after, ran out. */
+/** Rate limited on every attempt; each retry honoured retry-after. */
 export class ClaudeRateLimitError extends Error {}
+
+/**
+ * Attempts per Claude call: one, plus up to two explicit retries of a retryable failure. The
+ * SDK's own retries are off, so every attempt is reserved, sent and settled on its own.
+ */
+export const CLAUDE_MAX_ATTEMPTS = 3;
+const MAX_RETRY_WAIT_MS = 60_000;
+
+type ClaudeApiError = InstanceType<typeof Anthropic.APIError>;
+/** Rate limits (429) and server errors, overload (529) included, are worth another attempt. */
+const retryable = (error: unknown): error is ClaudeApiError =>
+  error instanceof Anthropic.APIError &&
+  typeof error.status === "number" &&
+  (error.status === 429 || error.status >= 500);
+
+/** The wait the API asked for (retry-after-ms, then retry-after), else backoff from 0.5 s. */
+function retryDelayMs(error: ClaudeApiError, attempt: number): number {
+  const header = (name: string) => error.headers?.get(name) ?? "";
+  const ms = Number.parseFloat(header("retry-after-ms"));
+  const seconds = Number.parseFloat(header("retry-after"));
+  const asked = Number.isFinite(ms)
+    ? ms
+    : Number.isFinite(seconds)
+      ? seconds * 1_000
+      : Date.parse(header("retry-after")) - Date.now();
+  if (asked > 0 && asked <= MAX_RETRY_WAIT_MS) return asked;
+  return Math.min(500 * 2 ** (attempt - 1), 8_000);
+}
 
 type Effort = NonNullable<Anthropic.OutputConfig["effort"]>;
 const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -295,8 +324,8 @@ export class AnthropicMessagesProvider implements DecisionProvider {
     else {
       const apiKey = options.apiKey ?? process.env.ANTHROPIC_API_KEY;
       if (!apiKey) throw new Error("ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic");
-      // SDK retries (default 2) honour retry-after; exhaustion becomes ClaudeRateLimitError.
-      this.client = new Anthropic({ apiKey });
+      // No hidden retries: decide() retries itself, reserving every attempt.
+      this.client = new Anthropic({ apiKey, maxRetries: 0 });
     }
     this.ledger = options.ledger ?? new ClaudeSpendLedger();
     this.maxTokensCap = configuredOutputCap(options.maxTokensCap);
@@ -314,52 +343,94 @@ export class AnthropicMessagesProvider implements DecisionProvider {
     assertClaudePriced(body.model);
     assertTextOnly(body);
     if (request.signal?.aborted) throw new Error("Claude decision aborted");
-    const reservationId = randomUUID();
     const reservation = claudeReservationUsd(
       body.model,
       promptCeilingTokens(body),
       body.max_tokens,
     );
-    this.ledger.reserve(reservationId, reservation);
-    const spent = { usd: reservation }; // unknown usage keeps the worst case
-    let usageReported = false;
+    const call: ClaudeCall = { recordedUsd: 0, held: false, sent: false };
+    const reported = { usage: false, metadata: false };
     const tracked: DecisionRequest<T> = {
       ...request,
       onUsage: (usage, metadata) => {
-        usageReported = true;
+        reported.usage = true;
         request.onUsage?.(usage, metadata);
+      },
+      onProviderMetadata: (metadata) => {
+        reported.metadata = true;
+        request.onProviderMetadata?.(metadata);
       },
     };
     const signals = [request.signal, request.timeoutMs && AbortSignal.timeout(request.timeoutMs)];
     const signal = AbortSignal.any(signals.filter((s): s is AbortSignal => Boolean(s)));
     try {
       request.onProviderRequest?.(body as unknown as Record<string, unknown>);
-      const message = await this.client.messages.stream(body, { signal }).finalMessage();
-      // Invalid raw usage yields no cost: the held reservation settles, and no cost is trusted.
-      // Usage is parsed once; the settled cost and the reported usage both come from it.
-      const record = parseClaudeUsage(message.usage);
-      const cost = recordCostUsd(body.model, record, markedTtls(body));
-      if (cost !== null) spent.usd = cost;
-      return claudeResult(tracked, message, cost, mappedUsage(record));
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const sent = await this.attempt(body, reservation, signal, call);
+          const spend = call.held ? { heldUsd: call.recordedUsd } : { costUsd: sent.cost! };
+          return claudeResult(tracked, sent.message, spend, sent.usage);
+        } catch (error) {
+          if (!retryable(error) || attempt >= CLAUDE_MAX_ATTEMPTS) throw error;
+          await sleep(retryDelayMs(error, attempt), undefined, { signal });
+        }
+      }
     } catch (error) {
-      if (!usageReported)
+      if (call.sent && !reported.usage)
         request.onUsage?.(unknownUsage(), {
           provider: "anthropic",
           model: body.model,
           outputLimitEnforced: true,
         });
+      if (call.sent && !reported.metadata)
+        request.onProviderMetadata?.({ model: body.model, heldUsd: call.recordedUsd });
       throw claudeFailure(error, signal);
-    } finally {
-      this.ledger.settle(reservationId, spent.usd);
     }
   }
+
+  /**
+   * One attempt: reserve its worst case, send, then settle. It settles at its actual cost when
+   * usage parses (Rule U); a failure or unknown usage keeps the reservation.
+   */
+  private async attempt(
+    body: Anthropic.MessageCreateParamsNonStreaming,
+    reservation: number,
+    signal: AbortSignal,
+    call: ClaudeCall,
+  ) {
+    const id = randomUUID();
+    this.ledger.reserve(id, reservation);
+    call.sent = true;
+    let cost: number | null = null;
+    try {
+      const message = await this.client.messages.stream(body, { signal }).finalMessage();
+      // Usage is parsed once; the settled cost and the reported usage both come from it.
+      const record = parseClaudeUsage(message.usage);
+      cost = recordCostUsd(body.model, record, markedTtls(body));
+      return { message, cost, usage: mappedUsage(record) };
+    } finally {
+      this.ledger.settle(id, cost ?? reservation);
+      call.recordedUsd += cost ?? reservation;
+      if (cost === null) call.held = true;
+    }
+  }
+}
+
+/**
+ * What a call's attempts recorded in the ledger. `held` is set once any attempt settled at its
+ * reservation: the call's cost is then unknown, and only the recorded total is reported.
+ */
+interface ClaudeCall {
+  recordedUsd: number;
+  held: boolean;
+  sent: boolean;
 }
 
 /** Records usage and metadata, then decodes the structured answer. */
 function claudeResult<T>(
   request: DecisionRequest<T>,
   message: Anthropic.Message,
-  costUsd: number | null,
+  spend: { costUsd: number } | { heldUsd: number },
   usage: UsageV2,
 ): DecisionResult<T> {
   request.onUsage?.(usage, {
@@ -372,7 +443,8 @@ function claudeResult<T>(
     model: message.model,
     stopReason: message.stop_reason,
     stopDetails: message.stop_details ?? null,
-    ...(costUsd === null ? {} : { costUsd }),
+    // costUsd only when every attempt settled at its actual cost; otherwise what was held.
+    ...spend,
   });
   if (message.stop_reason === "refusal")
     throw new ClaudeRefusalError(
@@ -404,7 +476,7 @@ function claudeResult<T>(
 /** Names rate-limit and timeout failures; everything else propagates unchanged. */
 function claudeFailure(error: unknown, signal: AbortSignal): unknown {
   if (error instanceof Anthropic.RateLimitError)
-    return new ClaudeRateLimitError("Claude rate limit persisted after SDK retries", {
+    return new ClaudeRateLimitError("Claude rate limit persisted on every attempt", {
       cause: error,
     });
   if (signal.aborted && !(error instanceof ClaudeRefusalError))
