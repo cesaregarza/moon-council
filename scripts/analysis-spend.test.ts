@@ -131,6 +131,7 @@ describe("analysis review spend cap", () => {
   it("stops by name before sending a call whose reservation would pass the cap", async () => {
     const ledger = monthly();
     const cap = spendCap(ledger);
+    cap.allow(1);
     const { client, bodies } = fakeClient([message(), message()]);
     const provider = new AnthropicMessagesProvider({ client, ledger: cap });
     await provider.decide(request());
