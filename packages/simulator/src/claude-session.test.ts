@@ -162,7 +162,18 @@ function call(
     },
     16_000,
   );
-  return { turn, body, text: JSON.stringify(body) };
+  return { turn, body, text: JSON.stringify(body), packet, prepared };
+}
+
+/** Every text the session request carries: both system blocks and every message block. */
+function sessionTexts(body: ReturnType<typeof call>["body"]): string {
+  const blocks = [
+    ...(Array.isArray(body.system) ? body.system : []),
+    ...body.messages.flatMap((message) =>
+      typeof message.content === "string" ? [] : message.content,
+    ),
+  ];
+  return blocks.map((block) => ("text" in block ? block.text : "")).join("\n");
 }
 
 let replies = 0;
@@ -279,6 +290,35 @@ describe("Claude session harness", () => {
     expect(JSON.stringify(seerTurn.body.system)).not.toContain(CANARY.inspection);
   });
 
+  // Felix's Rule P (CES-1556 ruling 03e1982a): a fresh session never shows a seat less
+  // authorized public information than the original v3.2 public layer.
+  it("carries every public item the original renderer emits, for every seat and stage", () => {
+    const game = scriptedGame();
+    const sessions = new ClaudeSessions(game.store);
+    const seats = game.state.players.map((player) => player.id);
+    const check = (day: number) => {
+      for (const seat of seats) {
+        sessions.close(game.gameId, seat);
+        const step = call(game, sessions, seat, day);
+        const original = JSON.parse(step.prepared.prompt.publicInput!).PUBLIC_GAME_STATE as {
+          players: unknown[];
+          evidence: { handle: string }[];
+        };
+        const session = sessionTexts(step.body);
+        // halcyon's case: a seat with no legal targets still sees every player, silent ones too.
+        for (const player of original.players) expect(session).toContain(JSON.stringify(player));
+        for (const record of original.evidence)
+          expect(session).toContain(`"handle":"${record.handle}"`);
+      }
+    };
+    check(1);
+    game.speech(game.wolves[0]!, 1, CANARY.public);
+    check(1);
+    game.secrets();
+    game.speech(game.seer, 2);
+    check(2);
+  });
+
   it("pins thinking, effort and the output schema for the whole session", () => {
     const game = scriptedGame();
     const sessions = new ClaudeSessions(game.store);
@@ -365,6 +405,67 @@ describe("Claude session harness", () => {
     });
     call(game, sessions, game.villager, 1);
     expect(sessions.load(game.gameId, game.villager)!.id).not.toBe(opened);
+  });
+
+  // Felix's Rule O: a persisted session is replayed only for its own game and seat.
+  describe("session ownership on load", () => {
+    const anomalies = (game: Game) =>
+      game.store.get<{ playerId: string; reason: string }[]>(
+        game.gameId,
+        "claude-session-anomalies",
+      ) ?? [];
+
+    it("refuses another seat's session behind a seat's pointer", () => {
+      // halcyon's fixture: the villager's current pointer names the seer's valid session.
+      const game = scriptedGame();
+      const sessions = new ClaudeSessions(game.store);
+      const seerTurn = call(game, sessions, game.seer, 1, {
+        journal: { ...emptyJournalV2(), text: CANARY.journal },
+      });
+      answer(seerTurn.turn);
+      game.store.put(
+        game.gameId,
+        `claude-session-current:${game.villager}`,
+        seerTurn.turn.metadata.id,
+      );
+      const step = call(game, sessions, game.villager, 1);
+      expect(step.text).not.toContain(CANARY.journal);
+      expect(sessions.load(game.gameId, game.villager)?.playerId).toBe(game.villager);
+      expect(anomalies(game)).toMatchObject([{ playerId: game.villager }]);
+    });
+
+    it("refuses a session record from another game", () => {
+      const other = scriptedGame();
+      const otherSessions = new ClaudeSessions(other.store);
+      const otherTurn = call(other, otherSessions, other.seer, 1, {
+        journal: { ...emptyJournalV2(), text: CANARY.journal },
+      });
+      answer(otherTurn.turn);
+      const foreign = otherSessions.load(other.gameId, other.seer)!;
+      const game = scriptedGame();
+      const sessions = new ClaudeSessions(game.store);
+      game.store.put(game.gameId, `claude-session:${foreign.id}`, foreign);
+      game.store.put(game.gameId, `claude-session-current:${game.seer}`, foreign.id);
+      const step = call(game, sessions, game.seer, 1);
+      expect(step.text).not.toContain(CANARY.journal);
+      expect(anomalies(game)).toMatchObject([{ playerId: game.seer }]);
+    });
+
+    it("refuses a schema-invalid session record", () => {
+      const game = scriptedGame();
+      const sessions = new ClaudeSessions(game.store);
+      game.store.put(game.gameId, `claude-session:${game.seer}:d1:s1`, {
+        schemaVersion: "claude_session_v1",
+        id: `${game.seer}:d1:s1`,
+        playerId: game.seer,
+        turns: "not a list",
+      });
+      game.store.put(game.gameId, `claude-session-current:${game.seer}`, `${game.seer}:d1:s1`);
+      let step: ReturnType<typeof call> | undefined;
+      expect(() => (step = call(game, sessions, game.seer, 1))).not.toThrow();
+      expect(step?.turn.metadata.turn).toBe(0);
+      expect(anomalies(game)).toMatchObject([{ playerId: game.seer }]);
+    });
   });
 
   it("rebuilds the same request bytes from the database after a pause", () => {
