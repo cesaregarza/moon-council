@@ -161,10 +161,7 @@ export class ClaudeSpendLedger {
           }
       change(ledger);
       // Never write a state this ledger's own reader would reject; the file stays untouched.
-      if (!Ledger.safeParse(ledger).success)
-        throw new SpendLedgerError(
-          "Claude spend ledger update refused: the result would not be readable; nothing written",
-        );
+      // Mutant: stored-state check removed (evidence only).
       const temporary = `${this.path}.${process.pid}.tmp`;
       writeFileSync(temporary, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o600 });
       renameSync(temporary, this.path);
