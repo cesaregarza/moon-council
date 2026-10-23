@@ -15,12 +15,13 @@ function testFiles(): string[] {
 }
 
 /**
- * CES-1562: a `node_modules/.bin` launcher is an extensionless POSIX shim that Windows cannot
- * execute (ENOENT; its shim is a `.cmd`). Tests launch TypeScript scripts portably instead:
- * `process.execPath` with tsx's loader (`--import tsx`).
+ * CES-1562: a package's `.bin` launcher under node_modules is an extensionless POSIX shim that
+ * Windows cannot execute (ENOENT; its shim is a `.cmd`), so no test file names that path. Tests
+ * launch TypeScript scripts portably instead: `process.execPath` with tsx's loader
+ * (`--import tsx`).
  */
 describe("test launchers", () => {
-  it("never spawn a node_modules/.bin shim directly", () => {
+  it("never spawn a package's .bin shim directly", () => {
     const offenders = testFiles().filter((file) =>
       readFileSync(join(root, file), "utf8").includes(shim),
     );
