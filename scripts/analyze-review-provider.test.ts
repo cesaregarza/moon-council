@@ -4,9 +4,10 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /**
- * CES-1564: every analysis run spends real credit (Jev, and the review model), so it needs a
- * per-run USD cap. Without one the run is refused by name before Jev or any review provider is
- * constructed, from both the standalone CLI and the pilot's preflight. Construction is spied.
+ * CES-1564: an analysis whose review spends real credit (Claude) needs a per-run USD cap; Jev's
+ * cost is not counted (Cesar, 2026-10-23). Without the cap the run is refused by name before Jev
+ * or any review provider is constructed, from both the standalone CLI and the pilot's preflight.
+ * Construction is spied.
  */
 const calls = vi.hoisted(() => ({ created: [] as string[], anthropic: 0, jev: 0 }));
 vi.mock("@werewolf/llm", async (importOriginal) => {
@@ -71,11 +72,6 @@ const analyzeArgs = (provider: string, ...extra: string[]) => [
   ...review(provider),
   ...extra,
 ];
-/**
- * The operator's explicit acceptance that the cap enforces an estimate (input-only Jev billing,
- * framing within the observed range, the local Jev rate), not a hard limit.
- */
-const ACKNOWLEDGED = "--accept-estimated-jev-cost";
 const nothingConstructed = () => {
   expect(calls.created).toEqual([]);
   expect(calls.anthropic).toBe(0);
@@ -89,40 +85,17 @@ describe("analysis review provider", () => {
     nothingConstructed();
   });
 
-  it("refuses any review kind in the CLI without a spend cap: Jev always spends", async () => {
+  it("runs a free review in the CLI without a spend cap: Jev's cost is not counted", async () => {
     const run = runScript("game-analyze.ts", analyzeArgs("fake"));
-    await expect(run).rejects.toMatchObject({ name: "MissingAnalysisSpendCapError" });
-    nothingConstructed();
+    // The missing database stops the run after the providers are built.
+    await expect(run).rejects.toThrow();
+    expect(calls.created).toEqual(["fake"]);
+    expect(calls.jev).toBe(1);
   });
 
   it("refuses an unpriced review provider in the CLI, before Jev or any provider", async () => {
     const run = runScript("game-analyze.ts", analyzeArgs("openai", "--max-spend-usd", "20"));
     await expect(run).rejects.toMatchObject({ name: "UnpricedReviewModelError" });
-    nothingConstructed();
-  });
-
-  it("refuses a paid CLI run without the estimated-cost acknowledgement, before Jev or any provider", async () => {
-    const run = runScript("game-analyze.ts", analyzeArgs("fake", "--max-spend-usd", "20"));
-    await expect(run).rejects.toMatchObject({ name: "UnacknowledgedJevCostError" });
-    nothingConstructed();
-  });
-
-  it("refuses a pilot analysis without the estimated-cost acknowledgement, before any game", async () => {
-    const run = runScript("pilot.ts", [
-      "--provider",
-      "fake",
-      "--analyze",
-      ...review("anthropic"),
-      "--analysis-max-spend-usd",
-      "20",
-      "--db",
-      "$DIR/game.db",
-      "--out",
-      "$DIR/out",
-      "--mode",
-      "bogus",
-    ]);
-    await expect(run).rejects.toMatchObject({ name: "UnacknowledgedJevCostError" });
     nothingConstructed();
   });
 
@@ -145,10 +118,7 @@ describe("analysis review provider", () => {
   });
 
   it("constructs Claude only through the run's spend cap in the CLI", async () => {
-    const run = runScript(
-      "game-analyze.ts",
-      analyzeArgs("anthropic", "--max-spend-usd", "20", ACKNOWLEDGED),
-    );
+    const run = runScript("game-analyze.ts", analyzeArgs("anthropic", "--max-spend-usd", "20"));
     // The missing database (or a missing key) stops the run after construction.
     await expect(run).rejects.toThrow();
     expect(calls.created).toEqual([]);
@@ -156,10 +126,7 @@ describe("analysis review provider", () => {
   });
 
   it("still constructs an existing review kind in the CLI", async () => {
-    const run = runScript(
-      "game-analyze.ts",
-      analyzeArgs("fake", "--max-spend-usd", "20", ACKNOWLEDGED),
-    );
+    const run = runScript("game-analyze.ts", analyzeArgs("fake", "--max-spend-usd", "20"));
     // The missing database stops the run after the review provider is built.
     await expect(run).rejects.toThrow();
     expect(calls.created).toEqual(["fake"]);

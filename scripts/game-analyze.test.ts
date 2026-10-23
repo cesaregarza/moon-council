@@ -388,21 +388,21 @@ describe("post-game surprise analyzer", () => {
     ).toBeNull();
     expect(postGameAnalysisRequest({})).toBeNull();
     expect(() => postGameAnalysisRequest({ analyze: true })).toThrow(/--review-provider/);
-    // An accepted request: a priced review model, the analysis's own cap, and the operator's
-    // acceptance that the cap is an estimate (CES-1564). Cast so this compiles before the flag.
+    // A paid review needs the analysis's own cap; a free one does not (CES-1564).
     const request = {
       analyze: true,
       "review-provider": "anthropic",
       "review-model": "claude-haiku-5-5",
-      "analysis-max-spend-usd": "20",
     };
-    expect(() => postGameAnalysisRequest(request)).toThrow(/accept-estimated-jev-cost/);
+    expect(() => postGameAnalysisRequest(request)).toThrow(/analysis-max-spend-usd/);
+    expect(postGameAnalysisRequest({ ...request, "analysis-max-spend-usd": "20" })).toEqual({
+      kind: "anthropic",
+      model: "claude-haiku-5-5",
+      maxSpendUsd: 20,
+    });
     expect(
-      postGameAnalysisRequest({
-        ...request,
-        "accept-estimated-jev-cost": true,
-      } as Parameters<typeof postGameAnalysisRequest>[0]),
-    ).toEqual({ kind: "anthropic", model: "claude-haiku-5-5", maxSpendUsd: 20 });
+      postGameAnalysisRequest({ analyze: true, "review-provider": "fake", "review-model": "m" }),
+    ).toEqual({ kind: "fake", model: "m" });
   });
 });
 
@@ -725,10 +725,10 @@ describe("post-game analyzer safety and accounting", () => {
 });
 
 /**
- * CES-1564: one USD cap bounds the whole analysis run. Before the first paid call, the worst case
- * (every Jev request at its byte size, at the Jev rate with margin, plus the review token budget
- * at the review model's highest price) must fit under it; Claude reviews then reserve against
- * what the cap leaves after Jev's worst case, and stop by name when a call would not fit.
+ * CES-1564, after Cesar's decision of 2026-10-23 to ignore Jev costs: the per-run cap bounds the
+ * Claude review only. Before the first call, the review's worst case (its token budget at the
+ * model's highest price, for every attempt) must fit under the cap; Claude reviews then reserve
+ * against the cap and stop by name when a call would not fit. A free review needs no cap.
  */
 describe("analysis spend cap", () => {
   interface SpendCap {
@@ -736,21 +736,21 @@ describe("analysis spend cap", () => {
     reserve(id: string, usd: number): void;
     settle(id: string, usd: number): void;
   }
-  // Read through a cast so this file compiles before the analyzer exports these (tests first).
+  // Read through a cast so this file compiles against either report shape (tests first).
   const api = analysis as unknown as {
     ReviewSpendCap?: new (ledger: Pick<SpendCap, "reserve" | "settle">) => SpendCap;
     ReviewSpendLimitError?: new (message: string) => Error;
   };
   interface Spend {
-    capUsd: number;
-    estimateUsd: { jev: number; review: number; total: number };
-    actualUsd: { jev: number | null; review: number | null };
+    capUsd: number | null;
+    reviewWorstCaseUsd: number;
+    reviewActualUsd: number | null;
   }
   const spendOf = (report: unknown) => (report as { spend: Spend }).spend;
   const options = (fields: Record<string, unknown>) =>
     fields as unknown as Parameters<typeof analyzeGame>[0];
 
-  /** Counts Jev's calls and keeps each request exactly as the analyzer sent it. */
+  /** Counts Jev's calls. */
   function countedJev(game: ReturnType<typeof recordedGame>) {
     const jev = scriptedJev(game.moments);
     const inputs: string[] = [];
@@ -787,66 +787,66 @@ describe("analysis spend cap", () => {
     );
     return { run, jev, reviewer, spendCap };
   }
-  /**
-   * The bound: a Jev call's billed input tokens never exceed the UTF-8 bytes of the full request
-   * as the client sends it, plus a fixed framing allowance. ask-jev re-sends the request with
-   * Python's ", " and ": " separators; the same JSON with a one-space indent is never shorter.
-   */
-  const JEV_FRAMING_TOKENS = 512;
-  const requestCeiling = (input: string) =>
-    Buffer.byteLength(JSON.stringify(JSON.parse(input), null, 1), "utf8") + JEV_FRAMING_TOKENS;
-  // $0.042 per million input tokens (~/.claude/skills/jev/scripts/jev.py:182), with 1.5x margin.
-  const JEV_USD_PER_TOKEN = (0.042 * 1.5) / 1_000_000;
   // Haiku 5.5's highest rate is $2.50/M (long-context output); each review may be sent three
-  // times (one attempt plus the SDK's two retries).
-  const HAIKU_MAX_USD_PER_TOKEN = 2.5 / 1_000_000;
-  const CLAUDE_MAX_ATTEMPTS = 3;
+  // times (one attempt plus the SDK's two retries): 200,000 tokens is $1.50.
+  const REVIEW_WORST_CASE = (200_000 * 2.5 * 3) / 1_000_000;
 
-  it("estimates the worst case from each Jev request's ceiling and every review attempt", async () => {
+  it("counts the review's budget at its highest price, every attempt, against the cap", async () => {
     const game = recordedGame(fixture);
     const { run, jev, spendCap } = haikuRun(game, 20);
     const report = await run;
     const spend = spendOf(report);
-    expect(jev.inputs).toHaveLength(7);
-    const tokens = jev.inputs.reduce((total, input) => total + requestCeiling(input), 0);
     expect(spend.capUsd).toBe(20);
-    expect(spend.estimateUsd.jev).toBeCloseTo(tokens * JEV_USD_PER_TOKEN, 12);
-    expect(spend.estimateUsd.review).toBeCloseTo(
-      200_000 * HAIKU_MAX_USD_PER_TOKEN * CLAUDE_MAX_ATTEMPTS,
-      12,
-    );
-    expect(spend.estimateUsd.total).toBeCloseTo(
-      spend.estimateUsd.jev + spend.estimateUsd.review,
-      12,
-    );
-    // Actual usage sits next to the estimate: Jev's reported input tokens at the rate, no margin.
-    expect(spend.actualUsd.jev).toBeCloseTo((7 * 10 * 0.042) / 1_000_000, 15);
-    expect(spend.actualUsd.review).toBe(report.usage.review.costUsd);
+    expect(spend.reviewWorstCaseUsd).toBeCloseTo(REVIEW_WORST_CASE, 12);
+    expect(spend.reviewActualUsd).toBe(report.usage.review.costUsd);
+    // Jev's usage is reported for information only.
+    expect(jev.inputs).toHaveLength(7);
+    expect(report.usage.jev).toMatchObject({ calls: 7, inputTokens: 70 });
     const markdown = readFileSync(join(game.directory, "analysis", "analysis.md"), "utf8");
-    expect(markdown).toContain(`$${spend.estimateUsd.total.toFixed(4)} worst case`);
-    // Reviews may reserve only what the cap leaves after Jev's worst case.
-    const left = 20 - spend.estimateUsd.jev;
-    expect(() => spendCap.reserve("over", left + 1e-9)).toThrow();
-    expect(() => spendCap.reserve("under", left - 1e-9)).not.toThrow();
+    expect(markdown).toContain(`$${REVIEW_WORST_CASE.toFixed(4)} worst case`);
+    // Reviews may reserve up to the whole cap.
+    expect(() => spendCap.reserve("over", 20 + 1e-9)).toThrow();
+    expect(() => spendCap.reserve("under", 20 - 1e-9)).not.toThrow();
   });
 
-  it("refuses a cap one cent below the worst case before any Jev or review call", async () => {
-    const first = haikuRun(recordedGame(fixture), 20);
-    const worst = spendOf(await first.run).estimateUsd.total;
+  it("does not count Jev's cost: a cap just above the review's worst case runs every call", async () => {
     const game = recordedGame(fixture);
-    const { run, jev, reviewer } = haikuRun(game, worst - 0.01);
+    const { run, jev, reviewer } = haikuRun(game, REVIEW_WORST_CASE + 1e-6);
+    await expect(run).resolves.toBeDefined();
+    expect(jev.inputs).toHaveLength(7);
+    expect(reviewer.calls.length).toBeGreaterThan(0);
+  });
+
+  it("refuses a cap one cent below the review's worst case before any Jev or review call", async () => {
+    const game = recordedGame(fixture);
+    const { run, jev, reviewer } = haikuRun(game, REVIEW_WORST_CASE - 0.01);
     await expect(run).rejects.toMatchObject({ name: "AnalysisSpendCapError" });
     expect(jev.inputs).toHaveLength(0);
     expect(reviewer.calls).toHaveLength(0);
     expect(existsSync(join(game.directory, "analysis", "analysis.json"))).toBe(false);
   });
 
-  it("refuses a run without a cap by name before any call", async () => {
+  it("refuses a paid review without a cap by name before any call", async () => {
     const game = recordedGame(fixture);
     const { run, jev, reviewer } = haikuRun(game, undefined);
     await expect(run).rejects.toMatchObject({ name: "MissingAnalysisSpendCapError" });
     expect(jev.inputs).toHaveLength(0);
     expect(reviewer.calls).toHaveLength(0);
+  });
+
+  it("runs a free review without a cap", async () => {
+    const game = recordedGame(fixture);
+    const report = await analyzeGame(
+      options({
+        dbPath: game.dbPath,
+        gameId: game.gameId,
+        outDir: join(game.directory, "analysis"),
+        jev: scriptedJev(game.moments),
+        jevModel: "jev-latest",
+        review: { provider: scriptedReviewer(plain).provider, kind: "fake", model: "review" },
+      }),
+    );
+    expect(spendOf(report)).toMatchObject({ capUsd: null, reviewWorstCaseUsd: 0 });
   });
 
   it("refuses Claude reviews that do not reserve through the run's cap", async () => {
