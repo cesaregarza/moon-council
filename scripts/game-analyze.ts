@@ -5,15 +5,39 @@ import { parseArgs } from "node:util";
 import { DecisionStore, LabRepository, openDatabaseReadOnly } from "@werewolf/db";
 import { reduceGame } from "@werewolf/engine";
 import {
+  AnthropicMessagesProvider,
   AskJevProvider,
+  ClaudeSpendLedger,
   createDecisionProvider,
   loadProviderEnvironment,
   selectedProviderKind,
   type DecisionProvider,
+  type DecisionProviderKind,
 } from "@werewolf/llm";
-import { collectMoments, publicViews, selectForReview } from "./lib/analyze-moments";
+import {
+  analysisWorstCase,
+  assertSpendCap,
+  assertWithinCap,
+  jevActualUsd,
+  JEV_RATE_MARGIN,
+  JEV_USD_PER_MILLION_INPUT,
+  ReviewSpendCap,
+} from "./lib/analysis-spend";
+import {
+  collectMoments,
+  publicRequests,
+  publicViews,
+  selectForReview,
+} from "./lib/analyze-moments";
 import { assertSafeReportPaths, writeReportAtomically } from "./lib/analyze-output";
-import { assertReviewProviderBounded, reviewMoments, type ReviewItem } from "./lib/analyze-review";
+import {
+  assertReviewProviderBounded,
+  reviewMoments,
+  UncappedReviewSpendError,
+  type ReviewItem,
+} from "./lib/analyze-review";
+
+export { ReviewSpendCap, ReviewSpendLimitError } from "./lib/analysis-spend";
 
 export interface AnalyzeOptions {
   dbPath: string;
@@ -21,7 +45,10 @@ export interface AnalyzeOptions {
   outDir: string;
   jev: DecisionProvider;
   jevModel: string;
-  review: { provider: DecisionProvider; kind: string; model: string };
+  /** Claude reviews reserve each call through `spendCap`, which the preflight sizes. */
+  review: { provider: DecisionProvider; kind: string; model: string; spendCap?: ReviewSpendCap };
+  /** One USD cap for the whole run: every Jev call and every review. */
+  maxSpendUsd: number;
   cap?: number;
   recall?: number;
   tokenBudget?: number;
@@ -42,6 +69,17 @@ function assertNumericOptions(options: AnalyzeOptions): void {
     if (value !== undefined && !(Number.isInteger(value) && value >= min && value <= max))
       throw new Error(`${name} must be an integer from ${min} to ${max}; got ${value}`);
   }
+}
+
+/** Refuses a run the analysis cannot bound, before the database is opened or any call is made. */
+function assertAnalysisBounded(options: AnalyzeOptions): void {
+  assertNumericOptions(options);
+  assertSpendCap(options.maxSpendUsd);
+  assertReviewProviderBounded(options.review.kind, options.review.model);
+  if (options.review.kind === "anthropic" && !options.review.spendCap)
+    throw new UncappedReviewSpendError(
+      "Claude reviews must reserve each call through the analysis run's spend cap",
+    );
 }
 
 function jevUsage(calls: Awaited<ReturnType<typeof publicViews>>["jevCalls"]) {
@@ -68,8 +106,7 @@ function jevUsage(calls: Awaited<ReturnType<typeof publicViews>>["jevCalls"]) {
  * written next to the run's research.json and never committed.
  */
 export async function analyzeGame(options: AnalyzeOptions) {
-  assertNumericOptions(options);
-  assertReviewProviderBounded(options.review.kind);
+  assertAnalysisBounded(options);
   assertSafeReportPaths(options.dbPath, options.outDir);
   const connection = openDatabaseReadOnly(options.dbPath);
   try {
@@ -77,13 +114,16 @@ export async function analyzeGame(options: AnalyzeOptions) {
     const game = repository.getGame(options.gameId);
     if (!game) throw new Error(`Unknown game: ${options.gameId}`);
     const sources = collectMoments(repository, new DecisionStore(repository), game);
-    const { moments, jevCalls } = await publicViews(
-      repository,
-      game,
-      sources,
-      options.jev,
-      options.jevModel,
+    const tokenBudget = options.tokenBudget ?? 200_000;
+    // Preflight: the worst case must fit under the cap before the first paid call.
+    const requests = publicRequests(repository, game, sources, options.jevModel);
+    const worstCase = analysisWorstCase(
+      requests.flatMap((built) => (built ? [built.request] : [])),
+      { ...options.review, tokenBudget },
     );
+    assertWithinCap(worstCase, options.maxSpendUsd);
+    options.review.spendCap?.allow(options.maxSpendUsd - worstCase.jev);
+    const { moments, jevCalls } = await publicViews(sources, requests, options.jev);
     const selected = selectForReview(moments, {
       cap: options.cap ?? 12,
       recall: options.recall ?? 2,
@@ -102,10 +142,11 @@ export async function analyzeGame(options: AnalyzeOptions) {
       provider: options.review.provider,
       model: options.review.model,
       maxOutputTokens: options.maxOutputTokens ?? 4_000,
-      tokenBudget: options.tokenBudget ?? 200_000,
+      tokenBudget,
       events,
       roles,
     });
+    const jev = jevUsage(jevCalls);
     const report = {
       schemaVersion: "game_analysis_v1",
       gameId: game.id,
@@ -113,7 +154,16 @@ export async function analyzeGame(options: AnalyzeOptions) {
         jev: options.jevModel,
         review: { provider: options.review.kind, model: options.review.model },
       },
-      usage: { jev: jevUsage(jevCalls), review: usage },
+      usage: { jev, review: usage },
+      spend: {
+        capUsd: options.maxSpendUsd,
+        estimateUsd: worstCase,
+        actualUsd: { jev: jevActualUsd(jev.inputTokens), review: usage.costUsd },
+        assumptions: {
+          jevUsdPerMillionInputTokens: JEV_USD_PER_MILLION_INPUT,
+          jevRateMargin: JEV_RATE_MARGIN,
+        },
+      },
       moments: moments.map((moment) => ({
         id: moment.id,
         kind: moment.kind,
@@ -155,13 +205,30 @@ export function postGameAnalysisRequest(values: {
   analyze?: boolean;
   "review-provider"?: string;
   "review-model"?: string;
-}): { kind: string; model: string } | null {
+  "analysis-max-spend-usd"?: string;
+}): { kind: string; model: string; maxSpendUsd: number } | null {
   if (!values.analyze) return null;
   if (!values["review-provider"] || !values["review-model"])
     throw new Error("--analyze requires --review-provider and --review-model");
-  assertReviewProviderBounded(values["review-provider"]);
-  return { kind: values["review-provider"], model: values["review-model"] };
+  const maxSpendUsd = dollars(values["analysis-max-spend-usd"]);
+  assertSpendCap(maxSpendUsd);
+  assertReviewProviderBounded(values["review-provider"], values["review-model"]);
+  return { kind: values["review-provider"], model: values["review-model"], maxSpendUsd };
 }
+
+const dollars = (value: string | undefined) => (value === undefined ? undefined : Number(value));
+
+/** The review provider; Claude reserves every call through a run cap in front of the monthly ledger. */
+export function reviewProvider(kind: DecisionProviderKind): {
+  provider: DecisionProvider;
+  spendCap?: ReviewSpendCap;
+} {
+  if (kind !== "anthropic") return { provider: createDecisionProvider(kind) };
+  const spendCap = new ReviewSpendCap(new ClaudeSpendLedger());
+  return { provider: new AnthropicMessagesProvider({ ledger: spendCap }), spendCap };
+}
+
+const usd = (value: number | null) => (value === null ? "unknown" : `$${value.toFixed(4)}`);
 
 function markdown(report: AnalysisReport) {
   const lines = [
@@ -170,7 +237,11 @@ function markdown(report: AnalysisReport) {
     `Jev ${report.models.jev}; review ${report.models.review.provider}:${report.models.review.model}. ` +
       `${report.moments.length} moments; ${report.usage.jev.calls} Jev calls, ` +
       `${report.usage.jev.totalTokens ?? "unknown"} Jev tokens; ${report.usage.review.calls} reviews, ` +
-      `${report.usage.review.tokens} review tokens, ${report.usage.review.costUsd === null ? "unknown" : `$${report.usage.review.costUsd.toFixed(4)}`} reported cost.`,
+      `${report.usage.review.tokens} review tokens, ${usd(report.usage.review.costUsd)} reported cost.`,
+    "",
+    `Spend cap $${report.spend.capUsd}: ${usd(report.spend.estimateUsd.total)} worst case ` +
+      `(Jev ${usd(report.spend.estimateUsd.jev)}, review ${usd(report.spend.estimateUsd.review)}); ` +
+      `actual Jev ${usd(report.spend.actualUsd.jev)} at the assumed rate, review ${usd(report.spend.actualUsd.review)} reported.`,
     "",
   ];
   for (const review of report.reviews) {
@@ -189,7 +260,7 @@ function markdown(report: AnalysisReport) {
 
 function usage(): never {
   console.error(
-    "Usage: npm run game:analyze -- --db PATH --game ID --out DIR --review-provider KIND --review-model MODEL [--jev-model jev-latest] [--cap 12] [--recall 2] [--review-token-budget 200000] [--review-max-output 4000]\nOpens the database read-only. Calls Jev once per decision and the review model once per selected moment; both spend real credit.",
+    "Usage: npm run game:analyze -- --db PATH --game ID --out DIR --review-provider KIND --review-model MODEL --max-spend-usd USD [--jev-model jev-latest] [--cap 12] [--recall 2] [--review-token-budget 200000] [--review-max-output 4000]\nOpens the database read-only. Calls Jev once per decision and the review model once per selected moment; both spend real credit. The run is refused before any call when its worst case exceeds --max-spend-usd.",
   );
   process.exit(2);
 }
@@ -202,6 +273,7 @@ async function main(): Promise<void> {
       out: { type: "string" },
       "review-provider": { type: "string" },
       "review-model": { type: "string" },
+      "max-spend-usd": { type: "string" },
       "jev-model": { type: "string", default: "jev-latest" },
       cap: { type: "string", default: "12" },
       recall: { type: "string", default: "2" },
@@ -212,17 +284,20 @@ async function main(): Promise<void> {
   if (!values.db || !values.game || !values.out) usage();
   // No default review model: a silent choice would change cost and results.
   if (!values["review-provider"] || !values["review-model"]) usage();
+  // Refused before Jev or the review provider is constructed.
+  const maxSpendUsd = dollars(values["max-spend-usd"]);
+  assertSpendCap(maxSpendUsd);
   loadProviderEnvironment();
   const kind = selectedProviderKind(values["review-provider"]);
-  // Refused before either provider is constructed.
-  assertReviewProviderBounded(kind);
+  assertReviewProviderBounded(kind, values["review-model"]);
   const report = await analyzeGame({
     dbPath: resolve(values.db),
     gameId: values.game,
     outDir: resolve(values.out),
     jev: new AskJevProvider(),
     jevModel: values["jev-model"]!,
-    review: { provider: createDecisionProvider(kind), kind, model: values["review-model"] },
+    review: { ...reviewProvider(kind), kind, model: values["review-model"] },
+    maxSpendUsd,
     cap: Number(values.cap),
     recall: Number(values.recall),
     tokenBudget: Number(values["review-token-budget"]),

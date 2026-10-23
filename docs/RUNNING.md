@@ -169,7 +169,7 @@ marked unobserved.
 
 ```bash
 npm run game:analyze -- --db /native/path/game.db --game GAME_ID --out RUN_DIRECTORY \
-  --review-provider anthropic --review-model MODEL
+  --review-provider anthropic --review-model claude-haiku-5-5 --max-spend-usd 20
 ```
 
 The analyzer opens the database read-only. For every committed ballot with a recorded Jev
@@ -188,8 +188,9 @@ the review model, plus 2 random routine moments as a recall check (`--recall`).
 - The review is capped by `--review-token-budget` (default 200,000 tokens). A review is admitted
   only if the budget covers its prompt (bounded by its bytes) plus `--review-max-output`, and it
   settles to the reported usage. Codex providers do not enforce an output cap, so they are refused
-  as review providers. Claude (`anthropic`) is refused too, until a per-run USD cap for analysis is
-  designed.
+  as review providers. OpenAI is refused as unpriced: there is no OpenAI price table, so its spend
+  cannot be bounded (see the spend cap below). The usable review providers are Claude (`anthropic`)
+  with a priced model, and `fake`.
 - Each review gets the player's decision-time briefing exactly as Jev received it (for a kill, each
   wolf's). Every cited event must be one the player could see before deciding, or the review is
   rejected and marked. For a kill, each knowledge claim names its wolf and is checked against that
@@ -200,11 +201,70 @@ the review model, plus 2 random routine moments as a recall check (`--recall`).
   or SHM file, a link, or any file that is not one of its own previous reports. The reports hold
   moderator data, so never commit them. They record the models, Jev's tokens per call, and the
   review's tokens and reported cost.
-- Both Jev and the review model spend real credit. Claude reviews count against the monthly spend
-  ledger.
-- `npm run pilot -- ... --analyze --review-provider KIND --review-model MODEL` runs the analyzer
-  automatically after a completed game. It is off by default, and a failure never changes the game
-  record.
+- `npm run pilot -- ... --analyze --review-provider KIND --review-model MODEL --analysis-max-spend-usd USD`
+  runs the analyzer automatically after a completed game. It is off by default, and a failure never
+  changes the game record. The pilot's `--max-spend-usd` is the game's own Claude cap; the analysis
+  has its own.
+
+#### Analysis spend cap
+
+Every analysis run calls Jev, so every run spends real credit and needs `--max-spend-usd` (in the
+pilot, `--analysis-max-spend-usd`). Without it, the run is refused by name
+(`MissingAnalysisSpendCapError`) before Jev or any review provider is built. Cesar's policy is at
+most $20 per run. That is a policy for choosing the flag's value, not a limit in the code.
+
+The cap enforces an estimate made under the assumptions below. It is not a guaranteed ceiling on the
+bill. Before the first paid call, the analyzer builds every Jev request from the stored game and
+sums a worst case over every paid call site:
+
+| Call site                                                                                                      | Attempts                                                                                           | Worst case per call                                                                          |
+| -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Jev prediction, one per decision with a signal, before selection: `askJev` in `scripts/lib/analyze-moments.ts` | 1: ask-jev sends one request with no automatic retry (`~/.local/bin/ask-jev`, its `--help` epilog) | (request bytes + 512) × $0.042/M × 1.5                                                       |
+| Review, one per selected moment, recall checks included: `reviewOne` in `scripts/lib/analyze-review.ts`        | 3: one plus the Anthropic SDK's default two retries                                                | the whole `--review-token-budget` × the model's highest per-token price × 3, for all reviews |
+
+The recall check selects from moments Jev has already predicted, so it makes no Jev call of its own.
+No other path in the analyzer spends.
+
+- **Jev bound.** A Jev call's billed input token count is assumed never to exceed the UTF-8 byte
+  count of the full request as the client sends it, plus 512 tokens for any provider-side framing.
+  The request is measured as JSON with a one-space indent, which is never shorter than what ask-jev
+  sends (it re-serializes with Python's `", "` and `": "` separators).
+- **Evidence.** ask-jev's request logs record each request and its billed `input_tokens`: 2,421
+  calls on the desktop (2026-09-23 to 2026-10-21, all `jev-1.13.0`) and 3 on the Pi. Across these
+  2,424 calls, billed input tokens ranged from 0.216 to 0.567 of the request's bytes as sent, so the
+  bound held in every call. The smallest request (884 bytes) billed 501 tokens. A fixed framing
+  overhead is therefore at most 501 tokens, which the 512-token allowance covers even for a request
+  smaller than any logged. These are logged calls, not a vendor guarantee.
+- **Billing semantics.** TypeSafe's home page (https://typesafe.ai) lists Jev at $42 per billion
+  input tokens and names no output price. Zuplo's gateway documentation
+  (https://zuplo.com/docs/ai-gateway/jev) states $0.042 per million input tokens with output free,
+  citing TypeSafe's Models page. No first-party page found says output is free, so input-only
+  billing is a disclosed assumption.
+- **Rate.** $0.042 per million input tokens, from the jev tooling
+  (`~/.claude/skills/jev/scripts/jev.py:182`, `tokens * 0.042 / 1e6`). It is a local assumption,
+  matched by the home page above, with a 1.5 margin over it.
+- **Review prices.** Taken from `packages/llm/src/anthropic-pricing.ts` (Anthropic's pricing page,
+  read 2026-10-22). For `claude-haiku-5-5` the highest rate is $2.50 per million, so the default
+  200,000-token budget is $1.50 with every attempt counted.
+- **Unpriced providers.** A review model without a price (any OpenAI model, an unlisted Claude
+  model) is refused (`UnpricedReviewModelError`), because its spend cannot be bounded.
+
+If the worst case exceeds the cap, the run is refused by name (`AnalysisSpendCapError`) with no Jev
+or review call. Otherwise Claude reviews run under a per-call check:
+
+- Each review reserves its own worst case, which the provider prices from its request bytes and
+  output cap. The reservation counts against what the cap leaves after Jev's worst case, and against
+  the monthly spend ledger.
+- The reservation then settles to the reported cost. Unknown usage keeps the reservation.
+- A call that would not fit is not sent. It and every later review are marked `skipped_spend_cap`
+  (`ReviewSpendLimitError`).
+
+Jev's spend is bounded only by the preflight, because Jev reports tokens but no cost.
+
+The report's `spend` block, also summarized in `analysis.md`, holds the cap, the estimated worst
+case (Jev, review, total) and the actual usage. The actual Jev cost is the reported input tokens at
+the assumed rate, with no margin. The actual review cost is the reported cost. Either one is unknown
+when any call's usage is unknown.
 
 ## Reusable Day 1 bases
 

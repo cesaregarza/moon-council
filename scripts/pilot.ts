@@ -14,7 +14,7 @@ import {
 } from "@werewolf/llm";
 import { V2GameOrchestrator } from "../packages/simulator/src/orchestrator-v2";
 import { auditGameV2 } from "../packages/simulator/src/audit-v2";
-import { analyzeGame, postGameAnalysisRequest } from "./game-analyze";
+import { analyzeGame, postGameAnalysisRequest, reviewProvider } from "./game-analyze";
 import { observerPayload, decisionRecords } from "../apps/api/src/observer";
 
 loadProviderEnvironment();
@@ -42,6 +42,7 @@ const { values } = parseArgs({
     analyze: { type: "boolean" },
     "review-provider": { type: "string" },
     "review-model": { type: "string" },
+    "analysis-max-spend-usd": { type: "string" },
     "max-spend-usd": { type: "string" },
     "max-minutes": { type: "string", default: "30" },
     provider: { type: "string", default: "fake" },
@@ -179,7 +180,7 @@ if (
   throw new Error("Inspection filters require --inspect-bundle");
 if (values.help) {
   console.log(
-    "Usage: npm run pilot -- --provider fake|codex|openai|anthropic --model MODEL --effort xhigh --seed SEED [--decision-engine llm|jev] [--jev-model jev-latest] [--max-output-tokens 8192] [--max-calls 500] [--max-tokens unlimited|NUMBER] [--max-spend-usd USD (required for anthropic)] [--analyze --review-provider KIND --review-model MODEL] [--max-minutes 30] [--mode gated|single] [--parallel 4] [--speaker-bias 0.25] [--db NATIVE_PATH] [--out DIRECTORY] [--pause-at-first-night]\nNew games use protocol V3.1: stable public E refs and per-player private R refs, small task-specific model responses, reactive listener bids, selected-only speech generation, sparse memory, and a full Day 1 before Night 1. Add --pause-at-first-night to pause after Day 1 ballots, before any Night 1 work. Resume the SAME game: --db DB --game ID --resume (omit the pause flag). Audit only: --db DB --game ID --audit. Acknowledge a final semantic anomaly without model calls: --db DB --game ID --acknowledge-semantic DECISION --operator-note NOTE (commits the recorded ballot and stays paused). Add --snapshot to export an immutable SQLite backup in the output directory. Live providers require an explicit model; never substitute another model. Artifacts are moderator-spoiler JSON and Markdown; no credentials or hidden reasoning traces.",
+    "Usage: npm run pilot -- --provider fake|codex|openai|anthropic --model MODEL --effort xhigh --seed SEED [--decision-engine llm|jev] [--jev-model jev-latest] [--max-output-tokens 8192] [--max-calls 500] [--max-tokens unlimited|NUMBER] [--max-spend-usd USD (required for anthropic)] [--analyze --review-provider KIND --review-model MODEL --analysis-max-spend-usd USD] [--max-minutes 30] [--mode gated|single] [--parallel 4] [--speaker-bias 0.25] [--db NATIVE_PATH] [--out DIRECTORY] [--pause-at-first-night]\nNew games use protocol V3.1: stable public E refs and per-player private R refs, small task-specific model responses, reactive listener bids, selected-only speech generation, sparse memory, and a full Day 1 before Night 1. Add --pause-at-first-night to pause after Day 1 ballots, before any Night 1 work. Resume the SAME game: --db DB --game ID --resume (omit the pause flag). Audit only: --db DB --game ID --audit. Acknowledge a final semantic anomaly without model calls: --db DB --game ID --acknowledge-semantic DECISION --operator-note NOTE (commits the recorded ballot and stays paused). Add --snapshot to export an immutable SQLite backup in the output directory. Live providers require an explicit model; never substitute another model. Artifacts are moderator-spoiler JSON and Markdown; no credentials or hidden reasoning traces.",
   );
   process.exit(0);
 }
@@ -562,7 +563,8 @@ if (analysisRequest && !values.audit && audit.status === "completed") {
       outDir: directory,
       jev: new AskJevProvider(),
       jevModel: decisionEngine.model,
-      review: { provider: createDecisionProvider(kind), kind, model: analysisRequest.model },
+      review: { ...reviewProvider(kind), kind, model: analysisRequest.model },
+      maxSpendUsd: analysisRequest.maxSpendUsd,
     });
     console.log(JSON.stringify({ kind: "analysis", path: join(directory, "analysis.json") }));
   } catch (error) {

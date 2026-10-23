@@ -7,6 +7,7 @@ import type { DecisionProvider } from "@werewolf/llm";
 import { z } from "zod";
 import { actorBriefing } from "../../packages/simulator/src/jev-actor";
 import { currentDecisionBrief } from "../../packages/simulator/src/player-brief";
+import { ReviewSpendLimitError, reviewUsdPerToken, validUsd } from "./analysis-spend";
 import { checkCitations } from "./analyze-citations";
 import type { MomentSource } from "./analyze-moments";
 import type { ClassifiedMoment } from "./surprise-scoring";
@@ -43,14 +44,10 @@ export interface ReviewItem {
 
 export type ReviewOutcome =
   | { status: "accepted" | "rejected_citation"; review: MomentReview; issues: string[] }
-  | { status: "skipped_budget" | "failed"; error?: string };
+  | { status: "skipped_budget" | "skipped_spend_cap" | "failed"; error?: string };
 
 /** Review providers whose output cap is not enforced (Codex), so a token budget cannot hold. */
 const UNENFORCED_OUTPUT_LIMIT_KINDS = new Set(["codex", "codex_direct"]);
-/** A reported cost counts only when it is a finite, non-negative number; otherwise it is unknown. */
-export const validUsd = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value) && value >= 0;
-
 /** A cost total: unknown once any part is unknown or the sum is not finite (sticky). */
 export function addCosts(total: number | null, part: unknown): number | null {
   if (total === null || !validUsd(part)) return null;
@@ -61,26 +58,21 @@ export function addCosts(total: number | null, part: unknown): number | null {
 export class UnenforcedOutputLimitError extends Error {
   override name = "UnenforcedOutputLimitError";
 }
-/**
- * Review kinds whose spend has no per-run USD cap for analysis yet. Claude spend is admitted
- * only through games with a required `maxSpendUsd` (CES-1554), so analysis refuses it until a
- * cap is designed (Felix's ruling f9f6d39f on CES-1040).
- */
-const UNCAPPED_SPEND_KINDS = new Set(["anthropic"]);
+/** A Claude review that does not reserve through the run's spend cap (CES-1564). */
 export class UncappedReviewSpendError extends Error {
   override name = "UncappedReviewSpendError";
 }
 
-/** Refuses a review provider the analysis cannot bound, before any provider is constructed. */
-export function assertReviewProviderBounded(kind: string): void {
-  if (UNCAPPED_SPEND_KINDS.has(kind))
-    throw new UncappedReviewSpendError(
-      `Review provider ${kind} is refused: a per-run USD cap for analysis is not designed yet`,
-    );
+/**
+ * Refuses a review provider the analysis cannot bound, before any provider is constructed:
+ * Codex kinds (no enforced output cap) and any model without a price.
+ */
+export function assertReviewProviderBounded(kind: string, model: string): void {
   if (UNENFORCED_OUTPUT_LIMIT_KINDS.has(kind))
     throw new UnenforcedOutputLimitError(
       `Review provider ${kind} does not enforce an output limit, so the review token budget cannot be held`,
     );
+  reviewUsdPerToken(kind, model);
 }
 
 /**
@@ -188,13 +180,19 @@ async function reviewOne(
     };
     return { ...call, outcome };
   } catch (error) {
-    const outcome: ReviewOutcome = {
-      status: "failed",
-      error: error instanceof Error ? error.message : String(error),
-    };
+    const message = error instanceof Error ? error.message : String(error);
+    // Refused before sending: nothing was spent, and no later review is admitted.
+    if (error instanceof ReviewSpendLimitError)
+      return { spent: 0, costUsd: 0, enforced: true, capped: true, outcome: capped(message) };
+    const outcome: ReviewOutcome = { status: "failed", error: message };
     return { ...call, outcome };
   }
 }
+
+const capped = (error?: string): ReviewOutcome => ({
+  status: "skipped_spend_cap",
+  ...(error ? { error } : {}),
+});
 
 /**
  * Reviews items in order. A review is admitted only if the remaining budget covers its prompt
@@ -204,7 +202,8 @@ async function reviewOne(
 export async function reviewMoments(items: ReviewItem[], options: ReviewOptions) {
   const usage = { calls: 0, tokens: 0, costUsd: 0 as number | null };
   const outcomes: ReviewOutcome[] = [];
-  let bounded = true;
+  /** Once set, the outcome of every remaining item: an unenforced cap, or the spend cap. */
+  let stopped: ReviewOutcome | null = null;
   for (const item of items) {
     const prompt = {
       instructions: REVIEW_INSTRUCTIONS,
@@ -213,16 +212,20 @@ export async function reviewMoments(items: ReviewItem[], options: ReviewOptions)
     const worstCase =
       Buffer.byteLength(JSON.stringify({ prompt, schema: REVIEW_JSON_SCHEMA }), "utf8") +
       options.maxOutputTokens;
-    if (!bounded || usage.tokens + worstCase > options.tokenBudget) {
-      outcomes.push({ status: "skipped_budget" });
+    if (stopped || usage.tokens + worstCase > options.tokenBudget) {
+      outcomes.push(stopped ?? { status: "skipped_budget" });
+      continue;
+    }
+    const call = await reviewOne(item, prompt, worstCase, options);
+    outcomes.push(call.outcome);
+    if ("capped" in call) {
+      stopped = capped();
       continue;
     }
     usage.calls += 1;
-    const call = await reviewOne(item, prompt, worstCase, options);
     usage.tokens += call.spent;
     usage.costUsd = addCosts(usage.costUsd, call.costUsd);
-    bounded = call.enforced;
-    outcomes.push(call.outcome);
+    if (!call.enforced) stopped = { status: "skipped_budget" };
   }
   return { outcomes, usage };
 }

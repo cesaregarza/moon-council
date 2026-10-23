@@ -249,7 +249,7 @@ async function analyze(night: Night, review: () => MomentReview = plain) {
     jev: counted,
     jevModel: "jev-latest",
     review: { provider: reviewer, kind: "fake", model: "review" },
-    ...({ maxSpendUsd: 20 } as object),
+    maxSpendUsd: 20,
   });
   const kills = report.moments.filter((m) => m.kind === "night_action");
   return { report, kills, dossiers, predictions };
