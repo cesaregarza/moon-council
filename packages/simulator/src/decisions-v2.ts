@@ -796,7 +796,7 @@ export class DecisionExecutorV2 {
             attemptId: attempt.id,
           };
           // The journal changed outside the session: the seat's next call opens a new one.
-          this.sessions.close(op.gameId, op.playerId);
+          void 0;
         }
         op.best = report;
         op.bestSubmission = compacting
