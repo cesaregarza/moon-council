@@ -235,11 +235,11 @@ No other path in the analyzer spends.
   bound held in every call. The smallest request (884 bytes) billed 501 tokens. A fixed framing
   overhead is therefore at most 501 tokens, which the 512-token allowance covers even for a request
   smaller than any logged. These are logged calls, not a vendor guarantee.
-- **Billing semantics.** TypeSafe's home page (https://typesafe.ai) lists Jev at $42 per billion
-  input tokens and names no output price. Zuplo's gateway documentation
-  (https://zuplo.com/docs/ai-gateway/jev) states $0.042 per million input tokens with output free,
-  citing TypeSafe's Models page. No first-party page found says output is free, so input-only
-  billing is a disclosed assumption.
+- **Billing semantics.** Input-only billing is the disclosed model. TypeSafe's home page
+  (https://typesafe.ai) prices only input, at $42 per billion input tokens. The jev skill
+  (`~/.claude/skills/jev/SKILL.md`, lines 9 and 10) documents "input-only billing". Zuplo's gateway
+  documentation (https://zuplo.com/docs/ai-gateway/jev) says output tokens are free. If TypeSafe
+  ever billed output, this estimate would not cover it, and Jev has no output cap to bound it with.
 - **Rate.** $0.042 per million input tokens, from the jev tooling
   (`~/.claude/skills/jev/scripts/jev.py:182`, `tokens * 0.042 / 1e6`). It is a local assumption,
   matched by the home page above, with a 1.5 margin over it.
