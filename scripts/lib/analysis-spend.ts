@@ -1,47 +1,17 @@
-import { CLAUDE_PRICES, type ClaudeSpendLedger, type JevRequest } from "@werewolf/llm";
+import { CLAUDE_PRICES, type ClaudeSpendLedger } from "@werewolf/llm";
 
 /** A cost counts only when it is a finite, non-negative number; otherwise it is unknown. */
 export const validUsd = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
 
-/**
- * Jev's rate: USD per million input tokens; output is free. Taken from the jev tooling,
- * `~/.claude/skills/jev/scripts/jev.py:182`, not from vendor documentation: an assumption.
- */
-export const JEV_USD_PER_MILLION_INPUT = 0.042;
-/** Headroom over the assumed Jev rate. */
-export const JEV_RATE_MARGIN = 1.5;
-/**
- * Tokens allowed per Jev call for any provider-side framing: a margin chosen from observation,
- * not a proven bound. In 2,424 logged calls (2026-09-23 to 2026-10-21), billed input ranged from
- * 0.216 to 0.567 of the request's bytes as sent, and the smallest bill was 501 tokens.
- */
-export const JEV_FRAMING_TOKENS = 512;
 /** One attempt plus the Anthropic SDK's default two retries (packages/llm/src/anthropic.ts). */
 export const CLAUDE_MAX_ATTEMPTS = 3;
 
-/** Every analysis run calls Jev, so it spends real credit and needs a per-run cap. */
+/** A paid review (Claude) needs a per-run cap; Jev's cost is not counted (Cesar, 2026-10-23). */
 export class MissingAnalysisSpendCapError extends Error {
   override name = "MissingAnalysisSpendCapError";
 }
-/**
- * A paid run without the operator's acceptance that its cap enforces an estimate: input-only Jev
- * billing, framing within the observed range, and the local Jev rate are assumptions.
- */
-export class UnacknowledgedJevCostError extends Error {
-  override name = "UnacknowledgedJevCostError";
-}
-export const ESTIMATE_ASSUMPTIONS =
-  "an estimate assuming input-only Jev billing, framing within the observed range, and the local Jev rate; not a hard limit";
-
-export function assertEstimateAcknowledged(accepted: boolean | undefined): void {
-  if (!accepted)
-    throw new UnacknowledgedJevCostError(
-      `The analysis cap is ${ESTIMATE_ASSUMPTIONS}. Pass --accept-estimated-jev-cost to run it`,
-    );
-}
-
-/** The preflight worst case is over the run's cap; no paid call was made. */
+/** The review's worst case is over the run's cap; no call was made. */
 export class AnalysisSpendCapError extends Error {
   override name = "AnalysisSpendCapError";
 }
@@ -49,18 +19,9 @@ export class AnalysisSpendCapError extends Error {
 export class UnpricedReviewModelError extends Error {
   override name = "UnpricedReviewModelError";
 }
-/** A Claude review call would pass what the run's cap leaves for reviews; it was not sent. */
+/** A Claude review call would pass the run's cap; it was not sent. */
 export class ReviewSpendLimitError extends Error {
   override name = "ReviewSpendLimitError";
-}
-
-export function assertSpendCap(maxSpendUsd: number | undefined): asserts maxSpendUsd is number {
-  if (maxSpendUsd === undefined)
-    throw new MissingAnalysisSpendCapError(
-      "Analysis requires a per-run USD cap (--max-spend-usd): every run calls Jev, which spends real credit",
-    );
-  if (!(Number.isFinite(maxSpendUsd) && maxSpendUsd > 0))
-    throw new Error(`The analysis spend cap must be a positive dollar amount; got ${maxSpendUsd}`);
 }
 
 /**
@@ -83,45 +44,34 @@ export function reviewUsdPerToken(kind: string, model: string): number {
 }
 
 /**
- * The input tokens one Jev call is assumed to bill at most: the UTF-8 bytes of the full request
- * as the client sends it, plus the framing allowance. ask-jev sends exactly one attempt and
- * re-serializes the request with Python's ", " and ": " separators; the same JSON with a
- * one-space indent is never shorter.
+ * Refuses a review spend the run cannot bound, before any call: a paid review needs a positive
+ * cap, and its worst case (the whole token budget at the highest price, every attempt) must fit.
+ * Returns that worst case. Jev's cost is not counted (Cesar's decision, 2026-10-23).
  */
-export function jevRequestCeilingTokens(request: JevRequest): number {
-  return Buffer.byteLength(JSON.stringify(request, null, 1), "utf8") + JEV_FRAMING_TOKENS;
-}
-
-/** The run's worst case: every Jev request, then the whole review token budget. */
-export function analysisWorstCase(
-  jevRequests: JevRequest[],
+export function assertReviewSpendBounded(
   review: { kind: string; model: string; tokenBudget: number },
-) {
-  const jevTokens = jevRequests.reduce((total, r) => total + jevRequestCeilingTokens(r), 0);
-  const jev = (jevTokens * JEV_USD_PER_MILLION_INPUT * JEV_RATE_MARGIN) / 1_000_000;
-  const reviewUsd = review.tokenBudget * reviewUsdPerToken(review.kind, review.model);
-  return { jev, review: reviewUsd, total: jev + reviewUsd };
-}
-
-export function assertWithinCap(
-  worstCase: ReturnType<typeof analysisWorstCase>,
-  maxSpendUsd: number,
-): void {
-  if (worstCase.total > maxSpendUsd)
-    throw new AnalysisSpendCapError(
-      `Analysis worst case $${worstCase.total.toFixed(4)} (Jev $${worstCase.jev.toFixed(4)}, review $${worstCase.review.toFixed(4)}) exceeds the $${maxSpendUsd} cap; no paid call was made`,
+  maxSpendUsd: number | undefined,
+): number {
+  const worstCase = review.tokenBudget * reviewUsdPerToken(review.kind, review.model);
+  if (maxSpendUsd === undefined) {
+    if (worstCase === 0) return 0;
+    throw new MissingAnalysisSpendCapError(
+      `Review provider ${review.kind} spends real credit: pass a per-run USD cap (--max-spend-usd; in the pilot, --analysis-max-spend-usd)`,
     );
-}
-
-/** Jev's actual input tokens at the assumed rate (no margin); unknown if any call is unknown. */
-export function jevActualUsd(inputTokens: number | null): number | null {
-  return inputTokens === null ? null : (inputTokens * JEV_USD_PER_MILLION_INPUT) / 1_000_000;
+  }
+  if (!(Number.isFinite(maxSpendUsd) && maxSpendUsd > 0))
+    throw new Error(`The analysis spend cap must be a positive dollar amount; got ${maxSpendUsd}`);
+  if (worstCase > maxSpendUsd)
+    throw new AnalysisSpendCapError(
+      `Review worst case $${worstCase.toFixed(4)} exceeds the $${maxSpendUsd} cap; no call was made`,
+    );
+  return worstCase;
 }
 
 /**
  * The run's cap for Claude reviews, in front of the monthly ledger. Each call's reservation must
- * fit in the allowance (what the cap leaves after Jev's worst case) beside everything already
- * spent or held; the monthly ledger then admits it too. Settling follows Rule L: an invalid
+ * fit in the allowance (the run's cap) beside everything already spent or held; the monthly
+ * ledger then admits it too. Settling follows Rule L: an invalid
  * amount counts as what was held. The allowance is zero until the preflight sets it.
  */
 export class ReviewSpendCap implements Pick<ClaudeSpendLedger, "reserve" | "settle"> {

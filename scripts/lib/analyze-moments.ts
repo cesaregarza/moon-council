@@ -221,48 +221,37 @@ export interface JevCallUsage {
   costUsd: number | null;
 }
 
-type PublicRequest = ReturnType<typeof publicBallotRequest>;
-
 /**
- * Jev's public-record request for each moment, built from the stored game without any call;
- * null for a moment that already has no signal (a broken pack invariant, a save).
+ * Jev predicts each decision from the public record alone: one call per moment that can carry
+ * a signal, none for a moment that already has none.
  */
-export function publicRequests(
+export async function publicViews(
   repository: LabRepository,
   game: GameRecord,
   sources: MomentSource[],
-  model: string,
-): (PublicRequest | null)[] {
-  return sources.map((source) => {
-    if (source.moment.noSignalReason) return null;
-    return source.moment.kind === "ballot"
-      ? publicBallotRequest(repository, game, {
-          actorId: source.moment.actorId,
-          decisionSequence: source.decisionSequence,
-          legalTargets: source.op?.packet.legalTargets ?? [],
-          model,
-        })
-      : publicDawnRequest(repository, game, { decisionSequence: source.decisionSequence, model });
-  });
-}
-
-/**
- * Jev predicts each decision from the public record alone: one call per built request, none for
- * a moment that already has no signal.
- */
-export async function publicViews(
-  sources: MomentSource[],
-  requests: (PublicRequest | null)[],
   jev: DecisionProvider,
+  model: string,
 ): Promise<{ moments: ClassifiedMoment[]; jevCalls: JevCallUsage[] }> {
   const classified: ClassifiedMoment[] = [];
   const jevCalls: JevCallUsage[] = [];
-  for (const [index, source] of sources.entries()) {
-    const built = requests[index];
-    if (!built) {
+  for (const source of sources) {
+    // A moment already without signal (a broken pack invariant, a save) costs no Jev call.
+    if (source.moment.noSignalReason) {
       classified.push(classifyMoment({ ...source.moment, publicView: {} }));
       continue;
     }
+    const built =
+      source.moment.kind === "ballot"
+        ? publicBallotRequest(repository, game, {
+            actorId: source.moment.actorId,
+            decisionSequence: source.decisionSequence,
+            legalTargets: source.op?.packet.legalTargets ?? [],
+            model,
+          })
+        : publicDawnRequest(repository, game, {
+            decisionSequence: source.decisionSequence,
+            model,
+          });
     const { response, usage } = await askJev(jev, built.request);
     jevCalls.push({ momentId: source.moment.id, ...usage });
     const answer = response.answers.prediction;

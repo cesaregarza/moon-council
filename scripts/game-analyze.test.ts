@@ -293,7 +293,7 @@ async function run(
   reviewer: ReturnType<typeof scriptedReviewer>,
   options: Partial<Parameters<typeof analyzeGame>[0]> & { kind?: string } = {},
 ) {
-  const { kind = "fake", maxSpendUsd = 20, ...rest } = options;
+  const { kind = "fake", ...rest } = options;
   return analyzeGame({
     dbPath: game.dbPath,
     gameId: game.gameId,
@@ -301,7 +301,6 @@ async function run(
     jev: scriptedJev(game.moments),
     jevModel: "jev-latest",
     review: { provider: reviewer.provider, kind, model: "review" },
-    maxSpendUsd,
     ...rest,
   });
 }
@@ -577,7 +576,6 @@ describe("post-game analyzer safety and accounting", () => {
       jev: reporting,
       jevModel: "jev-latest",
       review: { provider: scriptedReviewer(plain).provider, kind: "fake", model: "review" },
-      maxSpendUsd: 20,
     });
     const jevUsage = (
       report.usage as unknown as { jev: { costUsd: unknown; perCall: { costUsd: unknown }[] } }
