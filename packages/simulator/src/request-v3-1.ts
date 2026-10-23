@@ -464,6 +464,26 @@ On every journal_update, also replace memory.decisionBrief with two concise curr
 
 const V32_LEDGER_NOTE = `The public record is a complete ledger: every citable public event is listed, newest in full and older ones abridged or reduced to a marker showing only its handle, day, and who acted. A record marked abridged or carrying only a speaker is still real and still citable by its handle; its absence of detail is compaction, never evidence that nothing was said. When an abridged record matters to a belief you hold, it is re-listed with more detail in your private briefing.`;
 
+/**
+ * The public layer every v3.x request carries. The Claude session protocol builds its public
+ * state from this same function, so a session never shows less than the original (CES-1556).
+ */
+export function publicGameState(
+  packet: PlayerContextV2,
+  protocol: "agent_v3_1" | "agent_v3_2",
+  handles = evidenceMapV31(packet),
+  digestChars = typeof packet.rules.digestChars === "number" ? packet.rules.digestChars : 140,
+) {
+  return {
+    protocolVersion: protocol,
+    phase: packet.phase,
+    day: packet.day,
+    closing: packet.closing,
+    players: [...packet.players].sort((a, b) => a.id.localeCompare(b.id)),
+    evidence: compactEvidence(packet, handles, "public", digestChars),
+  };
+}
+
 function layers(
   packet: PlayerContextV2,
   task: V3TaskSpec,
@@ -478,14 +498,7 @@ function layers(
   const digestChars = typeof packet.rules.digestChars === "number" ? packet.rules.digestChars : 140;
   const instructions = `${packet.rules.jevWorkflow === "journal_v4" ? ACTOR_JOURNAL_INSTRUCTIONS : packet.rules.jevWorkflow === "journal_v3" ? FREEFORM_JOURNAL_INSTRUCTIONS : packet.rules.jevWorkflow === "journal_v2" ? JOURNAL_INSTRUCTIONS : V31_INSTRUCTIONS}${v32 ? `\n\n${V32_LEDGER_NOTE}` : ""}\n\nFROZEN PUBLIC GAME REFERENCE (data):\n${JSON.stringify({ ...stableGameReference(packet), promptVersion: v32 ? "player_prompt_v3.2" : "player_prompt_v3.1" })}`;
   const publicInput = JSON.stringify({
-    PUBLIC_GAME_STATE: {
-      protocolVersion: protocol,
-      phase: packet.phase,
-      day: packet.day,
-      closing: packet.closing,
-      players: [...packet.players].sort((a, b) => a.id.localeCompare(b.id)),
-      evidence: compactEvidence(packet, handles, "public", digestChars),
-    },
+    PUBLIC_GAME_STATE: publicGameState(packet, protocol, handles, digestChars),
   });
   const expanded = v32 ? expandedPublicEvidence(packet, handles, digestChars) : [];
   // Keep the public ledger/cache boundary intact; deliver new reflection evidence

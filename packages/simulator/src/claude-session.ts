@@ -9,6 +9,7 @@ import {
   type ClaudeHarness,
   type ClaudeReplyContent,
 } from "./claude-session-request";
+import { z } from "zod";
 import { estimatedTokens } from "./request-v2";
 
 /**
@@ -17,6 +18,8 @@ import { estimatedTokens } from "./request-v2";
  */
 export interface ClaudeSessionRecord {
   schemaVersion: "claude_session_v1";
+  /** The owning game and seat: a record is replayed only for exactly these (Rule O). */
+  gameId: string;
   id: string;
   playerId: string;
   day: number;
@@ -69,15 +72,56 @@ export interface SessionTurn {
   commit(reply: { content: ClaudeReplyContent; stopReason: string | null; usage: UsageV2 }): void;
 }
 
+/** The stored shape a record must have before any of it is replayed. */
+const SessionRecordSchema = z.strictObject({
+  schemaVersion: z.literal("claude_session_v1"),
+  gameId: z.string(),
+  id: z.string(),
+  playerId: z.string(),
+  day: z.number().int(),
+  ordinal: z.number().int().positive(),
+  model: z.string(),
+  effort: z.string(),
+  systemBlocks: z.tuple([z.string(), z.string()]),
+  dayStart: z.string(),
+  openCursor: z.number().int(),
+  turnCursor: z.number().int(),
+  turns: z.array(
+    z.strictObject({ kind: z.string(), user: z.string(), assistant: z.array(z.unknown()) }),
+  ),
+  lastPromptTokens: z.number().nullable(),
+  lastTotalTokens: z.number().nullable(),
+  closed: z.boolean(),
+});
+
+const ANOMALIES_KEY = "claude-session-anomalies";
 const currentKey = (playerId: string) => `claude-session-current:${playerId}`;
 const recordKey = (id: string) => `claude-session:${id}`;
 
 export class ClaudeSessions {
   constructor(private readonly store: DecisionStore) {}
 
+  /**
+   * The seat's current session, only if its record passes the schema and belongs to this game
+   * and this seat (Rule O). Otherwise nothing is replayed: the pointer is dropped, an anomaly is
+   * recorded for audit, and the seat's next call opens a fresh session from its own data.
+   */
   load(gameId: string, playerId: string): ClaudeSessionRecord | undefined {
     const id = this.store.get<string>(gameId, currentKey(playerId));
-    return id ? this.store.get<ClaudeSessionRecord>(gameId, recordKey(id)) : undefined;
+    if (!id) return undefined;
+    const parsed = SessionRecordSchema.safeParse(this.store.get(gameId, recordKey(id)));
+    const reason = !parsed.success
+      ? "record missing or schema-invalid"
+      : parsed.data.gameId !== gameId
+        ? `record belongs to game ${parsed.data.gameId}`
+        : parsed.data.playerId !== playerId
+          ? `record belongs to seat ${parsed.data.playerId}`
+          : undefined;
+    if (!reason) return parsed.data as ClaudeSessionRecord;
+    const anomalies = this.store.get<unknown[]>(gameId, ANOMALIES_KEY) ?? [];
+    this.store.put(gameId, ANOMALIES_KEY, [...anomalies, { playerId, pointer: id, reason }]);
+    this.store.put(gameId, currentKey(playerId), null);
+    return undefined;
   }
 
   /** After a compaction the journal changed outside the session, so the next call reopens. */
@@ -143,11 +187,15 @@ export class ClaudeSessions {
   }
 
   private open(call: SessionCall, previous: ClaudeSessionRecord | undefined): ClaudeSessionRecord {
-    const ordinal = (previous?.ordinal ?? 0) + 1;
+    let ordinal = (previous?.ordinal ?? 0) + 1;
+    // A fresh session after a discarded pointer never overwrites an existing record.
+    const idOf = (n: number) => `${call.playerId}:d${call.packet.day}:s${n}`;
+    while (this.store.get(call.gameId, recordKey(idOf(ordinal))) !== undefined) ordinal += 1;
     const openCursor = orderedSources(call.packet).length - 1;
     const record: ClaudeSessionRecord = {
       schemaVersion: "claude_session_v1",
-      id: `${call.playerId}:d${call.packet.day}:s${ordinal}`,
+      gameId: call.gameId,
+      id: idOf(ordinal),
       playerId: call.playerId,
       day: call.packet.day,
       ordinal,

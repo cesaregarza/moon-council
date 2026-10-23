@@ -138,7 +138,11 @@ the same auction.
 - At game start and day start, the first seat's request goes alone and the others wait for its first
   streamed token, so they read the shared blocks instead of each writing them.
 - Turns are stored in the game database (moderator-only), so a resumed game rebuilds every session
-  byte-identically. `npm run cache:audit` lists session reads, writes and misses by call kind.
+  byte-identically. A stored session is replayed only for its own game and seat; anything else opens
+  a fresh session and is recorded as an anomaly. `npm run cache:audit` lists session reads, writes
+  and misses by call kind.
+- Each turn's NOW section carries the current public game state from the same renderer as the other
+  protocols (every player, alive or not), so a session never shows less public information.
 
 ```bash
 npm run pilot -- --provider anthropic --model claude-haiku-5-5 --decision-engine jev \

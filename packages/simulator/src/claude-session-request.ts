@@ -2,13 +2,13 @@ import { createHash } from "node:crypto";
 import type { ContextSourceV2, PlayerContextV2 } from "@werewolf/contracts";
 import type { DecisionRequest, DecisionResult } from "@werewolf/llm";
 import { journalText } from "./freeform-journal";
-import { evidenceMapV31, renderSource } from "./request-v3-1";
+import { evidenceMapV31, publicGameState, renderSource } from "./request-v3-1";
 
 export type ClaudeHarness = NonNullable<DecisionRequest<unknown>["claudeHarness"]>;
 export type ClaudeReplyContent = NonNullable<DecisionResult<unknown>["content"]>;
 
 /** Explains the session shape; part of system block 1, so identical for every seat and call. */
-export const SESSION_INSTRUCTIONS = `CONVERSATION FORMAT (Claude session): the second system block is the public record before today. Your first message holds your private state at the start of this day: journal, previous decision brief and private evidence. Each later message lists NEW_RECORDS you are authorized to see since your previous message, oldest first, then NOW (day, phase, response docket, any legal choices) and the REQUEST to answer. Your earlier replies in this conversation are your own previous answers; treat them as history. Answer only the current REQUEST, in the response envelope.`;
+export const SESSION_INSTRUCTIONS = `CONVERSATION FORMAT (Claude session): the second system block is the public record before today. Your first message holds your private state at the start of this day: journal, previous decision brief and private evidence. Each later message lists NEW_RECORDS you are authorized to see since your previous message, oldest first, then NOW (the current public game state with every player, the response docket and any legal choices) and the REQUEST to answer. Your earlier replies in this conversation are your own previous answers; treat them as history. Answer only the current REQUEST, in the response envelope.`;
 
 /**
  * Records the packet carries, in event order, without the synthetic `facts:*` entries. The
@@ -91,9 +91,11 @@ export function turnText(packet: PlayerContextV2, cursors: TurnCursors, requestI
     String.fromCharCode(97 + index),
     { playerId: id, name: packet.players.find((player) => player.id === id)?.name ?? id },
   ]);
+  // Rule P: the public state comes from the original v3.2 public layer (one source), so the
+  // roster and any other public field reach the seat. Its events arrive as records instead.
+  const { evidence: _events, ...publicState } = publicGameState(packet, "agent_v3_2", map);
   const now = {
-    day: packet.day,
-    phase: packet.phase,
+    ...publicState,
     responseDocket: packet.responseDocket.flatMap((id) => map.toAlias.get(id) ?? []),
     ...(choices.length ? { legalChoices: Object.fromEntries(choices) } : {}),
   };
