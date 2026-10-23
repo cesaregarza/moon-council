@@ -16,9 +16,9 @@ export const JEV_RATE_MARGIN = 1.5;
  * request log, 2026-09 and 2026-10), the smallest bill was 501 tokens, so a fixed framing is at
  * most that; billed input never passed 0.567 of the request's bytes as sent.
  */
-export const JEV_FRAMING_TOKENS = 512;
+export const JEV_FRAMING_TOKENS = 0;
 /** One attempt plus the Anthropic SDK's default two retries (packages/llm/src/anthropic.ts). */
-export const CLAUDE_MAX_ATTEMPTS = 3;
+export const CLAUDE_MAX_ATTEMPTS = 1;
 
 /** Every analysis run calls Jev, so it spends real credit and needs a per-run cap. */
 export class MissingAnalysisSpendCapError extends Error {

@@ -284,6 +284,7 @@ async function main(): Promise<void> {
   if (!values.db || !values.game || !values.out) usage();
   // No default review model: a silent choice would change cost and results.
   if (!values["review-provider"] || !values["review-model"]) usage();
+  const jev = new AskJevProvider();
   // Refused before Jev or the review provider is constructed.
   const maxSpendUsd = dollars(values["max-spend-usd"]);
   assertSpendCap(maxSpendUsd);
@@ -294,7 +295,7 @@ async function main(): Promise<void> {
     dbPath: resolve(values.db),
     gameId: values.game,
     outDir: resolve(values.out),
-    jev: new AskJevProvider(),
+    jev,
     jevModel: values["jev-model"]!,
     review: { ...reviewProvider(kind), kind, model: values["review-model"] },
     maxSpendUsd,
