@@ -451,6 +451,40 @@ describe("Claude session harness", () => {
       expect(anomalies(game)).toMatchObject([{ playerId: game.seer }]);
     });
 
+    // Rule O covers the persisted numbers (Felix's ruling 591e0493): a stored token count is
+    // null or a valid count, or the record is refused like any other invalid record.
+    /** A seat with one answered turn, whose stored record then has `field` set to `value`. */
+    function corrupted(field: "lastPromptTokens" | "lastTotalTokens", value: unknown) {
+      const game = scriptedGame();
+      const sessions = new ClaudeSessions(game.store);
+      answer(call(game, sessions, game.villager, 1).turn, 50_000);
+      const record = sessions.load(game.gameId, game.villager)!;
+      game.store.put(game.gameId, `claude-session:${record.id}`, { ...record, [field]: value });
+      return { game, sessions, id: record.id };
+    }
+    for (const field of ["lastPromptTokens", "lastTotalTokens"] as const)
+      it.each([-1, 1.5, "5", 2 ** 53])(`refuses a stored ${field} of %s`, (value) => {
+        const { game, sessions, id } = corrupted(field, value);
+        const step = call(game, sessions, game.villager, 1);
+        expect(step.turn.metadata.id).not.toBe(id);
+        expect(step.turn.metadata.turn).toBe(0);
+        expect(anomalies(game)).toMatchObject([{ playerId: game.villager }]);
+      });
+
+    it("renews a session whose stored total is null (NaN persists as null)", () => {
+      const { game, sessions, id } = corrupted("lastTotalTokens", Number.NaN);
+      const step = call(game, sessions, game.villager, 1);
+      expect(step.turn.metadata.id).not.toBe(id);
+      expect(step.turn.metadata.turn).toBe(0);
+    });
+
+    it("still resumes a session whose stored counts are valid", () => {
+      const { game, sessions, id } = corrupted("lastTotalTokens", 50_120);
+      const step = call(game, sessions, game.villager, 1);
+      expect(step.turn.metadata).toMatchObject({ id, turn: 1 });
+      expect(anomalies(game)).toEqual([]);
+    });
+
     it("refuses a schema-invalid session record", () => {
       const game = scriptedGame();
       const sessions = new ClaudeSessions(game.store);

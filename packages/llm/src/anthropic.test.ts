@@ -671,6 +671,39 @@ describe("Claude session replay ceilings", () => {
     expect(bodies).toHaveLength(0);
   });
 
+  it.each([-1, 1.5, Number.NaN, 2 ** 53])(
+    "reserves the whole body's byte ceiling when the replayed count is %s",
+    async (replayedTokens) => {
+      // halcyon's repro: a total of -1 would subtract from the ceiling. An invalid recorded count
+      // is never added; the reservation falls back to the exact serialized body.
+      const harness = {
+        system: [{ type: "text", text: "frozen" }],
+        messages: [
+          { role: "user", content: [{ type: "text", text: "history ".repeat(25_000) }] },
+          { role: "assistant", content: [{ type: "text", text: '{"choice":"b"}' }] },
+          { role: "user", content: [{ type: "text", text: "turn 2" }] },
+        ],
+        replayedTokens,
+      };
+      const { client, bodies } = fakeClient([message()]);
+      const reserved: number[] = [];
+      const book = {
+        reserve: (_id: string, usd: number) => reserved.push(usd),
+        settle: () => undefined,
+      };
+      await new AnthropicMessagesProvider({ client, ledger: book }).decide(
+        request({ claudeHarness: harness as never }),
+      );
+      expect(reserved).toEqual([
+        claudeReservationUsd(
+          "claude-haiku-5-5",
+          Buffer.byteLength(JSON.stringify(bodies[0]), "utf8"),
+          bodies[0]!.max_tokens,
+        ),
+      ]);
+    },
+  );
+
   it("refuses replayed thinking with no recorded usage, and thinking in the new turn", async () => {
     for (const harness of [
       replay(),
