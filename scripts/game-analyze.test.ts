@@ -293,7 +293,7 @@ async function run(
   reviewer: ReturnType<typeof scriptedReviewer>,
   options: Partial<Parameters<typeof analyzeGame>[0]> & { kind?: string } = {},
 ) {
-  const { kind = "fake", ...rest } = options;
+  const { kind = "fake", maxSpendUsd = 20, ...rest } = options;
   return analyzeGame({
     dbPath: game.dbPath,
     gameId: game.gameId,
@@ -301,8 +301,7 @@ async function run(
     jev: scriptedJev(game.moments),
     jevModel: "jev-latest",
     review: { provider: reviewer.provider, kind, model: "review" },
-    // Cast so the fixture compiles before the cap option exists (tests-first commit).
-    ...({ maxSpendUsd: 20 } as object),
+    maxSpendUsd,
     ...rest,
   });
 }
@@ -571,7 +570,7 @@ describe("post-game analyzer safety and accounting", () => {
       jev: reporting,
       jevModel: "jev-latest",
       review: { provider: scriptedReviewer(plain).provider, kind: "fake", model: "review" },
-      ...({ maxSpendUsd: 20 } as object),
+      maxSpendUsd: 20,
     });
     const jevUsage = (
       report.usage as unknown as { jev: { costUsd: unknown; perCall: { costUsd: unknown }[] } }
@@ -782,26 +781,33 @@ describe("analysis spend cap", () => {
     return { run, jev, reviewer, spendCap };
   }
   /**
-   * ask-jev re-sends the request with Python's ", " and ": " separators; the same JSON with a
-   * one-space indent is never shorter, and Jev bills input only, never less than a byte a token.
+   * The bound: a Jev call's billed input tokens never exceed the UTF-8 bytes of the full request
+   * as the client sends it, plus a fixed framing allowance. ask-jev re-sends the request with
+   * Python's ", " and ": " separators; the same JSON with a one-space indent is never shorter.
    */
-  const requestBytes = (input: string) =>
-    Buffer.byteLength(JSON.stringify(JSON.parse(input), null, 1), "utf8");
+  const JEV_FRAMING_TOKENS = 512;
+  const requestCeiling = (input: string) =>
+    Buffer.byteLength(JSON.stringify(JSON.parse(input), null, 1), "utf8") + JEV_FRAMING_TOKENS;
   // $0.042 per million input tokens (~/.claude/skills/jev/scripts/jev.py:182), with 1.5x margin.
-  const JEV_USD_PER_BYTE = (0.042 * 1.5) / 1_000_000;
-  // Haiku 5.5's highest rate is $2.50/M (long-context output).
+  const JEV_USD_PER_TOKEN = (0.042 * 1.5) / 1_000_000;
+  // Haiku 5.5's highest rate is $2.50/M (long-context output); each review may be sent three
+  // times (one attempt plus the SDK's two retries).
   const HAIKU_MAX_USD_PER_TOKEN = 2.5 / 1_000_000;
+  const CLAUDE_MAX_ATTEMPTS = 3;
 
-  it("estimates the worst case from each Jev request's bytes and the review budget", async () => {
+  it("estimates the worst case from each Jev request's ceiling and every review attempt", async () => {
     const game = recordedGame(fixture);
     const { run, jev, spendCap } = haikuRun(game, 20);
     const report = await run;
     const spend = spendOf(report);
     expect(jev.inputs).toHaveLength(7);
-    const bytes = jev.inputs.reduce((total, input) => total + requestBytes(input), 0);
+    const tokens = jev.inputs.reduce((total, input) => total + requestCeiling(input), 0);
     expect(spend.capUsd).toBe(20);
-    expect(spend.estimateUsd.jev).toBeCloseTo(bytes * JEV_USD_PER_BYTE, 12);
-    expect(spend.estimateUsd.review).toBeCloseTo(200_000 * HAIKU_MAX_USD_PER_TOKEN, 12);
+    expect(spend.estimateUsd.jev).toBeCloseTo(tokens * JEV_USD_PER_TOKEN, 12);
+    expect(spend.estimateUsd.review).toBeCloseTo(
+      200_000 * HAIKU_MAX_USD_PER_TOKEN * CLAUDE_MAX_ATTEMPTS,
+      12,
+    );
     expect(spend.estimateUsd.total).toBeCloseTo(
       spend.estimateUsd.jev + spend.estimateUsd.review,
       12,
