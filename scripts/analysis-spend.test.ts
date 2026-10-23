@@ -88,6 +88,7 @@ function fakeClient(replies: (Anthropic.Message | Error)[]) {
         bodies.push(body);
         const reply = replies.shift();
         return {
+          on: () => undefined,
           finalMessage: async () => {
             if (!reply) throw new Error("no scripted reply");
             if (reply instanceof Error) throw reply;

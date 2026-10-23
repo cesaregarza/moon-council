@@ -1,3 +1,4 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   GameConfigV2Schema,
@@ -587,5 +588,106 @@ describe("Claude spend admission from the exact request", () => {
       .map((attempt) => (attempt as { reservedUsd?: number }).reservedUsd);
     expect(reserved.length).toBeGreaterThan(0);
     expect(reserved).toEqual(reserved.map(() => 0.0123));
+  });
+});
+
+/**
+ * CES-1564, the #21/#30 second-lander condition: every explicit Claude retry attempt is admitted
+ * through admitSpend, and the game's cap counts what every attempt held. Driven through a real SDK
+ * client with its default retries, injected, and a scripted fetch: overloaded, overloaded, then a
+ * reply of 1,000 input and 100 output tokens.
+ */
+describe("Claude retries in the game's spend cap", () => {
+  const sse = (events: Record<string, unknown>[]) =>
+    events.map((e) => `event: ${String(e.type)}\ndata: ${JSON.stringify(e)}\n\n`).join("");
+  const reply = () =>
+    new Response(
+      sse([
+        {
+          type: "message_start",
+          message: {
+            id: "msg_1",
+            type: "message",
+            role: "assistant",
+            model: "claude-haiku-5-5",
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: {
+              input_tokens: 1_000,
+              output_tokens: 1,
+              cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0,
+            },
+          },
+        },
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: '{"choice":"a"}' },
+        },
+        { type: "content_block_stop", index: 0 },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 100 },
+        },
+        { type: "message_stop" },
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  const overloaded = () =>
+    new Response(
+      JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }),
+      { status: 529, headers: { "content-type": "application/json", "retry-after-ms": "1" } },
+    );
+
+  it("admits all three attempts, and a $0.003 cap then refuses the next call", async () => {
+    expect(spendAdmission).toBeTypeOf("function");
+    const game = ledger(0.003);
+    const record = game.attempt("claude-haiku-5-5", 1_000);
+    const admitted: number[] = [];
+    const admit = spendAdmission!(game.store, game.gameId, game.config, record);
+    const replies = [overloaded, overloaded, reply];
+    const sent: number[] = [];
+    const client = new Anthropic({
+      apiKey: "fake-anthropic-key-for-tests",
+      fetch: async () => {
+        sent.push(sent.length);
+        return replies.shift()!();
+      },
+    });
+    const month = recordingLedger();
+    await new AnthropicMessagesProvider({ client, ledger: month.ledger }).decide(
+      claudeCall({
+        maxOutputTokens: 1_000,
+        admitSpend: (usd: number) => {
+          admitted.push(usd);
+          admit(usd);
+        },
+        onUsage: (usage: ProviderAttemptRecord["usage"]) => (record.usage = usage),
+        onProviderMetadata: (metadata: Record<string, unknown>) =>
+          (record.providerMetadata = metadata),
+      }),
+    );
+    record.status = "valid";
+    game.store.updateAttempt(record);
+    expect(sent).toHaveLength(3);
+    expect(admitted).toHaveLength(3);
+    // Each admission is the call's running total: what earlier attempts hold, plus this one.
+    expect(admitted[1]).toBeCloseTo(2 * admitted[0]!, 15);
+    expect(admitted[2]).toBeCloseTo(3 * admitted[0]!, 15);
+    expect(month.reserved).toHaveLength(3);
+    // The next call's own worst case, $0.002 of output, no longer fits beside what was held.
+    const next = {
+      provider: "anthropic",
+      model: "claude-haiku-5-5",
+      inputTokens: 0,
+      maxOutputTokens: 4_000,
+    };
+    expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, true, next)).toThrow(
+      V2BudgetError,
+    );
   });
 });

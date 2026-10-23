@@ -920,6 +920,46 @@ describe("analysis spend cap", () => {
     expect(spend.reviewHeldUsd).toBeCloseTo(0.01 * (calls - 1) + 0.03, 12);
   });
 
+  it("keeps a call's cost unknown once its reports overflow, even after a valid report", async () => {
+    // halcyon's control: MAX_VALUE, MAX_VALUE, then $0.02 within each call.
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain);
+    const overflowing: DecisionProvider = {
+      decide: (request) =>
+        reviewer.provider.decide({
+          ...request,
+          onProviderMetadata: () => {
+            for (const costUsd of [Number.MAX_VALUE, Number.MAX_VALUE, 0.02])
+              request.onProviderMetadata?.({ costUsd });
+          },
+        }),
+    };
+    const report = await run(game, { ...reviewer, provider: overflowing });
+    expect(report.usage.review.costUsd).toBeNull();
+    expect(heldOf(report).reviewActualUsd).toBeNull();
+  });
+
+  it("counts the attempts a review sent, even when its retry was capped", async () => {
+    expect(api.ReviewSpendLimitError).toBeTypeOf("function");
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain);
+    const capped: DecisionProvider = {
+      decide: async (request) => {
+        if (reviewer.calls.length === 1) {
+          reviewer.calls.push("capped");
+          // Two attempts were sent and held; the third would pass the cap.
+          request.onProviderMetadata?.({ heldUsd: 0.05, attempts: 2 });
+          throw new api.ReviewSpendLimitError!("Analysis review cap reached");
+        }
+        return reviewer.provider.decide(request);
+      },
+    };
+    const report = await run(game, { ...reviewer, provider: capped });
+    expect(report.usage.review.calls).toBe(3);
+    expect(report.usage.review.tokens).toBeGreaterThan(1_000);
+    expect(heldOf(report).reviewHeldUsd).toBeCloseTo(0.01 + 0.05, 12);
+  });
+
   it("sums valid review costs exactly, held equal to actual", async () => {
     const game = recordedGame(fixture);
     const report = await run(game, scriptedReviewer(plain));

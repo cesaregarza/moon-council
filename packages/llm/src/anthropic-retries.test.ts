@@ -1,8 +1,10 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import * as anthropic from "./anthropic";
 import { AnthropicMessagesProvider } from "./anthropic";
 import type { DecisionRequest } from "./provider";
 import { ClaudeSpendLedger } from "./spend-ledger";
@@ -157,6 +159,8 @@ describe("Claude retries are explicit attempts", () => {
     const last = metadata.at(-1)!;
     expect(last).not.toHaveProperty("costUsd");
     expect(last.heldUsd).toBeCloseTo(recorded, 15);
+    // The call reports how many attempts it sent.
+    expect(last.attempts).toBe(3);
   });
 
   it("raises the failure after three attempts, every one settled at its reservation", async () => {
@@ -204,4 +208,137 @@ describe("Claude retries are explicit attempts", () => {
     expect(metadata.at(-1)!.costUsd).toBeCloseTo(ACTUAL, 15);
     expect(metadata.at(-1)).not.toHaveProperty("heldUsd");
   });
+
+  it("sends no hidden retries from an injected SDK client with default retries", async () => {
+    // halcyon's control: a real client built with the SDK's default two retries, injected.
+    const requests: string[] = [];
+    const replies = [overloaded, overloaded, success];
+    const client = new Anthropic({
+      apiKey: FAKE_API_KEY,
+      fetch: async (input: RequestInfo | URL) => {
+        requests.push(String(input instanceof Request ? input.url : input));
+        return replies.shift()!();
+      },
+    });
+    const book = recordedLedger();
+    const provider = new AnthropicMessagesProvider({ client, ledger: book.recording });
+    await expect(provider.decide(request([]))).resolves.toBeDefined();
+    expect(requests).toHaveLength(3);
+    expect(book.reserved).toHaveLength(3);
+  });
+
+  it("reports the reservation as held, and no cost, when settling throws", async () => {
+    scriptedFetch([success]);
+    const reserved: number[] = [];
+    const ledger = {
+      reserve: (_id: string, usd: number) => void reserved.push(usd),
+      settle: () => {
+        throw new Error("ledger unavailable");
+      },
+    };
+    const metadata: Record<string, unknown>[] = [];
+    const provider = new AnthropicMessagesProvider({ apiKey: FAKE_API_KEY, ledger });
+    await expect(provider.decide(request(metadata))).rejects.toThrow(/ledger unavailable/);
+    expect(reserved).toHaveLength(1);
+    const last = metadata.at(-1)!;
+    expect(last).not.toHaveProperty("costUsd");
+    expect(last.heldUsd).toBe(reserved[0]);
+  });
+
+  it("clamps a long Retry-After to 60 seconds instead of falling back to the short backoff", () => {
+    const delay = (anthropic as unknown as { retryDelayMs?: (e: unknown, n: number) => number })
+      .retryDelayMs;
+    expect(delay).toBeTypeOf("function");
+    const asking = (headers: Record<string, string>) =>
+      Anthropic.APIError.generate(
+        529,
+        { type: "error", error: { type: "overloaded_error", message: "Overloaded" } },
+        "Overloaded",
+        new Headers(headers),
+      );
+    expect(delay!(asking({ "retry-after": "120" }), 1)).toBe(60_000);
+    expect(delay!(asking({ "retry-after-ms": "250" }), 1)).toBe(250);
+    expect(delay!(asking({}), 2)).toBe(1_000);
+  });
+
+  it("keeps the warm gate working across explicit retries", async () => {
+    // The first call's first attempt fails before streaming: the gate passes to the waiting
+    // sibling, and the retry waits until that sibling streams.
+    const started: string[] = [];
+    const finishes: (() => void)[] = [];
+    const client: anthropic.ClaudeClient = {
+      messages: {
+        stream(body) {
+          const seat = JSON.stringify(body.messages).includes("seat 1") ? "seat 1" : "seat 2";
+          started.push(seat);
+          const failing = seat === "seat 1" && started.filter((s) => s === "seat 1").length === 1;
+          let listener: ((event: Anthropic.MessageStreamEvent) => void) | undefined;
+          let finish!: () => void;
+          const done = new Promise<void>((resolve) => (finish = resolve));
+          finishes.push(() => {
+            listener?.({
+              type: "content_block_start",
+              index: 0,
+              content_block: { type: "text", text: "", citations: null },
+            } as Anthropic.MessageStreamEvent);
+            finish();
+          });
+          return {
+            on: (_event, handler) => (listener = handler),
+            finalMessage: async () => {
+              if (failing) throw overloadedError();
+              await done;
+              return streamedMessage();
+            },
+            abort: () => undefined,
+          };
+        },
+      },
+    };
+    const provider = new AnthropicMessagesProvider({ client, ledger: recordedLedger().recording });
+    const gated = (turn: string) =>
+      ({
+        ...request([]),
+        claudeHarness: {
+          system: [{ type: "text", text: "shared" }],
+          messages: [{ role: "user", content: turn }],
+          warmGateKey: "day-1",
+        },
+      }) as DecisionRequest<{ choice: string }>;
+    const first = provider.decide(gated("seat 1"));
+    const second = provider.decide(gated("seat 2"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(started).toEqual(["seat 1", "seat 2"]);
+    finishes[1]!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(started).toEqual(["seat 1", "seat 2", "seat 1"]);
+    finishes[2]!();
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+  });
 });
+
+/** The SDK's own error for an overloaded API, asking for a 1 ms wait. */
+const overloadedError = () =>
+  Anthropic.APIError.generate(
+    529,
+    { type: "error", error: { type: "overloaded_error", message: "Overloaded" } },
+    "Overloaded",
+    new Headers({ "retry-after-ms": "1" }),
+  );
+const streamedMessage = () =>
+  ({
+    id: "msg_1",
+    type: "message",
+    role: "assistant",
+    model: "claude-haiku-5-5",
+    content: [{ type: "text", text: '{"choice":"a"}', citations: null }],
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    stop_details: null,
+    usage: {
+      input_tokens: 1_000,
+      output_tokens: 100,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
+  }) as unknown as Anthropic.Message;
