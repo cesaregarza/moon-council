@@ -192,6 +192,25 @@ describe("per-game Claude spend admission", () => {
     );
   });
 
+  it("reads stored provider metadata back unchanged, with or without heldUsd", () => {
+    // CES-1564: a retried Claude call reports heldUsd instead of costUsd. Records written before
+    // the field existed, and records with it, both round-trip through the store as written.
+    const game = ledger(1);
+    const before = game.attempt("claude-haiku-5-5", 1_000);
+    game.settle(before, 1_000, 100);
+    before.providerMetadata = { responseId: "msg_1", stopReason: "end_turn", costUsd: 0.01 };
+    game.store.updateAttempt(before);
+    const retried = game.attempt("claude-haiku-5-5", 1_000);
+    game.settle(retried, 1_000, 100);
+    retried.providerMetadata = { responseId: "msg_2", stopReason: "end_turn", heldUsd: 0.03 };
+    game.store.updateAttempt(retried);
+    expect(game.store.attempts(game.gameId).map((a) => a.providerMetadata)).toEqual([
+      { responseId: "msg_1", stopReason: "end_turn", costUsd: 0.01 },
+      { responseId: "msg_2", stopReason: "end_turn", heldUsd: 0.03 },
+    ]);
+    expect(() => assertV2Budget(game.store, game.gameId, game.config)).not.toThrow();
+  });
+
   it("holds an in-flight call at the reservation admitted when it began", () => {
     // halcyon's probe (PR #20 re-review): the stored prompt is far smaller than the admitted
     // request, so rebuilding from it under-reserves. $0.177608 + $0.080024 > $0.19.

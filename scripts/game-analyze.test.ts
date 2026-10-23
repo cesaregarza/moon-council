@@ -867,6 +867,67 @@ describe("analysis spend cap", () => {
     expect(reviewer.calls).toHaveLength(0);
   });
 
+  interface Held {
+    reviewActualUsd: number | null;
+    reviewHeldUsd: number | null;
+  }
+  const heldOf = (report: unknown) => (report as { spend: Held }).spend;
+
+  it("keeps a review cost unknown when a call reports none, and shows the held amount", async () => {
+    // Malformed usage: the provider withholds costUsd and reports what the ledger holds.
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain);
+    const malformed: DecisionProvider = {
+      decide: (request) =>
+        reviewer.provider.decide({
+          ...request,
+          onProviderMetadata: (metadata) =>
+            request.onProviderMetadata?.(
+              reviewer.calls.length === 2 ? { heldUsd: 0.05 } : metadata,
+            ),
+        }),
+    };
+    const report = await run(game, { ...reviewer, provider: malformed });
+    const calls = report.usage.review.calls;
+    expect(calls).toBeGreaterThan(2);
+    expect(report.usage.review.costUsd).toBeNull();
+    const spend = heldOf(report);
+    expect(spend.reviewActualUsd).toBeNull();
+    expect(spend.reviewHeldUsd).toBeCloseTo(0.01 * (calls - 1) + 0.05, 12);
+    const markdown = readFileSync(join(game.directory, "analysis", "analysis.md"), "utf8");
+    expect(markdown).toContain(`unknown (held $${spend.reviewHeldUsd!.toFixed(4)})`);
+  });
+
+  it("keeps a failed review's cost unknown, with its held amount shown", async () => {
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain);
+    const failing: DecisionProvider = {
+      decide: async (request) => {
+        if (reviewer.calls.length === 1) {
+          reviewer.calls.push("failed");
+          request.onProviderMetadata?.({ heldUsd: 0.03 });
+          throw new Error("overloaded after every attempt");
+        }
+        return reviewer.provider.decide(request);
+      },
+    };
+    const report = await run(game, { ...reviewer, provider: failing });
+    expect(report.reviews[1]!.status).toBe("failed");
+    expect(report.usage.review.costUsd).toBeNull();
+    const spend = heldOf(report);
+    expect(spend.reviewActualUsd).toBeNull();
+    const calls = report.usage.review.calls;
+    expect(spend.reviewHeldUsd).toBeCloseTo(0.01 * (calls - 1) + 0.03, 12);
+  });
+
+  it("sums valid review costs exactly, held equal to actual", async () => {
+    const game = recordedGame(fixture);
+    const report = await run(game, scriptedReviewer(plain));
+    const spend = heldOf(report);
+    expect(spend.reviewActualUsd).toBeCloseTo(0.01 * report.usage.review.calls, 12);
+    expect(spend.reviewHeldUsd).toBeCloseTo(0.01 * report.usage.review.calls, 12);
+  });
+
   it("stops reviewing by name once a call would pass the cap", async () => {
     expect(api.ReviewSpendLimitError).toBeTypeOf("function");
     const game = recordedGame(fixture);

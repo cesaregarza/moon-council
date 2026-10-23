@@ -93,6 +93,24 @@ describe("analysis review provider", () => {
     expect(calls.jev).toBe(1);
   });
 
+  it("refuses anthropic without a cap even with a zero review budget, before any construction", async () => {
+    const run = runScript(
+      "game-analyze.ts",
+      analyzeArgs("anthropic", "--review-token-budget", "0"),
+    );
+    await expect(run).rejects.toMatchObject({ name: "MissingAnalysisSpendCapError" });
+    nothingConstructed();
+  });
+
+  it("refuses a zero review budget by name, before any construction", async () => {
+    const run = runScript(
+      "game-analyze.ts",
+      analyzeArgs("anthropic", "--max-spend-usd", "20", "--review-token-budget", "0"),
+    );
+    await expect(run).rejects.toMatchObject({ name: "InvalidReviewTokenBudgetError" });
+    nothingConstructed();
+  });
+
   it("refuses an unpriced review provider in the CLI, before Jev or any provider", async () => {
     const run = runScript("game-analyze.ts", analyzeArgs("openai", "--max-spend-usd", "20"));
     await expect(run).rejects.toMatchObject({ name: "UnpricedReviewModelError" });

@@ -1,12 +1,13 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type Anthropic from "@anthropic-ai/sdk";
+import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   AnthropicMessagesProvider,
   ClaudeSpendLedger,
+  claudeRequest,
   claudeReservationUsd,
   type ClaudeClient,
   type DecisionRequest,
@@ -78,8 +79,8 @@ const message = (fields: Partial<Anthropic.Message> = {}) =>
     ...fields,
   }) as Anthropic.Message;
 
-/** A scripted SDK client that counts every request it is sent. */
-function fakeClient(replies: Anthropic.Message[]) {
+/** A scripted SDK client that counts every request it is sent; an Error reply is thrown. */
+function fakeClient(replies: (Anthropic.Message | Error)[]) {
   const bodies: Anthropic.MessageStreamParams[] = [];
   const client: ClaudeClient = {
     messages: {
@@ -89,6 +90,7 @@ function fakeClient(replies: Anthropic.Message[]) {
         return {
           finalMessage: async () => {
             if (!reply) throw new Error("no scripted reply");
+            if (reply instanceof Error) throw reply;
             return reply as never;
           },
           abort: () => undefined,
@@ -109,6 +111,15 @@ const request = () =>
     reasoningEffort: "high",
     preparedPrompt: { instructions: "Review.", input: '{"moment":1}' },
   }) as DecisionRequest<{ choice: string }>;
+
+/** The SDK's own error for an overloaded API, asking for a 1 ms wait. */
+const overloaded = () =>
+  Anthropic.APIError.generate(
+    529,
+    { type: "error", error: { type: "overloaded_error", message: "Overloaded" } },
+    "Overloaded",
+    new Headers({ "retry-after-ms": "1" }),
+  );
 
 // Haiku 5.5 standard rates: $0.10/M input, $0.50/M output.
 const SETTLED = (1_000 * 0.1 + 100 * 0.5) / 1_000_000;
@@ -175,6 +186,45 @@ describe("analysis review spend cap", () => {
     );
     expect(cap.spentUsd).toBeCloseTo(reservation, 12);
     expect(stored(ledger).settledUsd).toBeCloseTo(reservation, 12);
+  });
+
+  it("reserves every explicit retry attempt through the run cap and the monthly ledger", async () => {
+    const ledger = monthly();
+    const cap = spendCap(ledger);
+    cap.allow(1);
+    const { client, bodies } = fakeClient([overloaded(), overloaded(), message()]);
+    await expect(
+      new AnthropicMessagesProvider({ client, ledger: cap }).decide(request()),
+    ).resolves.toBeDefined();
+    expect(bodies).toHaveLength(3);
+    const reservation = claudeReservationUsd(
+      "claude-haiku-5-5",
+      Buffer.byteLength(JSON.stringify(bodies[0])),
+      4_000,
+    );
+    expect(cap.spentUsd).toBeCloseTo(2 * reservation + SETTLED, 12);
+    expect(stored(ledger).settledUsd).toBeCloseTo(2 * reservation + SETTLED, 12);
+    expect(stored(ledger).reservations).toEqual({});
+  });
+
+  it("stops a retry by name when its reservation would pass the cap", async () => {
+    const ledger = monthly();
+    const cap = spendCap(ledger);
+    const { client, bodies } = fakeClient([overloaded(), overloaded(), message()]);
+    const reservation = claudeReservationUsd(
+      "claude-haiku-5-5",
+      Buffer.byteLength(JSON.stringify(claudeRequest(request(), 16_000))),
+      4_000,
+    );
+    // Room for two held attempts and half of a third.
+    cap.allow(2.5 * reservation);
+    await expect(
+      new AnthropicMessagesProvider({ client, ledger: cap }).decide(request()),
+    ).rejects.toMatchObject({ name: "ReviewSpendLimitError" });
+    expect(bodies).toHaveLength(2);
+    expect(cap.spentUsd).toBeCloseTo(2 * reservation, 12);
+    expect(stored(ledger).settledUsd).toBeCloseTo(2 * reservation, 12);
+    expect(stored(ledger).reservations).toEqual({});
   });
 
   it("settles an invalid amount at what it holds (Rule L)", () => {
