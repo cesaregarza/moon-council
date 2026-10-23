@@ -43,7 +43,7 @@ export interface ClaudeSessionRecord {
 export const SESSION_TOKEN_LIMITS: Readonly<Record<string, number>> = {
   "claude-haiku-5-5": 90_000,
 };
-const DEFAULT_SESSION_TOKEN_LIMIT = 400_000;
+const DEFAULT_SESSION_TOKEN_LIMIT = 1_000_000;
 const FIVE_MINUTES = { type: "ephemeral", ttl: "5m" } as const;
 
 export interface SessionCall {
