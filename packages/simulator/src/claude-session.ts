@@ -9,6 +9,7 @@ import {
   type ClaudeHarness,
   type ClaudeReplyContent,
 } from "./claude-session-request";
+import { isTokenCount } from "@werewolf/llm";
 import { z } from "zod";
 import { estimatedTokens } from "./request-v2";
 
@@ -72,6 +73,8 @@ export interface SessionTurn {
   commit(reply: { content: ClaudeReplyContent; stopReason: string | null; usage: UsageV2 }): void;
 }
 
+const TokenCount = z.custom<number>(isTokenCount, "not a token count");
+
 /** The stored shape a record must have before any of it is replayed. */
 const SessionRecordSchema = z.strictObject({
   schemaVersion: z.literal("claude_session_v1"),
@@ -89,8 +92,9 @@ const SessionRecordSchema = z.strictObject({
   turns: z.array(
     z.strictObject({ kind: z.string(), user: z.string(), assistant: z.array(z.unknown()) }),
   ),
-  lastPromptTokens: z.number().nullable(),
-  lastTotalTokens: z.number().nullable(),
+  // Stored counts are null (unreported) or valid token counts; anything else refuses the record.
+  lastPromptTokens: TokenCount.nullable(),
+  lastTotalTokens: TokenCount.nullable(),
   closed: z.boolean(),
 });
 

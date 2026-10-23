@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { providerJsonSchema, unknownUsage, type UsageV2 } from "@werewolf/contracts";
-import { assertClaudePriced, claudeReservationUsd } from "./anthropic-pricing";
+import { assertClaudePriced, claudeReservationUsd, isTokenCount } from "./anthropic-pricing";
 import { promptFor } from "./prompt";
 import type { DecisionProvider, DecisionRequest, DecisionResult } from "./provider";
 import { ClaudeWarmGate } from "./claude-warm-gate";
@@ -223,7 +223,10 @@ export class AnthropicMessagesProvider implements DecisionProvider {
         `Claude output cap must be a positive safe integer; got ${String(body.max_tokens)}`,
       );
     assertClaudePriced(body.model);
-    const replayedTokens = request.claudeHarness?.replayedTokens;
+    // An invalid recorded count is never trusted: the history is then bounded by its bytes, and
+    // replayed thinking (which bytes cannot bound) is refused.
+    const recorded = request.claudeHarness?.replayedTokens;
+    const replayedTokens = isTokenCount(recorded) ? recorded : undefined;
     assertBoundedContent(body, replayedTokens);
     if (request.signal?.aborted) throw new Error("Claude decision aborted");
     const reservationId = randomUUID();
