@@ -122,8 +122,9 @@ function call(
   sessions: ClaudeSessions,
   seat: string,
   day: number,
-  options: { effort?: string; journal?: PrivateJournalV2 } = {},
+  options: { effort?: string; journal?: PrivateJournalV2; model?: string } = {},
 ) {
+  const model = options.model ?? MODEL;
   game.state.day = day;
   game.state.phase = "day_discussion";
   const packet = buildContextV2(
@@ -141,7 +142,7 @@ function call(
     gameId: game.gameId,
     playerId: seat,
     packet,
-    model: MODEL,
+    model,
     effort: options.effort ?? "medium",
     kind: "journal_update_v3_2",
     instructions: prepared.prompt.instructions,
@@ -151,7 +152,7 @@ function call(
   const body = claudeRequest(
     {
       kind: "decision_v3_1",
-      model: MODEL,
+      model,
       schemaName: "journal_update",
       schema: format.schema,
       apiResponseFormat: format,
@@ -316,6 +317,19 @@ describe("Claude session harness", () => {
     const dayTwo = call(game, sessions, game.villager, 2, { journal: journal("day two") });
     expect(id()).toBe(`${game.villager}:d2:s4`);
     expect(JSON.stringify(dayTwo.body.messages[0])).toContain("day two");
+  });
+
+  it("keeps a non-Haiku session open past 90K and opens a new one past 400K", () => {
+    // The 400K default ceiling for models without a long-context tier (CES-1556 ruling 5).
+    const game = scriptedGame();
+    const sessions = new ClaudeSessions(game.store);
+    const opus = { model: "claude-opus-5-5" };
+    const id = () => sessions.load(game.gameId, game.villager)!.id;
+    answer(call(game, sessions, game.villager, 1, opus).turn, 89_900);
+    answer(call(game, sessions, game.villager, 1, opus).turn, 399_900);
+    expect(id()).toBe(`${game.villager}:d1:s1`);
+    call(game, sessions, game.villager, 1, opus);
+    expect(id()).toBe(`${game.villager}:d1:s2`);
   });
 
   it("bounds the replayed history by the previous turn's recorded usage", () => {
@@ -527,5 +541,122 @@ describe("Claude session repairs through the executor", () => {
     // The configured effort is pinned, sent, and recorded as what actually ran.
     expect((first!.output_config as { effort: string }).effort).toBe("medium");
     expect(attempts.map((a) => a.reasoningEffort)).toEqual(["medium", "medium"]);
+  });
+
+  it("opens a new session after the executor compacts a seat's journal", async () => {
+    // End to end through decisions-v2: a reflection over the journal limit is compacted with a
+    // one-off request, the journal changes outside the session, and the seat's next call opens a
+    // new session (a cache write of its day-start block, not a read).
+    const connection = openDatabase(":memory:");
+    connections.push(connection);
+    const repository = new LabRepository(connection);
+    repository.seedRoles([...STARTER_ROLES, DOCTOR_V2]);
+    const game = repository.createGame(sessionConfig());
+    new V2GameOrchestrator(repository, new FakeDecisionProvider()).initialize(game.id);
+    repository.updateGame(game.id, { status: "running" });
+    const store = new DecisionStore(repository);
+    const reflection = (id: string) => {
+      const events = repository.listEvents(game.id);
+      const state = reduceGame(game.id, events);
+      const packet = buildContextV2(state, events, "p1", store.journal(game.id, "p1"), id, "pass");
+      const op: DecisionOpportunityV1 = {
+        id,
+        gameId: game.id,
+        playerId: "p1",
+        kind: "pass",
+        phase: state.phase,
+        day: state.day,
+        epoch: `${state.day}:${state.phase}`,
+        viewId: id,
+        baseJournalVersion: store.journal(game.id, "p1").version,
+        packet,
+        status: "open",
+        best: null,
+        recovery: 0,
+        createdAt: "2026-10-22T00:00:00.000Z",
+        taskType: "journal_update",
+      };
+      store.save(op);
+      const task: V3TaskSpec = { type: "journal_update", revision: id, sourceIds: [] };
+      return {
+        opportunity: op,
+        mandatoryRemaining: 1,
+        validateCurrent: () => true,
+        eventsForCommit: () => [],
+        requestForAttempt: (commitOnly, previous, repair) => ({
+          ...decisionRequestV32(packet, task, commitOnly, previous, repair),
+          schemaName: task.type,
+          providerKind: "decision_v3_1",
+          normalize: (value) =>
+            normalizeV31Submission(packet, task, value as never, op.id, commitOnly),
+          validateSubmission: (value) => validateV31Submission(packet, task, value as never),
+        }),
+      } satisfies ExecuteDecisionOptions;
+    };
+    const envelope = (text: string) =>
+      JSON.stringify({
+        task: "journal_update",
+        speech: null,
+        rationale: "r",
+        memory: {
+          journalUpdate: { mode: "append", text },
+          decisionBrief: { action: "Wait for more evidence.", attention: "Hear the quiet seats." },
+        },
+      });
+    const replies = [
+      envelope(`Overlong note. ${"detail ".repeat(9_000)}`),
+      JSON.stringify({ text: "COMPACTED-JOURNAL-7f3" }),
+      envelope("A short note after compaction."),
+    ];
+    const bodies: { system: unknown; messages: { content: unknown }[] }[] = [];
+    const directory = mkdtempSync(join(tmpdir(), "claude-session-ledger-"));
+    try {
+      const provider = new AnthropicMessagesProvider({
+        ledger: new ClaudeSpendLedger(join(directory, "spend.json"), 200),
+        client: {
+          messages: {
+            stream(body) {
+              bodies.push(structuredClone(body) as never);
+              const text = replies.shift()!;
+              return {
+                on: () => undefined,
+                abort: () => undefined,
+                finalMessage: async () =>
+                  ({
+                    id: `msg_${bodies.length}`,
+                    type: "message",
+                    role: "assistant",
+                    model: MODEL,
+                    content: [{ type: "text", text, citations: null }],
+                    stop_reason: "end_turn",
+                    stop_sequence: null,
+                    stop_details: null,
+                    usage: { input_tokens: 1_000, output_tokens: 80 },
+                  }) as never,
+              };
+            },
+          },
+        },
+      });
+      const executor = new DecisionExecutorV2(repository, provider);
+      await executor.execute(reflection("overlong"));
+      const opened = new ClaudeSessions(store).load(game.id, "p1")?.id;
+      await executor.execute(reflection("after"));
+      expect(bodies).toHaveLength(3);
+      const after = new ClaudeSessions(store).load(game.id, "p1")!;
+      expect(after.id).not.toBe(opened);
+      expect(after.turns).toHaveLength(1);
+      // The new session's first user turn is its day-start block with the compacted journal.
+      expect(JSON.stringify(bodies[2]!.messages[0]!.content)).toContain("COMPACTED-JOURNAL-7f3");
+      expect(bodies[2]!.messages).toHaveLength(2);
+      const attempt = store.attempts(game.id, "after").at(-1)!;
+      expect(attempt.providerMetadata?.claudeSession).toMatchObject({
+        id: after.id,
+        turn: 0,
+        expectedCacheRead: null,
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
