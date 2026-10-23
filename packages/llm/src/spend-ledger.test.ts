@@ -141,6 +141,19 @@ describe("monthly Claude spend ledger", () => {
     expect(readFileSync(path).equals(before)).toBe(true);
   });
 
+  it("refuses a reservation whose stored result the reader would reject, without settle", () => {
+    // CES-1563: reaches update()'s stored-state check on its own. A clock past year 9999 makes
+    // the month key "+010000" and a timestamp the schema rejects; the amount itself is valid, so
+    // no amount check or settle fallback stands in for the stored-state check.
+    const path = file();
+    clock = new Date("2026-10-22T12:00:00Z");
+    new ClaudeSpendLedger(path, 200, now).reserve("a", 1);
+    const before = readFileSync(path);
+    clock = new Date("+010000-01-01T00:00:00Z");
+    expect(() => new ClaudeSpendLedger(path, 200, now).reserve("b", 1)).toThrow(SpendLedgerError);
+    expect(readFileSync(path).equals(before)).toBe(true);
+  });
+
   it("refuses calls on a corrupt ledger and never resets it to zero", () => {
     clock = new Date("2026-10-22T12:00:00Z");
     const path = file();
