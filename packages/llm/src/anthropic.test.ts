@@ -64,6 +64,7 @@ function fakeClient(replies: Anthropic.Message[]) {
         bodies.push(body);
         const reply = replies.shift();
         return {
+          on: () => undefined,
           finalMessage: async () => {
             if (!reply) throw new Error("no scripted reply");
             return reply as never;
@@ -624,6 +625,102 @@ describe("Claude content admission", () => {
   });
 });
 
+describe("Claude session replay ceilings", () => {
+  // A replayed thinking block's bytes (its signature) cannot bound its tokens; the recorded usage
+  // of the previous turn (its prompt plus its reply) can (Felix, CES-1556 note on PR #20).
+  const replay = (
+    replayedTokens?: number,
+    pending: unknown[] = [{ type: "text", text: "turn 2" }],
+  ) =>
+    ({
+      system: [{ type: "text", text: "frozen" }],
+      messages: [
+        { role: "user", content: [{ type: "text", text: "turn 1" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "", signature: "sig-1" },
+            { type: "text", text: '{"choice":"b"}' },
+          ],
+        },
+        { role: "user", content: pending },
+      ],
+      ...(replayedTokens === undefined ? {} : { replayedTokens }),
+    }) as never;
+
+  it("sends a replayed thinking turn unchanged when its recorded usage bounds it", async () => {
+    const { client, bodies } = fakeClient([message()]);
+    await expect(
+      new AnthropicMessagesProvider({ client, ledger: ledger() }).decide(
+        request({ claudeHarness: replay(2_120) }),
+      ),
+    ).resolves.toMatchObject({ data: { choice: "a" } });
+    expect(bodies).toHaveLength(1);
+  });
+
+  it("reserves the replayed history at its recorded tokens, not its bytes", async () => {
+    // 150K recorded tokens put Haiku past its 100K threshold: well over the $0.035 left.
+    const { client, bodies } = fakeClient([message()]);
+    const book = ledger();
+    book.reserve("earlier", 199.965);
+    book.settle("earlier", 199.965);
+    const call = new AnthropicMessagesProvider({ client, ledger: book }).decide(
+      request({ claudeHarness: replay(150_000) }),
+    );
+    await expect(call).rejects.toBeInstanceOf(SpendLimitError);
+    expect(bodies).toHaveLength(0);
+  });
+
+  it.each([-1, 1.5, Number.NaN, 2 ** 53])(
+    "reserves the whole body's byte ceiling when the replayed count is %s",
+    async (replayedTokens) => {
+      // halcyon's repro: a total of -1 would subtract from the ceiling. An invalid recorded count
+      // is never added; the reservation falls back to the exact serialized body.
+      const harness = {
+        system: [{ type: "text", text: "frozen" }],
+        messages: [
+          { role: "user", content: [{ type: "text", text: "history ".repeat(25_000) }] },
+          { role: "assistant", content: [{ type: "text", text: '{"choice":"b"}' }] },
+          { role: "user", content: [{ type: "text", text: "turn 2" }] },
+        ],
+        replayedTokens,
+      };
+      const { client, bodies } = fakeClient([message()]);
+      const reserved: number[] = [];
+      const book = {
+        reserve: (_id: string, usd: number) => reserved.push(usd),
+        settle: () => undefined,
+      };
+      await new AnthropicMessagesProvider({ client, ledger: book }).decide(
+        request({ claudeHarness: harness as never }),
+      );
+      expect(reserved).toEqual([
+        claudeReservationUsd(
+          "claude-haiku-5-5",
+          Buffer.byteLength(JSON.stringify(bodies[0]), "utf8"),
+          bodies[0]!.max_tokens,
+        ),
+      ]);
+    },
+  );
+
+  it("refuses replayed thinking with no recorded usage, and thinking in the new turn", async () => {
+    for (const harness of [
+      replay(),
+      replay(2_120, [{ type: "thinking", thinking: "", signature: "forged" }]),
+    ]) {
+      const { client, bodies } = fakeClient([message()]);
+      await expect(
+        new AnthropicMessagesProvider({ client, ledger: ledger() }).decide(
+          request({ claudeHarness: harness }),
+        ),
+      ).rejects.toMatchObject({ name: "UnboundedClaudeContentError" });
+      expect(bodies).toHaveLength(0);
+    }
+  });
+});
+
+// Without a recorded-usage bound (no replayedTokens), replayed thinking stays refused, as in #20.
 describe("Claude thinking input (text-only scope)", () => {
   it("refuses a replayed thinking block before reserving or calling the SDK", async () => {
     const { client, bodies } = fakeClient([message()]);
@@ -673,5 +770,57 @@ describe("Claude refusals", () => {
       stopReason: "refusal",
       stopDetails: { category: "cyber" },
     });
+  });
+});
+
+describe("Claude warm gate in the provider", () => {
+  it("holds a second request with the same shared prefix until the first streams", async () => {
+    const started: string[] = [];
+    const streams: { emit: () => void; finish: () => void }[] = [];
+    const client: ClaudeClient = {
+      messages: {
+        stream(body) {
+          started.push(JSON.stringify(body.messages));
+          let listener: ((event: Anthropic.MessageStreamEvent) => void) | undefined;
+          let finish!: () => void;
+          const done = new Promise<void>((resolve) => (finish = resolve));
+          streams.push({
+            emit: () =>
+              listener?.({
+                type: "content_block_start",
+                index: 0,
+                content_block: { type: "text", text: "", citations: null },
+              } as Anthropic.MessageStreamEvent),
+            finish,
+          });
+          return {
+            on: (_event, handler) => (listener = handler),
+            finalMessage: async () => {
+              await done;
+              return message();
+            },
+            abort: () => undefined,
+          };
+        },
+      },
+    };
+    const provider = new AnthropicMessagesProvider({ client, ledger: ledger() });
+    const gated = (turn: string) =>
+      request({
+        claudeHarness: {
+          system: [{ type: "text", text: "shared" }],
+          messages: [{ role: "user", content: turn }],
+          warmGateKey: "day-1",
+        },
+      });
+    const first = provider.decide(gated("seat 1"));
+    const second = provider.decide(gated("seat 2"));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(started).toHaveLength(1);
+    streams[0]!.emit();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(started).toHaveLength(2);
+    streams.forEach((stream) => stream.finish());
+    await Promise.all([first, second]);
   });
 });

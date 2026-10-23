@@ -8,6 +8,7 @@ import { OpenAIResponsesProvider } from "./openai";
 
 export * from "./anthropic";
 export * from "./anthropic-pricing";
+export * from "./claude-warm-gate";
 export * from "./codex";
 export * from "./codex-direct";
 export * from "./config";

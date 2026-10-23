@@ -11,7 +11,17 @@ import {
   createGameCreatedEvent,
   createGameState,
 } from "@werewolf/engine";
-import { claudeUsage, FakeDecisionProvider } from "@werewolf/llm";
+import {
+  AnthropicMessagesProvider,
+  claudeUsage,
+  FakeDecisionProvider,
+  type ClaudeClient,
+  type DecisionProvider,
+  type DecisionRequest,
+} from "@werewolf/llm";
+import type { ProviderAttemptRecord } from "@werewolf/db";
+import { z } from "zod";
+import * as decisionsV2 from "./decisions-v2";
 import { assertV2Budget, V2BudgetError } from "./decisions-v2";
 import { V2GameOrchestrator } from "./orchestrator-v2";
 
@@ -364,5 +374,199 @@ describe("per-game Claude spend admission", () => {
       true,
     );
     expect(new DecisionStore(repository).attempts(record.id)).toHaveLength(0);
+  });
+});
+
+/** The per-game half of Claude admission, run by the provider with its exact reservation. */
+type SpendAdmission = (
+  store: DecisionStore,
+  gameId: string,
+  config: GameConfigV2,
+  attempt: ProviderAttemptRecord,
+) => (usd: number) => void;
+// Read loosely so this file compiles before the helper exists (tests-first commit).
+const spendAdmission = (decisionsV2 as unknown as { claudeSpendAdmission?: SpendAdmission })
+  .claudeSpendAdmission;
+
+/** A scripted SDK client that records the order of admission, reservation and sending. */
+function fakeClaude(order: string[] = []) {
+  const bodies: unknown[] = [];
+  const client: ClaudeClient = {
+    messages: {
+      stream(body) {
+        order.push("send");
+        bodies.push(body);
+        return {
+          on: () => undefined,
+          finalMessage: async () =>
+            ({
+              id: "msg",
+              type: "message",
+              role: "assistant",
+              model: "claude-haiku-5-5",
+              content: [{ type: "text", text: '{"choice":"a"}', citations: null }],
+              stop_reason: "end_turn",
+              stop_sequence: null,
+              stop_details: null,
+              usage: {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+              },
+            }) as never,
+          abort: () => undefined,
+        };
+      },
+    },
+  };
+  return { client, bodies };
+}
+function recordingLedger(order: string[] = []) {
+  const reserved: number[] = [];
+  return {
+    reserved,
+    ledger: {
+      reserve: (_id: string, usd: number) => {
+        order.push("reserve");
+        reserved.push(usd);
+      },
+      settle: () => undefined,
+    },
+  };
+}
+const claudeCall = (fields: Record<string, unknown> = {}) =>
+  ({
+    kind: "decision_v3_1",
+    model: "claude-haiku-5-5",
+    schemaName: "choice",
+    schema: z.object({ choice: z.string() }),
+    maxOutputTokens: 4_000,
+    reasoningEffort: "high",
+    preparedPrompt: { instructions: "Act.", input: "{}" },
+    ...fields,
+  }) as unknown as DecisionRequest<{ choice: string }>;
+
+describe("Claude spend admission from the exact request", () => {
+  // Felix's ruling (CES-1556): the provider computes one reservation from the request body; the
+  // game admits it, then the monthly ledger reserves it, then the call is sent.
+  it("admits the exact reservation the ledger then takes, before reserving or sending", async () => {
+    const order: string[] = [];
+    const admitted: number[] = [];
+    const { client } = fakeClaude(order);
+    const { ledger, reserved } = recordingLedger(order);
+    await new AnthropicMessagesProvider({ client, ledger }).decide(
+      claudeCall({
+        admitSpend: (usd: number) => {
+          order.push("admit");
+          admitted.push(usd);
+        },
+      }),
+    );
+    expect(order).toEqual(["admit", "reserve", "send"]);
+    expect(admitted).toEqual(reserved);
+    const refused = fakeClaude();
+    const empty = recordingLedger();
+    const call = new AnthropicMessagesProvider({
+      client: refused.client,
+      ledger: empty.ledger,
+    }).decide(
+      claudeCall({
+        admitSpend: () => {
+          throw new V2BudgetError("over the game cap");
+        },
+      }),
+    );
+    await expect(call).rejects.toBeInstanceOf(V2BudgetError);
+    expect(refused.bodies).toHaveLength(0);
+    expect(empty.reserved).toEqual([]);
+  });
+
+  it("refuses a session call whose replayed history puts it over the game cap", async () => {
+    expect(spendAdmission).toBeTypeOf("function");
+    const game = ledger(0.05);
+    const record = game.attempt("claude-haiku-5-5", 4_000);
+    Object.assign(record, { reservedUsd: 0.001 }); // the executor's estimate from the prompt
+    game.store.updateAttempt(record);
+    const { client, bodies } = fakeClaude();
+    const month = recordingLedger();
+    // 150K recorded history tokens: past Haiku's 100K threshold, about $0.16 reserved.
+    const harness = {
+      system: [{ type: "text", text: "frozen" }],
+      messages: [
+        { role: "user", content: [{ type: "text", text: "turn 1" }] },
+        { role: "assistant", content: [{ type: "text", text: '{"choice":"b"}' }] },
+        { role: "user", content: [{ type: "text", text: "turn 2" }] },
+      ],
+      replayedTokens: 150_000,
+    };
+    const call = new AnthropicMessagesProvider({ client, ledger: month.ledger }).decide(
+      claudeCall({
+        claudeHarness: harness,
+        admitSpend: spendAdmission!(game.store, game.gameId, game.config, record),
+      }),
+    );
+    await expect(call).rejects.toBeInstanceOf(V2BudgetError);
+    expect(bodies).toHaveLength(0);
+    expect(month.reserved).toEqual([]);
+    // The refused call was never sent, so it holds nothing.
+    const stored = game.store.attempts(game.gameId)[0] as ProviderAttemptRecord & {
+      reservedUsd?: number;
+    };
+    expect(stored).toMatchObject({ status: "invalid", reservedUsd: 0 });
+    expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, false)).not.toThrow();
+  });
+
+  it("re-checks each parallel sibling against the others' true reservations", () => {
+    expect(spendAdmission).toBeTypeOf("function");
+    const game = ledger(0.05);
+    const [first, second] = [0, 1].map(() => {
+      const record = game.attempt("claude-haiku-5-5", 4_000);
+      Object.assign(record, { reservedUsd: 0.001 });
+      game.store.updateAttempt(record);
+      return record;
+    });
+    spendAdmission!(game.store, game.gameId, game.config, first!)(0.03);
+    expect(() => spendAdmission!(game.store, game.gameId, game.config, second!)(0.03)).toThrow(
+      V2BudgetError,
+    );
+  });
+
+  it("stores the provider's reservation on every Claude attempt the executor makes", async () => {
+    const connection = openDatabase(":memory:");
+    connections.push(connection);
+    const repository = new LabRepository(connection);
+    repository.seedRoles([...STARTER_ROLES, DOCTOR_V2]);
+    const safety = {
+      maxCycles: 4,
+      maxModelCalls: 20,
+      maxOutputTokens: 4_000,
+      maxWallClockMs: 60_000,
+    };
+    const record = repository.createGame(
+      GameConfigV2Schema.parse(claudeConfig({ maxSpendUsd: 50, safety })),
+    );
+    repository.appendEvent(
+      record.id,
+      createGameCreatedEvent(createGameState(record.id, record.config)),
+    );
+    repository.updateGame(record.id, { status: "running" });
+    // A stand-in provider admitting a fixed reservation, as the Anthropic provider would.
+    const fake = new FakeDecisionProvider();
+    const provider: DecisionProvider = {
+      decide: (request) => {
+        (request as { admitSpend?: (usd: number) => void }).admitSpend?.(0.0123);
+        return fake.decide(request);
+      },
+    };
+    const orchestrator = new V2GameOrchestrator(repository, provider);
+    const store = new DecisionStore(repository);
+    for (let step = 0; step < 10 && !store.attempts(record.id).length; step += 1)
+      await orchestrator.runGameStep(record.id);
+    const reserved = store
+      .attempts(record.id)
+      .map((attempt) => (attempt as { reservedUsd?: number }).reservedUsd);
+    expect(reserved.length).toBeGreaterThan(0);
+    expect(reserved).toEqual(reserved.map(() => 0.0123));
   });
 });
