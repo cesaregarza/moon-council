@@ -944,7 +944,7 @@ export class V2GameOrchestrator {
         const sources = authorizedSources(state, events, player.id).filter((s) =>
           meaningful.has(s.type),
         );
-        const revision = journalEvidenceRevision(sources);
+        const revision = journalEvidenceRevision(sources, events);
         const previous = events.findLast(
           (e) => e.type === "journal.refreshed" && e.payload.playerId === player.id,
         );

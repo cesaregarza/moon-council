@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ContextSourceV2, PlayerContextV2 } from "@werewolf/contracts";
+import type { ContextSourceV2, GameEventV1, PlayerContextV2 } from "@werewolf/contracts";
 
 export const JOURNAL_EVIDENCE_TYPES = new Set([
   "speech.public",
@@ -10,12 +10,21 @@ export const JOURNAL_EVIDENCE_TYPES = new Set([
   "moderator.announcement",
 ]);
 
-/** Hash authorized evidence before rendering. Phase and pack changes need no reflection. */
-export function journalEvidenceRevision(sources: ContextSourceV2[]): string {
-  const ids = sources
+/**
+ * A revision of the journal evidence a player holds, hashed before rendering; phase and pack
+ * changes need no reflection. It hashes those sources' event sequence numbers, which unlike their
+ * random IDs are the same in every replay of a seeded game (CES-1558). `events` is the game's full event log. A source it does not hold keeps its ID,
+ * which only happens for the synthetic packets in test fixtures.
+ */
+export function journalEvidenceRevision(
+  sources: ContextSourceV2[],
+  events: readonly GameEventV1[] = [],
+): string {
+  const sequences = new Map(events.map((event) => [event.id, event.sequence]));
+  const keys = sources
     .filter((source) => JOURNAL_EVIDENCE_TYPES.has(source.type))
-    .map((source) => source.id);
-  return createHash("sha256").update(JSON.stringify(ids)).digest("hex");
+    .map((source) => sequences.get(source.id) ?? source.id);
+  return createHash("sha256").update(JSON.stringify(keys)).digest("hex");
 }
 
 export function currentDecisionBrief(packet: PlayerContextV2) {
