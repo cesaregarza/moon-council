@@ -5,13 +5,16 @@ import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import type { DecisionOpportunityV1, GameEventV1 } from "@werewolf/contracts";
 import { DecisionStore, LabRepository, openDatabase, type DatabaseConnection } from "@werewolf/db";
+import { reduceGame } from "@werewolf/engine";
 import {
   AskJevProvider,
   FakeDecisionProvider,
   type DecisionProvider,
   type JevRequest,
 } from "@werewolf/llm";
+import { authorizedSources, buildContextV2 } from "./context-v2";
 import { V2GameOrchestrator } from "./orchestrator-v2";
+import { currentDecisionBrief, journalEvidenceRevision } from "./player-brief";
 import { acknowledgeSemanticAnomaly } from "./semantic-recovery";
 
 /**
@@ -77,7 +80,7 @@ const seatOf = (request: JevRequest) => /\((p\d+)\), /.exec(JSON.stringify(reque
  */
 function providers(voted: () => boolean = () => false) {
   const llmCalls: { task: string; playerId: string | undefined; afterVote: boolean }[] = [];
-  const jevCalls: { seat: string | undefined; input: string }[] = [];
+  const jevCalls: { seat: string | undefined; input: string; afterVote: boolean }[] = [];
   const fake = new FakeDecisionProvider();
   const llm: DecisionProvider = {
     decide: (request) => {
@@ -87,7 +90,7 @@ function providers(voted: () => boolean = () => false) {
   };
   const jev = new AskJevProvider(async (input) => {
     const request = JSON.parse(input) as JevRequest;
-    jevCalls.push({ seat: seatOf(request), input });
+    jevCalls.push({ seat: seatOf(request), input, afterVote: voted() });
     const answers = Object.fromEntries(
       Object.entries(request.questions).map(([key, q]) => {
         if (q.type === "noul") return [key, { type: "noul", noul: 0 }];
@@ -136,7 +139,7 @@ const decision = (store: DecisionStore, gameId: string, id: string) =>
   store.get<DecisionOpportunityV1>(gameId, `decision:${id}`);
 
 describe("games saved before sequence-keyed revisions", () => {
-  it("resumes a paused vote: commits the saved ballots with no reflection, the seat's brief intact", async () => {
+  it("resumes a paused vote: commits the saved ballots with no reflection before it, the seat's brief intact", async () => {
     const { fixture, repository, store } = load("pending-ballot");
     const seat = fixture.outageSeat!;
     const brief = store.journal(fixture.gameId, seat).decisionBrief;
@@ -151,9 +154,14 @@ describe("games saved before sequence-keyed revisions", () => {
       events.some((e) => e.type === "vote.resolved"),
       repository.getGame(fixture.gameId)?.error ?? "",
     ).toBe(true);
-    // No reflection, or any other player-model call, before the vote resolved. (Decision stepping
-    // may run on into the night's own refresh after it, which is new evidence.)
+    // The exact call boundary: no player-model call (so no reflection) before the vote, one Jev
+    // call, for the voter whose ballot had failed, and then eight reflections, one per seat,
+    // because the vote's result is new evidence.
     expect(driven.llmCalls.filter((call) => !call.afterVote)).toEqual([]);
+    expect(driven.jevCalls.map((call) => [call.seat, call.afterVote])).toEqual([[seat, false]]);
+    expect(driven.llmCalls.map((call) => [call.task, call.playerId])).toEqual(
+      ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"].map((p) => ["journal_update", p]),
+    );
     // Every ballot saved before the pause is committed as it was.
     const saved = fixture.open!.filter((op) => op.saved && op.taskType === "vote_choice");
     expect(saved.length).toBeGreaterThan(0);
@@ -162,6 +170,40 @@ describe("games saved before sequence-keyed revisions", () => {
     // The first new decision, the failed voter's ballot, carries the seat's existing brief.
     const ballot = driven.jevCalls.find((call) => call.seat === seat);
     expect(ballot?.input).toContain(brief!.action);
+  });
+
+  it("builds a new packet for a seat with a current pre-change brief: the legacy stamp, the brief used", () => {
+    const { fixture, repository, store } = load("pending-ballot");
+    const events = repository.listEvents(fixture.gameId);
+    const state = reduceGame(fixture.gameId, events);
+    // Seats whose stored brief is current, in the old ID-keyed scheme the pre-change code wrote.
+    const seats = state.players
+      .filter((p) => p.alive)
+      .map((p) => {
+        const sources = authorizedSources(state, events, p.id);
+        return {
+          id: p.id,
+          brief: store.journal(fixture.gameId, p.id).decisionBrief,
+          legacy: journalEvidenceRevision(sources, []),
+          current: journalEvidenceRevision(sources, events),
+        };
+      })
+      .filter((seat) => seat.brief?.evidenceRevision === seat.legacy);
+    expect(seats.length).toBeGreaterThan(0);
+    for (const seat of seats) {
+      expect(seat.legacy).not.toBe(seat.current);
+      // A new decision, never asked before the pause, so its packet is built now.
+      const packet = buildContextV2(
+        state,
+        events,
+        seat.id,
+        store.journal(fixture.gameId, seat.id),
+        `compat:new-packet:${seat.id}`,
+        "vote",
+      );
+      expect(packet.rules.journalRevision, seat.id).toBe(seat.legacy);
+      expect(currentDecisionBrief(packet), seat.id).toEqual(seat.brief);
+    }
   });
 
   it("resumes a paused refresh: continues the open reflection under its saved key, once", async () => {
