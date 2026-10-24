@@ -6,10 +6,12 @@ Findings report locations only. Review the resulting source before pushing.
 """
 
 import argparse
+import base64
 import json
 import os
 import re
 import subprocess
+import zlib
 from pathlib import Path
 
 ROOT_FILES = {
@@ -101,6 +103,42 @@ def findings(text):
     ]
 
 
+# Compressed test fixtures (CES-1558): gzip-compressed JSON stored as base64 text.
+ENCODED_FIXTURE = ".json.gz.b64"
+
+
+def decode_fixture(text):
+    """The JSON text an encoded fixture holds, accepting only its exact canonical form: strict
+    base64 in 76-character lines that re-encodes to the same bytes, one gzip stream with nothing
+    after it, and valid JSON. Raises ValueError for anything else, so nothing hides in a tail."""
+    try:
+        raw = base64.b64decode(text.replace("\n", ""), validate=True)
+        if base64.encodebytes(raw) != text.encode("ascii"):
+            raise ValueError("not canonical base64")
+        stream = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        data = stream.decompress(raw)
+        if not stream.eof or stream.unused_data:
+            raise ValueError("not exactly one gzip stream")
+        decoded = data.decode("utf8")
+        json.loads(decoded)
+        return decoded
+    except zlib.error as error:
+        raise ValueError("not a gzip stream") from error
+
+
+def file_findings(name, text):
+    """Findings for one file. An encoded fixture is also scanned as the JSON it decodes to, so
+    the history scan and export see through the encoding; one that is not exactly canonical is
+    itself a finding."""
+    if not name.endswith(ENCODED_FIXTURE):
+        return findings(text)
+    try:
+        decoded = decode_fixture(text)
+    except ValueError:
+        return [{"line": 0, "rule": "undecodable-fixture"}]
+    return findings(text) + findings(decoded)
+
+
 def sanitize(name, data):
     text = data.decode("utf8")
     # Machine-specific source strings belong in local environment configuration.
@@ -160,7 +198,9 @@ def main():
                     errors.append({"revision": revision, "path": name, "rule": "excluded-path"})
                     continue
                 text = git(source, "show", f"{revision}:{name}").decode("utf8")
-                errors.extend({"revision": revision, "path": name, **f} for f in findings(text))
+                errors.extend(
+                    {"revision": revision, "path": name, **f} for f in file_findings(name, text)
+                )
         print(json.dumps({"commits": len(commits), "findings": errors}, indent=2))
         return int(bool(errors))
     if not args.output:
@@ -190,7 +230,9 @@ def main():
                 continue
             data = p.read_bytes()
         data = sanitize(name, data)
-        errors.extend({"path": name, **finding} for finding in findings(data.decode("utf8")))
+        errors.extend(
+            {"path": name, **finding} for finding in file_findings(name, data.decode("utf8"))
+        )
         files[name] = data
     if errors:
         print(json.dumps({"files": len(files), "findings": errors}, indent=2))

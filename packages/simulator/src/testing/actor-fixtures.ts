@@ -71,7 +71,7 @@ export function refreshFixtureBrief(
   action = "My own inspection identified Cato (p3) as a werewolf. Hollis died and was publicly revealed Werewolf; Cato is the last wolf. Voting to eliminate Cato wins for my village. I have kept this result private; that does not weaken my knowledge.",
   attention = "I want to hear Delta answer Briar's accusation; a defense matters even from a suspect. I have new private evidence and should speak soon.",
 ) {
-  const revision = journalEvidenceRevision(packet.sources);
+  const revision = journalEvidenceRevision(packet.sources, []);
   packet.rules.journalRevision = revision;
   packet.journal = {
     ...packet.journal,
