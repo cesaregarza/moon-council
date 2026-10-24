@@ -63,7 +63,7 @@ export function journalRevisionStamp(
   const evidence: RevisionEvidence = { kind: "journal", sources, events };
   const current = currentRevision(evidence);
   const legacy = legacyRevision(evidence);
-  const legacyBrief =
+  const _legacyBrief =
     brief?.playerId === playerId &&
     brief.evidenceRevision === legacy &&
     brief.evidenceRevision !== current;
