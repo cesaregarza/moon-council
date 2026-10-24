@@ -14,6 +14,8 @@ import {
 } from "@werewolf/engine";
 import {
   AnthropicMessagesProvider,
+  claudeRequest,
+  claudeReservationUsd,
   claudeUsage,
   FakeDecisionProvider,
   type ClaudeClient,
@@ -689,5 +691,159 @@ describe("Claude retries in the game's spend cap", () => {
     expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, true, next)).toThrow(
       V2BudgetError,
     );
+  });
+
+  /**
+   * Rule R (CES-1564): a refusal never lowers what the ledger holds for the call. The provider
+   * calls the admission helper once per explicit attempt, with cumulative figures, so refusing a
+   * later retry must keep the hold of the attempts already sent. Otherwise a sibling admitted in
+   * that window passes a cap the game has already spent.
+   */
+  it("keeps the hold of sent attempts when a later retry is refused, so a sibling is refused too", async () => {
+    expect(spendAdmission).toBeTypeOf("function");
+    const call = claudeCall({ maxOutputTokens: 1_000 });
+    // One attempt's worst case, from the exact body the provider will send.
+    const reservation = claudeReservationUsd(
+      "claude-haiku-5-5",
+      Buffer.byteLength(JSON.stringify(claudeRequest(call, 16_000)), "utf8"),
+      1_000,
+    );
+    // Room for two attempts and half of a third: the third attempt, and any sibling beside it,
+    // is refused.
+    const game = ledger(2.5 * reservation);
+    // The executor's own pre-call estimate is not what this test measures; zero keeps the
+    // arithmetic exactly the provider's reservations.
+    const records = [0, 1].map(() => {
+      const record = game.attempt("claude-haiku-5-5", 1_000);
+      Object.assign(record, { reservedUsd: 0 });
+      game.store.updateAttempt(record);
+      return record;
+    });
+    const [retried, sibling] = records as [ProviderAttemptRecord, ProviderAttemptRecord];
+    const admitRetried = spendAdmission!(game.store, game.gameId, game.config, retried);
+    const admitSibling = spendAdmission!(game.store, game.gameId, game.config, sibling);
+
+    /** Figures already admitted; the stored hold may never fall below the last of them. */
+    const admitted: number[] = [];
+    /** Every write to the retried call's record, against the hold it had already admitted. */
+    const writes: { heldUsd: number; floor: number; inputTokens: number | null }[] = [];
+    const update = game.store.updateAttempt.bind(game.store);
+    game.store.updateAttempt = (attempt: ProviderAttemptRecord) => {
+      update(attempt);
+      const stored = game.store
+        .attempts(game.gameId)
+        .find((record) => record.id === retried.id) as ProviderAttemptRecord & {
+        reservedUsd?: number;
+      };
+      writes.push({
+        heldUsd: stored.reservedUsd ?? 0,
+        floor: admitted.at(-1) ?? 0,
+        inputTokens: stored.usage.inputTokens,
+      });
+    };
+
+    const persist = (record: ProviderAttemptRecord) => ({
+      onUsage: (usage: ProviderAttemptRecord["usage"]) => {
+        record.usage = usage;
+        game.store.updateAttempt(record);
+      },
+      onProviderMetadata: (metadata: Record<string, unknown>) => {
+        record.providerMetadata = metadata;
+        game.store.updateAttempt(record);
+      },
+    });
+    const client = (fetch: () => Promise<Response>) =>
+      new Anthropic({ apiKey: "fake-anthropic-key-for-tests", fetch });
+
+    let siblingSends = 0;
+    let siblingError: unknown;
+    const startSibling = () =>
+      new AnthropicMessagesProvider({
+        client: client(async () => {
+          siblingSends += 1;
+          return reply();
+        }),
+        ledger: recordingLedger().ledger,
+      })
+        .decide(
+          claudeCall({ maxOutputTokens: 1_000, admitSpend: admitSibling, ...persist(sibling) }),
+        )
+        .catch((error: unknown) => (siblingError = error));
+
+    let pending: Promise<unknown> = Promise.resolve();
+    const replies = [overloaded, overloaded, reply];
+    const sends: number[] = [];
+    const retry = new AnthropicMessagesProvider({
+      client: client(async () => {
+        sends.push(sends.length);
+        return replies.shift()!();
+      }),
+      ledger: recordingLedger().ledger,
+    }).decide(
+      claudeCall({
+        maxOutputTokens: 1_000,
+        admitSpend: (usd: number) => {
+          try {
+            admitRetried(usd);
+          } catch (error) {
+            // The reviewer's window, at its worst: the sibling admits as soon as the refusal is
+            // recorded, before the provider's own failure metadata can restore anything.
+            pending = startSibling();
+            throw error;
+          }
+          admitted.push(usd);
+        },
+        ...persist(retried),
+      }),
+    );
+    await expect(retry).rejects.toThrow();
+    await pending;
+
+    // Two attempts were sent and admitted at r then 2r; the third asked 3r and was refused.
+    expect(sends).toHaveLength(2);
+    expect(admitted).toHaveLength(2);
+    expect(admitted[1]).toBeCloseTo(2 * reservation, 15);
+    // The sibling never sent: the hold of the two sent attempts was still there to refuse it.
+    expect(siblingError).toBeInstanceOf(V2BudgetError);
+    expect(siblingSends).toBe(0);
+    // Rule R at every write: the hold never fell below what the call had already admitted, and a
+    // refusal never wrote zero usage over it (zero usage prices the attempt at $0).
+    expect(writes.filter((write) => write.heldUsd < write.floor)).toEqual([]);
+    expect(writes.filter((write) => write.inputTokens === 0)).toEqual([]);
+    // The game is still inside its cap once the sequence settles.
+    expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, false)).not.toThrow();
+  });
+
+  it("records a later refusal without zeroing the hold, the usage, or claiming nothing was sent", () => {
+    expect(spendAdmission).toBeTypeOf("function");
+    const game = ledger(0.01);
+    const record = game.attempt("claude-haiku-5-5", 1_000);
+    Object.assign(record, { reservedUsd: 0 });
+    const admit = spendAdmission!(game.store, game.gameId, game.config, record);
+    admit(0.004);
+    admit(0.008);
+    expect(() => admit(0.012)).toThrow(V2BudgetError);
+    const stored = game.store.attempts(game.gameId)[0] as ProviderAttemptRecord & {
+      reservedUsd?: number;
+    };
+    expect(stored.reservedUsd).toBe(0.008);
+    expect(stored.usage.inputTokens).toBeNull();
+    expect(stored.error).not.toContain("before sending");
+  });
+
+  it("still closes a refused first admission at zero, with zero usage and a never-sent error", () => {
+    // Unchanged behaviour, pinned: with no attempt admitted, nothing was sent.
+    expect(spendAdmission).toBeTypeOf("function");
+    const game = ledger(0.001);
+    const record = game.attempt("claude-haiku-5-5", 1_000);
+    Object.assign(record, { reservedUsd: 0 });
+    const admit = spendAdmission!(game.store, game.gameId, game.config, record);
+    expect(() => admit(0.01)).toThrow(V2BudgetError);
+    const stored = game.store.attempts(game.gameId)[0] as ProviderAttemptRecord & {
+      reservedUsd?: number;
+    };
+    expect(stored).toMatchObject({ status: "invalid", reservedUsd: 0 });
+    expect(stored.usage).toMatchObject({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+    expect(stored.error).toContain("before sending");
   });
 });
