@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -53,6 +55,16 @@ export function complexityBaseline(report: unknown): ComplexityBaseline {
   );
 }
 
+/**
+ * oxlint's JavaScript entry point, from its package manifest. It runs under this Node
+ * (`process.execPath`), because the node_modules `.bin` shim is POSIX-only (CES-1568).
+ */
+function oxlintEntry(): string {
+  const manifest = createRequire(import.meta.url).resolve("oxlint/package.json");
+  const { bin } = JSON.parse(readFileSync(manifest, "utf8")) as { bin: { oxlint: string } };
+  return join(dirname(manifest), bin.oxlint);
+}
+
 async function main() {
   const { values } = parseArgs({
     options: {
@@ -68,8 +80,9 @@ async function main() {
   }
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const child = spawnSync(
-    join(root, "node_modules/.bin/oxlint"),
+    process.execPath,
     [
+      oxlintEntry(),
       "--config",
       "scripts/complexity.oxlint.json",
       "--disable-nested-config",
