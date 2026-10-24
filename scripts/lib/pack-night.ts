@@ -208,7 +208,7 @@ export function readPackNights(
     const opened = resolutions[index - 1]?.sequence ?? -1;
     const agreements = events.filter(
       (event) =>
-        event.type === "team.agreement_frozen" && between(event, opened, resolved.sequence),
+        event.type === "team.agreement_frozen_mutant" && between(event, opened, resolved.sequence),
     );
     if (agreements.length)
       return [packNight(agreements, opened, resolved.sequence, events, byCommit, killOps)];

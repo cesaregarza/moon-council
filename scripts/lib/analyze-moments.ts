@@ -47,7 +47,7 @@ function privateView(
   const attempt = store
     .attempts(op.gameId, op.id)
     .findLast((item) => item.provider === "jev" && item.status === "valid" && item.response);
-  const answer = attempt ? JSON.parse(attempt.response!).answers?.targets : undefined;
+  const answer = attempt ? JSON.parse(attempt.response!).answers?.target : undefined;
   if (!answer || answer.type !== "choice") return null;
   return Object.fromEntries(
     Object.entries(answer.probabilities as Record<string, number>).map(([handle, p]) => [
