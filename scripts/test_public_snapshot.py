@@ -81,11 +81,11 @@ class SnapshotTests(unittest.TestCase):
         # CES-1558: compressed fixtures are base64 text; the scan must read what they decode to.
         private_path = "/" + "home/" + "example/private-project"
         payload = json.dumps({"note": "cd " + private_path}).encode()
-        packed = base64.b64encode(gzip.compress(payload, mtime=0)).decode()
+        packed = base64.encodebytes(gzip.compress(payload, mtime=0)).decode()
         with tempfile.TemporaryDirectory() as repo:
             name = "packages/simulator/src/testing/compat-fixtures/planted.json.gz.b64"
             (Path(repo) / name).parent.mkdir(parents=True)
-            (Path(repo) / name).write_text(packed + "\n")
+            (Path(repo) / name).write_text(packed)
             git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
             subprocess.run(git + ["init", "-q"], check=True)
             subprocess.run(git + ["add", "."], check=True)
@@ -108,6 +108,93 @@ class SnapshotTests(unittest.TestCase):
             [{"path": f["path"], "rule": f["rule"]} for f in report["findings"]],
         )
         self.assertNotIn(private_path, run.stdout)
+
+    # CES-1558 round 3: an encoded fixture is accepted only in its exact canonical form (strict
+    # base64 in 76-character lines, one gzip stream, valid JSON), in the history scan and in
+    # export alike. Anything else is a finding, and export writes nothing.
+    FIXTURE = "packages/simulator/src/testing/compat-fixtures/planted.json.gz.b64"
+    PRIVATE_PATH = "/" + "home/" + "example/private-project"
+
+    def scan_both(self, content):
+        """Commits `content` as an encoded fixture in a throwaway repository, then runs the
+        history scan and an export over it. Returns both runs and the exported bytes, if any."""
+        script = str(Path(__file__).with_name("public-snapshot.py"))
+        with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as out:
+            (Path(repo) / self.FIXTURE).parent.mkdir(parents=True)
+            (Path(repo) / self.FIXTURE).write_text(content)
+            git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+            subprocess.run(git + ["init", "-q"], check=True)
+            subprocess.run(git + ["add", "."], check=True)
+            subprocess.run(git + ["-c", "commit.gpgsign=false", "commit", "-qm", "f"], check=True)
+            history, export = (
+                subprocess.run(
+                    ["python3", script, "--source", repo, *args], capture_output=True, text=True
+                )
+                for args in (["--verify-history"], ["--output", out])
+            )
+            written = Path(out) / self.FIXTURE
+            return history, export, written.read_bytes() if written.exists() else None
+
+    def report(self, run):
+        try:
+            return json.loads(run.stdout)
+        except ValueError:
+            self.fail(f"no findings report (exit {run.returncode}): {run.stderr[-300:]}")
+
+    def assert_rejected(self, content):
+        history, export, written = self.scan_both(content)
+        rules = []
+        for run in (history, export):
+            self.assertNotIn(self.PRIVATE_PATH, run.stdout + run.stderr)
+            self.assertEqual(run.returncode, 1, run.stdout)
+            findings = self.report(run)["findings"]
+            self.assertTrue(findings, run.stdout)
+            self.assertEqual({f["path"] for f in findings}, {self.FIXTURE})
+            rules.append(sorted(f["rule"] for f in findings))
+        self.assertEqual(rules[0], rules[1], "export must agree with the history scan")
+        self.assertIsNone(written, "export must write nothing")
+
+    def gzipped(self, value):
+        return gzip.compress(json.dumps(value).encode(), mtime=0)
+
+    def test_encoded_fixture_rejects_data_after_padding(self):
+        # A clean fixture that ends in padding, followed by a second encoded payload.
+        clean = next(packed for n in range(64) if len(packed := self.gzipped({"ok": "x" * n})) % 3)
+        hidden = self.gzipped({"note": "cd " + self.PRIVATE_PATH})
+        content = base64.encodebytes(clean).decode() + base64.encodebytes(hidden).decode()
+        self.assertTrue(base64.encodebytes(clean).decode().rstrip().endswith("="))
+        self.assert_rejected(content)
+
+    def test_encoded_fixture_rejects_an_empty_file(self):
+        self.assert_rejected("")
+
+    def test_encoded_fixture_rejects_a_punctuation_only_file(self):
+        self.assert_rejected("!!!!\n")
+
+    def test_encoded_fixture_rejects_non_gzip_payloads(self):
+        # Base64 of plain JSON, and of a gzip header followed by bytes that are not deflate data.
+        for payload in (b'{"ok": 1}', self.gzipped({"ok": 1})[:10] + b"\xff" * 16):
+            with self.subTest(payload=payload[:12]):
+                self.assert_rejected(base64.encodebytes(payload).decode())
+
+    def test_encoded_fixture_rejects_trailing_bytes_after_the_gzip_stream(self):
+        self.assert_rejected(base64.encodebytes(self.gzipped({"ok": 1}) + b"\0" * 8).decode())
+
+    def test_encoded_fixture_rejects_text_that_is_not_json(self):
+        not_json = gzip.compress(b"not json", mtime=0)
+        self.assert_rejected(base64.encodebytes(not_json).decode())
+
+    def test_encoded_fixture_rejects_noncanonical_base64(self):
+        # Valid content, but one long line instead of 76-character lines.
+        payload = self.gzipped({"ok": [n * 7919 % 1000 for n in range(200)]})
+        self.assertGreater(len(payload), 57)
+        self.assert_rejected(base64.b64encode(payload).decode() + "\n")
+
+    def test_export_matches_history_for_a_canonical_fixture(self):
+        content = base64.encodebytes(self.gzipped({"ok": 1})).decode()
+        history, export, written = self.scan_both(content)
+        self.assertEqual((history.returncode, export.returncode), (0, 0), history.stdout)
+        self.assertEqual(written, content.encode())
 
     def test_bare_private_hostnames_are_detected(self):
         host = "local-machine." + "test." + "ts" + ".net"
