@@ -139,6 +139,7 @@ const decision = (store: DecisionStore, gameId: string, id: string) =>
   store.get<DecisionOpportunityV1>(gameId, `decision:${id}`);
 
 describe("games saved before sequence-keyed revisions", () => {
+  // Loads the 7.9 MB old-code fixture and runs a full resume, so it carries a game-level budget.
   it("resumes a paused vote: commits the saved ballots with no reflection before it, the seat's brief intact", async () => {
     const { fixture, repository, store } = load("pending-ballot");
     const seat = fixture.outageSeat!;
@@ -170,7 +171,7 @@ describe("games saved before sequence-keyed revisions", () => {
     // The first new decision, the failed voter's ballot, carries the seat's existing brief.
     const ballot = driven.jevCalls.find((call) => call.seat === seat);
     expect(ballot?.input).toContain(brief!.action);
-  });
+  }, 30_000);
 
   it("builds a new packet for a seat with a current pre-change brief: the legacy stamp, the brief used", () => {
     const { fixture, repository, store } = load("pending-ballot");
