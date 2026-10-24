@@ -6,6 +6,8 @@ Findings report locations only. Review the resulting source before pushing.
 """
 
 import argparse
+import base64
+import gzip
 import json
 import os
 import re
@@ -101,6 +103,22 @@ def findings(text):
     ]
 
 
+# Compressed test fixtures (CES-1558): gzip-compressed JSON stored as base64 text.
+ENCODED_FIXTURE = ".json.gz.b64"
+
+
+def file_findings(name, text):
+    """Findings for one file. An encoded fixture is also scanned as the JSON it decodes to, so
+    the history scan sees through the encoding; one that does not decode is itself a finding."""
+    if not name.endswith(ENCODED_FIXTURE):
+        return findings(text)
+    try:
+        decoded = gzip.decompress(base64.b64decode(text)).decode("utf8")
+    except (ValueError, OSError, EOFError):
+        return [{"line": 0, "rule": "undecodable-fixture"}]
+    return findings(text) + findings(decoded)
+
+
 def sanitize(name, data):
     text = data.decode("utf8")
     # Machine-specific source strings belong in local environment configuration.
@@ -160,7 +178,9 @@ def main():
                     errors.append({"revision": revision, "path": name, "rule": "excluded-path"})
                     continue
                 text = git(source, "show", f"{revision}:{name}").decode("utf8")
-                errors.extend({"revision": revision, "path": name, **f} for f in findings(text))
+                errors.extend(
+                    {"revision": revision, "path": name, **f} for f in file_findings(name, text)
+                )
         print(json.dumps({"commits": len(commits), "findings": errors}, indent=2))
         return int(bool(errors))
     if not args.output:
@@ -190,7 +210,9 @@ def main():
                 continue
             data = p.read_bytes()
         data = sanitize(name, data)
-        errors.extend({"path": name, **finding} for finding in findings(data.decode("utf8")))
+        errors.extend(
+            {"path": name, **finding} for finding in file_findings(name, data.decode("utf8"))
+        )
         files[name] = data
     if errors:
         print(json.dumps({"files": len(files), "findings": errors}, indent=2))
