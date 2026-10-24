@@ -67,7 +67,7 @@ export function journalRevisionStamp(
     brief?.playerId === playerId &&
     brief.evidenceRevision === legacy &&
     brief.evidenceRevision !== current;
-  return legacyBrief ? legacy : current;
+  return current;
 }
 
 /**
