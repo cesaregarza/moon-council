@@ -165,11 +165,28 @@ function assertClaudeSpendFits(store: DecisionStore, gameId: string, config: Gam
     );
 }
 
+const NO_USAGE = {
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
+  cachedInputTokens: 0,
+  cacheWriteInputTokens: 0,
+  reasoningTokens: 0,
+};
+
 /**
  * The game's half of a Claude call's admission, run by the provider with the reservation it
  * computed from the exact request (CES-1556). The attempt holds that figure from here on, so
- * each parallel sibling is checked against the others' true reservations. A refused call was
- * never sent: its attempt is closed at zero cost and holds nothing.
+ * each parallel sibling is checked against the others' true reservations.
+ *
+ * The provider calls this once per explicit attempt, each time with the call's running total, so
+ * a refusal is not proof that nothing was sent (CES-1564). Rule R: a refusal never lowers what
+ * the game holds for the call.
+ * - Refused with nothing admitted yet: nothing was sent, so the attempt closes at zero and holds
+ *   nothing.
+ * - Refused after an admitted attempt: the hold stays at the last admitted figure, and the usage
+ *   is left alone, because valid zero usage would price the attempt at $0 and erase that hold
+ *   until the provider's own settlement (`heldUsd` or `costUsd`) replaces it.
  */
 export function claudeSpendAdmission(
   store: DecisionStore,
@@ -177,25 +194,25 @@ export function claudeSpendAdmission(
   config: GameConfigV2,
   attempt: ProviderAttemptRecord,
 ): (usd: number) => void {
+  /** The last figure this call admitted; null until a check passes, so nothing was sent. */
+  let admittedUsd: number | null = null;
   return (usd) => {
     attempt.reservedUsd = usd;
     store.updateAttempt(attempt);
     try {
       assertClaudeSpendFits(store, gameId, config);
+      admittedUsd = usd;
     } catch (error) {
+      const refusal = error instanceof Error ? error.message : String(error);
       Object.assign(attempt, {
-        reservedUsd: 0,
+        reservedUsd: admittedUsd ?? 0,
         status: "invalid",
-        error: `spend admission refused before sending: ${error instanceof Error ? error.message : String(error)}`,
-        usage: {
-          inputTokens: 0,
-          outputTokens: 0,
-          totalTokens: 0,
-          cachedInputTokens: 0,
-          cacheWriteInputTokens: 0,
-          reasoningTokens: 0,
-        },
+        error:
+          admittedUsd === null
+            ? `spend admission refused before sending: ${refusal}`
+            : `spend admission refused for a later attempt, after $${admittedUsd.toFixed(4)} was sent: ${refusal}`,
         endedAt: new Date().toISOString(),
+        ...(admittedUsd === null ? { usage: NO_USAGE } : {}),
       });
       store.updateAttempt(attempt);
       throw error;
