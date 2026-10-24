@@ -1,5 +1,6 @@
 import { experimentSpeakerIntent } from "./urgency-experiment";
-import { JOURNAL_EVIDENCE_TYPES, journalEvidenceRevision } from "./player-brief";
+import { JOURNAL_EVIDENCE_TYPES } from "./player-brief";
+import { keyRevision, revisionIsCurrent } from "./revisions";
 import type {
   ActionProposalV2,
   DecisionOpportunityV1,
@@ -931,6 +932,11 @@ export class V2GameOrchestrator {
     });
     return false;
   }
+  /** The stored decision a key names this phase, if any (decide() derives the same ID). */
+  private storedDecision(state: GameState, key: string) {
+    const id = contentHash([state.gameId, state.day, state.phase, key]).slice(0, 32);
+    return this.store.get<DecisionOpportunityV1>(state.gameId, `decision:${id}`);
+  }
   /** All living seats reflect on new speech/results before any subsequent scoring or action. */
   private async refreshJournals(state: GameState, events: GameEventV1[]): Promise<boolean> {
     const meaningful = JOURNAL_EVIDENCE_TYPES;
@@ -944,15 +950,19 @@ export class V2GameOrchestrator {
         const sources = authorizedSources(state, events, player.id).filter((s) =>
           meaningful.has(s.type),
         );
-        const revision = journalEvidenceRevision(sources, events);
+        const evidence = { kind: "journal" as const, sources, events };
         const previous = events.findLast(
           (e) => e.type === "journal.refreshed" && e.payload.playerId === player.id,
         );
         const brief = this.store.journal(state.gameId, player.id).decisionBrief;
         const currentBrief =
           this.config(state).decisionEngine.workflow !== "journal_v4" ||
-          (brief?.playerId === player.id && brief.evidenceRevision === revision);
-        if (previous?.payload.revision === revision && currentBrief) return [];
+          (brief?.playerId === player.id && revisionIsCurrent(brief.evidenceRevision, evidence));
+        if (revisionIsCurrent(previous?.payload.revision, evidence) && currentBrief) return [];
+        const revision = keyRevision(evidence, (legacy) => {
+          const open = this.storedDecision(state, `journal:${player.id}:${legacy}`);
+          return !!open && open.status !== "committed";
+        });
         const reviewed = new Set((previous?.payload.sourceIds as string[] | undefined) ?? []);
         const reviewedThrough = previous?.payload.reviewedThroughSequence;
         const newIds = sources
@@ -1004,7 +1014,13 @@ export class V2GameOrchestrator {
   ): Promise<boolean> {
     const config = this.config(state),
       at = events.at(-1)!.sequence,
-      revision = publicRevision(events),
+      revision = keyRevision({ kind: "public", events }, (legacy) => {
+        const legacyBase = `auction-v3:${plan.stage}:${plan.round}:${legacy}`;
+        return (
+          this.store.get(state.gameId, `auction-resolution:${legacyBase}`) !== undefined ||
+          plan.listeners.some((p) => this.storedDecision(state, `${legacyBase}:bid:${p}`))
+        );
+      }),
       base = `auction-v3:${plan.stage}:${plan.round}:${revision}`;
     const listeners = plan.candidates.length === 1 ? [plan.candidates[0]!] : plan.listeners;
     const bidCall = (playerId: string) => {
@@ -1236,7 +1252,13 @@ export class V2GameOrchestrator {
   ): Promise<boolean> {
     const config = this.config(state);
     const at = events.at(-1)!.sequence,
-      revision = publicRevision(events),
+      revision = keyRevision({ kind: "public", events }, (legacy) => {
+        const legacyBase = `auction:${plan.stage}:${plan.round}:${legacy}`;
+        return (
+          this.store.get(state.gameId, `auction-resolution:${legacyBase}`) !== undefined ||
+          plan.listeners.some((p) => this.storedDecision(state, `${legacyBase}:${p}`))
+        );
+      }),
       base = `auction:${plan.stage}:${plan.round}:${revision}`;
     const call = (playerId: string, defer: boolean) =>
       this.discussionDecision(

@@ -1,4 +1,4 @@
-import { journalEvidenceRevision } from "./player-brief";
+import { journalRevisionStamp } from "./revisions";
 import { createHash } from "node:crypto";
 import {
   PrivateJournalV2Schema,
@@ -291,7 +291,12 @@ export function buildContextV2(
     }));
   let all = authorizedSources(state, events, playerId);
   if (config.decisionEngine.mode === "jev" && config.decisionEngine.workflow === "journal_v4") {
-    packet.rules.journalRevision = journalEvidenceRevision(all, events);
+    packet.rules.journalRevision = journalRevisionStamp(
+      journal.decisionBrief,
+      playerId,
+      all,
+      events,
+    );
     // Counted before any window, and kept out of the rules cache layer and LLM prompts.
     packet.publicFloor = publicFloor(state, all);
   }

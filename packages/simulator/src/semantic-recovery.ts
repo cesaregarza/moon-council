@@ -2,7 +2,7 @@ import type { DecisionOpportunityV1 } from "@werewolf/contracts";
 import { DecisionStore, type LabRepository } from "@werewolf/db";
 import { reduceGame } from "@werewolf/engine";
 import { applyJournalV2, authorizedSources, contentHash, validateReport } from "./context-v2";
-import { journalEvidenceRevision } from "./player-brief";
+import { revisionIsCurrent } from "./revisions";
 
 function conflict(message: string): never {
   throw Object.assign(new Error(message), { statusCode: 409 });
@@ -43,13 +43,17 @@ export function acknowledgeSemanticAnomaly(
     const events = repository.listEvents(gameId);
     const state = reduceGame(gameId, events);
     const actor = state.players.find((player) => player.id === op.playerId && player.alive);
-    const revision = journalEvidenceRevision(authorizedSources(state, events, op.playerId), events);
+    const evidence = {
+      kind: "journal" as const,
+      sources: authorizedSources(state, events, op.playerId),
+      events,
+    };
     const stale =
       state.phase !== "day_vote" ||
       `${state.day}:${state.phase}` !== op.epoch ||
       !actor ||
       store.journal(gameId, op.playerId).version !== op.baseJournalVersion ||
-      revision !== op.packet.rules.journalRevision ||
+      !revisionIsCurrent(op.packet.rules.journalRevision, evidence) ||
       contentHash(op.packet) !== op.viewId;
     if (stale)
       conflict(

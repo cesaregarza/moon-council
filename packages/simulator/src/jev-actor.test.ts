@@ -188,8 +188,8 @@ describe("actor perspective Jev workflow", () => {
     expect(text).not.toContain("OTHER_PRIVATE_RESULT");
     expect(text).not.toContain("PUBLIC_PROMPT_INJECTION");
     expect(text).toContain("verified inspection");
-    expect(journalEvidenceRevision(packet.sources)).not.toBe(
-      journalEvidenceRevision(packet.sources.slice(0, 1)),
+    expect(journalEvidenceRevision(packet.sources, [])).not.toBe(
+      journalEvidenceRevision(packet.sources.slice(0, 1), []),
     );
   });
   it("refreshes the brief on a no-change reflection and retains it through compaction", () => {

@@ -5,26 +5,10 @@ export {
 } from "./speaker-auction";
 import type { GameEventV1 } from "@werewolf/contracts";
 import { shuffled, type GameState } from "@werewolf/engine";
+import { revisionIsCurrent } from "./revisions";
+export { publicRevision } from "./revisions";
 
 export type DiscussionStage = "opening" | "followup" | "closing";
-/**
- * The public revision: the sequence number of the latest public event players can respond to
- * (a speech, a vote result, an elimination or a role reveal), or "initial" before any. Unlike the
- * event's random ID, the sequence number is the same in every replay of a seeded game, so seeded
- * orders and keys that embed the revision replay too (CES-1558). Unique only within one game.
- */
-export const publicRevision = (events: GameEventV1[]): string => {
-  const latest = events
-    .filter(
-      (e) =>
-        e.type === "speech.public" ||
-        e.type === "vote.resolved" ||
-        e.type === "player.eliminated" ||
-        e.type === "role.revealed",
-    )
-    .at(-1);
-  return latest ? String(latest.sequence) : "initial";
-};
 export function responseDockets(state: GameState, events: GameEventV1[]): Record<string, string[]> {
   const result: Record<string, string[]> = Object.fromEntries(
     state.players.filter((p) => p.alive).map((p) => [p.id, []]),
@@ -91,13 +75,13 @@ export function discussionAuctionPlan(
       dockets,
     };
   const followups = done.filter((e) => e.payload.stage === "followup"),
-    revision = publicRevision(events);
+    current = (stored: unknown) => revisionIsCurrent(stored, { kind: "public", events });
   const readiness = dayEvents.filter(
     (event) => event.type === "discussion.completed" || event.type === "discussion.bid_submitted",
   );
   const ready = living.filter((id) => {
     const last = readiness
-      .filter((event) => event.payload.playerId === id && event.payload.publicRevision === revision)
+      .filter((event) => event.payload.playerId === id && current(event.payload.publicRevision))
       .at(-1);
     const value =
       last?.type === "discussion.bid_submitted"
@@ -138,10 +122,12 @@ export function nextDiscussionWork(state: GameState, events: GameEventV1[]): Dis
   if (next)
     return { playerId: next, stage: "opening", key: `opening:${next}`, docket: dockets[next]! };
   const followups = done.filter((e) => e.payload.stage === "followup");
-  const revision = publicRevision(events);
   const ready = living.filter((id) => {
     const last = done.filter((e) => e.payload.playerId === id).at(-1);
-    return last?.payload.ready === true && last.payload.publicRevision === revision;
+    return (
+      last?.payload.ready === true &&
+      revisionIsCurrent(last.payload.publicRevision, { kind: "public", events })
+    );
   });
   const owed = living.some((id) => dockets[id]!.length > 0);
   if (ready.length >= Math.ceil(living.length * state.config.discussion.readyQuorum) && !owed)

@@ -13,12 +13,13 @@ export const JOURNAL_EVIDENCE_TYPES = new Set([
 /**
  * A revision of the journal evidence a player holds, hashed before rendering; phase and pack
  * changes need no reflection. It hashes those sources' event sequence numbers, which unlike their
- * random IDs are the same in every replay of a seeded game (CES-1558). `events` is the game's full event log. A source it does not hold keeps its ID,
- * which only happens for the synthetic packets in test fixtures.
+ * random IDs are the same in every replay of a seeded game (CES-1558). `events` is the game's
+ * full event log. A source it does not hold keeps its ID: test fixtures with synthetic packets
+ * pass [] explicitly, and the legacy scheme (revisions.ts) passes [] on purpose.
  */
 export function journalEvidenceRevision(
   sources: ContextSourceV2[],
-  events: readonly GameEventV1[] = [],
+  events: readonly GameEventV1[],
 ): string {
   const sequences = new Map(events.map((event) => [event.id, event.sequence]));
   const keys = sources
