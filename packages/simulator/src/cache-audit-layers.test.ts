@@ -61,9 +61,10 @@ function audit(attempts: ReturnType<typeof attempt>[], ...flags: string[]) {
   for (const a of attempts)
     insert.run(a.id, "g", a.decisionId, a.playerId, a.status, JSON.stringify(a));
   db.close();
+  // Node with tsx's loader runs on every platform; the .bin shim does not run on Windows.
   const run = spawnSync(
-    join(root, "node_modules/.bin/tsx"),
-    ["scripts/cache-audit.ts", "--db", path, "--game", "g", "--json", ...flags],
+    process.execPath,
+    ["--import", "tsx", "scripts/cache-audit.ts", "--db", path, "--game", "g", "--json", ...flags],
     { cwd: root, encoding: "utf8" },
   );
   expect(run.status, run.stderr).toBe(0);
