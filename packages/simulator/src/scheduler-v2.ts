@@ -7,8 +7,14 @@ import type { GameEventV1 } from "@werewolf/contracts";
 import { shuffled, type GameState } from "@werewolf/engine";
 
 export type DiscussionStage = "opening" | "followup" | "closing";
-export const publicRevision = (events: GameEventV1[]): string =>
-  events
+/**
+ * The public revision: the sequence number of the latest public event players can respond to
+ * (a speech, a vote result, an elimination or a role reveal), or "initial" before any. Unlike the
+ * event's random ID, the sequence number is the same in every replay of a seeded game, so seeded
+ * orders and keys that embed the revision replay too (CES-1558). Unique only within one game.
+ */
+export const publicRevision = (events: GameEventV1[]): string => {
+  const latest = events
     .filter(
       (e) =>
         e.type === "speech.public" ||
@@ -16,7 +22,9 @@ export const publicRevision = (events: GameEventV1[]): string =>
         e.type === "player.eliminated" ||
         e.type === "role.revealed",
     )
-    .at(-1)?.id ?? "initial";
+    .at(-1);
+  return latest ? String(latest.sequence) : "initial";
+};
 export function responseDockets(state: GameState, events: GameEventV1[]): Record<string, string[]> {
   const result: Record<string, string[]> = Object.fromEntries(
     state.players.filter((p) => p.alive).map((p) => [p.id, []]),

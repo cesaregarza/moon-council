@@ -1,5 +1,10 @@
+import base64
+import gzip
 import importlib.util
+import json
 import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -71,6 +76,38 @@ class SnapshotTests(unittest.TestCase):
             result = snapshot.findings(private)
             self.assertTrue(result)
             self.assertNotIn(private, str(result))
+
+    def test_history_scan_decodes_compressed_fixtures(self):
+        # CES-1558: compressed fixtures are base64 text; the scan must read what they decode to.
+        private_path = "/" + "home/" + "example/private-project"
+        payload = json.dumps({"note": "cd " + private_path}).encode()
+        packed = base64.b64encode(gzip.compress(payload, mtime=0)).decode()
+        with tempfile.TemporaryDirectory() as repo:
+            name = "packages/simulator/src/testing/compat-fixtures/planted.json.gz.b64"
+            (Path(repo) / name).parent.mkdir(parents=True)
+            (Path(repo) / name).write_text(packed + "\n")
+            git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+            subprocess.run(git + ["init", "-q"], check=True)
+            subprocess.run(git + ["add", "."], check=True)
+            subprocess.run(git + ["-c", "commit.gpgsign=false", "commit", "-qm", "f"], check=True)
+            run = subprocess.run(
+                [
+                    "python3",
+                    str(Path(__file__).with_name("public-snapshot.py")),
+                    "--source",
+                    repo,
+                    "--verify-history",
+                ],
+                capture_output=True,
+                text=True,
+            )
+        report = json.loads(run.stdout)
+        self.assertEqual(run.returncode, 1, run.stdout)
+        self.assertIn(
+            {"path": name, "rule": "personal-path"},
+            [{"path": f["path"], "rule": f["rule"]} for f in report["findings"]],
+        )
+        self.assertNotIn(private_path, run.stdout)
 
     def test_bare_private_hostnames_are_detected(self):
         host = "local-machine." + "test." + "ts" + ".net"

@@ -291,7 +291,7 @@ export function buildContextV2(
     }));
   let all = authorizedSources(state, events, playerId);
   if (config.decisionEngine.mode === "jev" && config.decisionEngine.workflow === "journal_v4") {
-    packet.rules.journalRevision = journalEvidenceRevision(all);
+    packet.rules.journalRevision = journalEvidenceRevision(all, events);
     // Counted before any window, and kept out of the rules cache layer and LLM prompts.
     packet.publicFloor = publicFloor(state, all);
   }
