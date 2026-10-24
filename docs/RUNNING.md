@@ -198,7 +198,7 @@ marked unobserved.
 
 ```bash
 npm run game:analyze -- --db /native/path/game.db --game GAME_ID --out RUN_DIRECTORY \
-  --review-provider anthropic --review-model MODEL
+  --review-provider anthropic --review-model claude-haiku-5-5 --max-spend-usd 20
 ```
 
 The analyzer opens the database read-only. For every committed ballot with a recorded Jev
@@ -217,8 +217,9 @@ the review model, plus 2 random routine moments as a recall check (`--recall`).
 - The review is capped by `--review-token-budget` (default 200,000 tokens). A review is admitted
   only if the budget covers its prompt (bounded by its bytes) plus `--review-max-output`, and it
   settles to the reported usage. Codex providers do not enforce an output cap, so they are refused
-  as review providers. Claude (`anthropic`) is refused too, until a per-run USD cap for analysis is
-  designed.
+  as review providers. OpenAI is refused as unpriced: there is no OpenAI price table, so its spend
+  cannot be bounded (see the spend cap below). The usable review providers are Claude (`anthropic`)
+  with a priced model, and `fake`.
 - Each review gets the player's decision-time briefing exactly as Jev received it (for a kill, each
   wolf's). Every cited event must be one the player could see before deciding, or the review is
   rejected and marked. For a kill, each knowledge claim names its wolf and is checked against that
@@ -229,11 +230,44 @@ the review model, plus 2 random routine moments as a recall check (`--recall`).
   or SHM file, a link, or any file that is not one of its own previous reports. The reports hold
   moderator data, so never commit them. They record the models, Jev's tokens per call, and the
   review's tokens and reported cost.
-- Both Jev and the review model spend real credit. Claude reviews count against the monthly spend
-  ledger.
-- `npm run pilot -- ... --analyze --review-provider KIND --review-model MODEL` runs the analyzer
-  automatically after a completed game. It is off by default, and a failure never changes the game
-  record.
+- `npm run pilot -- ... --analyze --review-provider KIND --review-model MODEL --analysis-max-spend-usd USD`
+  runs the analyzer automatically after a completed game. It is off by default, and a failure never
+  changes the game record. The pilot's `--max-spend-usd` is the game's own Claude cap; the analysis
+  has its own.
+
+#### Analysis spend cap
+
+Jev costs are not counted toward the cap, by Cesar's decision on 2026-10-23. The per-run limit is
+enforced by the Claude review cap. Each run's Jev calls and tokens are still reported, as
+information only.
+
+- A paid review (`anthropic`) requires `--max-spend-usd` (in the pilot, `--analysis-max-spend-usd`).
+  Without it, the run is refused by name (`MissingAnalysisSpendCapError`) before Jev or any review
+  provider is built. A free review (`fake`) needs no cap. Cesar's policy is at most $20 per run;
+  that is a policy for choosing the flag's value, not a limit in the code.
+- `--review-token-budget` must be a positive integer, or the run is refused by name
+  (`InvalidReviewTokenBudgetError`) before anything is built.
+- Before any call, the review's worst case must fit under the cap, or the run is refused by name
+  (`AnalysisSpendCapError`). The worst case is `--review-token-budget` × the model's highest
+  per-token price (input, cache or output, at the long-context tier where one exists) × 3. The 3 is
+  `CLAUDE_MAX_ATTEMPTS`: the Claude provider turns the SDK's own retries off on every request,
+  including through an injected client, and retries a 429, 529 or other 5xx itself, up to three
+  attempts per call. A retry waits what `Retry-After` asks, clamped to 60 seconds
+  (`MAX_RETRY_WAIT_MS`). Every attempt is admitted against a game's cap through `admitSpend` and
+  passes the warm gate, so a game's cap counts every attempt too. Prices come from
+  `packages/llm/src/anthropic-pricing.ts`; for `claude-haiku-5-5`, the default 200,000-token budget
+  comes to $1.50.
+- A review model without a price (any OpenAI model, or an unlisted Claude model) is refused
+  (`UnpricedReviewModelError`), because its spend cannot be bounded.
+- Each Claude attempt reserves its own worst case, priced by the provider from its request bytes and
+  output cap, against the cap and the monthly spend ledger. It settles to its actual cost; a failed
+  attempt or unknown usage keeps the reservation. An attempt that would not fit is not sent; its
+  review and every later one are marked `skipped_spend_cap` (`ReviewSpendLimitError`).
+- A review's cost is known only when every attempt settled at its actual cost. Otherwise it is
+  unknown, and the provider reports `heldUsd`, the total the ledger recorded for the call.
+- The report's `spend` block, also summarized in `analysis.md`, holds the cap, the review's worst
+  case, its reported cost (`reviewActualUsd`, unknown once any review's cost is unknown), and what
+  the ledger recorded (`reviewHeldUsd`). `analysis.md` shows an unknown cost as "unknown (held $X)".
 
 ## Reusable Day 1 bases
 

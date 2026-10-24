@@ -19,7 +19,7 @@ import {
   type PackNight,
 } from "./pack-night";
 import type { Decider } from "./analyze-citations";
-import { validUsd } from "./analyze-review";
+import { validUsd } from "./analysis-spend";
 
 /**
  * A moment's source: a committed ballot, or one night's kill, decided by the pack's points.

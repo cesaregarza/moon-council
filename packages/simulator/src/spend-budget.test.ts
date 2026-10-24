@@ -1,3 +1,4 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   GameConfigV2Schema,
@@ -13,6 +14,8 @@ import {
 } from "@werewolf/engine";
 import {
   AnthropicMessagesProvider,
+  claudeRequest,
+  claudeReservationUsd,
   claudeUsage,
   FakeDecisionProvider,
   type ClaudeClient,
@@ -200,6 +203,25 @@ describe("per-game Claude spend admission", () => {
     expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, true, next)).toThrow(
       /spend/,
     );
+  });
+
+  it("reads stored provider metadata back unchanged, with or without heldUsd", () => {
+    // CES-1564: a retried Claude call reports heldUsd instead of costUsd. Records written before
+    // the field existed, and records with it, both round-trip through the store as written.
+    const game = ledger(1);
+    const before = game.attempt("claude-haiku-5-5", 1_000);
+    game.settle(before, 1_000, 100);
+    before.providerMetadata = { responseId: "msg_1", stopReason: "end_turn", costUsd: 0.01 };
+    game.store.updateAttempt(before);
+    const retried = game.attempt("claude-haiku-5-5", 1_000);
+    game.settle(retried, 1_000, 100);
+    retried.providerMetadata = { responseId: "msg_2", stopReason: "end_turn", heldUsd: 0.03 };
+    game.store.updateAttempt(retried);
+    expect(game.store.attempts(game.gameId).map((a) => a.providerMetadata)).toEqual([
+      { responseId: "msg_1", stopReason: "end_turn", costUsd: 0.01 },
+      { responseId: "msg_2", stopReason: "end_turn", heldUsd: 0.03 },
+    ]);
+    expect(() => assertV2Budget(game.store, game.gameId, game.config)).not.toThrow();
   });
 
   it("holds an in-flight call at the reservation admitted when it began", () => {
@@ -568,5 +590,260 @@ describe("Claude spend admission from the exact request", () => {
       .map((attempt) => (attempt as { reservedUsd?: number }).reservedUsd);
     expect(reserved.length).toBeGreaterThan(0);
     expect(reserved).toEqual(reserved.map(() => 0.0123));
+  });
+});
+
+/**
+ * CES-1564, the #21/#30 second-lander condition: every explicit Claude retry attempt is admitted
+ * through admitSpend, and the game's cap counts what every attempt held. Driven through a real SDK
+ * client with its default retries, injected, and a scripted fetch: overloaded, overloaded, then a
+ * reply of 1,000 input and 100 output tokens.
+ */
+describe("Claude retries in the game's spend cap", () => {
+  const sse = (events: Record<string, unknown>[]) =>
+    events.map((e) => `event: ${String(e.type)}\ndata: ${JSON.stringify(e)}\n\n`).join("");
+  const reply = () =>
+    new Response(
+      sse([
+        {
+          type: "message_start",
+          message: {
+            id: "msg_1",
+            type: "message",
+            role: "assistant",
+            model: "claude-haiku-5-5",
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: {
+              input_tokens: 1_000,
+              output_tokens: 1,
+              cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0,
+            },
+          },
+        },
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: '{"choice":"a"}' },
+        },
+        { type: "content_block_stop", index: 0 },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 100 },
+        },
+        { type: "message_stop" },
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  const overloaded = () =>
+    new Response(
+      JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }),
+      { status: 529, headers: { "content-type": "application/json", "retry-after-ms": "1" } },
+    );
+
+  it("admits all three attempts, and a $0.003 cap then refuses the next call", async () => {
+    expect(spendAdmission).toBeTypeOf("function");
+    const game = ledger(0.003);
+    const record = game.attempt("claude-haiku-5-5", 1_000);
+    const admitted: number[] = [];
+    const admit = spendAdmission!(game.store, game.gameId, game.config, record);
+    const replies = [overloaded, overloaded, reply];
+    const sent: number[] = [];
+    const client = new Anthropic({
+      apiKey: "fake-anthropic-key-for-tests",
+      fetch: async () => {
+        sent.push(sent.length);
+        return replies.shift()!();
+      },
+    });
+    const month = recordingLedger();
+    await new AnthropicMessagesProvider({ client, ledger: month.ledger }).decide(
+      claudeCall({
+        maxOutputTokens: 1_000,
+        admitSpend: (usd: number) => {
+          admitted.push(usd);
+          admit(usd);
+        },
+        onUsage: (usage: ProviderAttemptRecord["usage"]) => (record.usage = usage),
+        onProviderMetadata: (metadata: Record<string, unknown>) =>
+          (record.providerMetadata = metadata),
+      }),
+    );
+    record.status = "valid";
+    game.store.updateAttempt(record);
+    expect(sent).toHaveLength(3);
+    expect(admitted).toHaveLength(3);
+    // Each admission is the call's running total: what earlier attempts hold, plus this one.
+    expect(admitted[1]).toBeCloseTo(2 * admitted[0]!, 15);
+    expect(admitted[2]).toBeCloseTo(3 * admitted[0]!, 15);
+    expect(month.reserved).toHaveLength(3);
+    // The next call's own worst case, $0.002 of output, no longer fits beside what was held.
+    const next = {
+      provider: "anthropic",
+      model: "claude-haiku-5-5",
+      inputTokens: 0,
+      maxOutputTokens: 4_000,
+    };
+    expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, true, next)).toThrow(
+      V2BudgetError,
+    );
+  });
+
+  /**
+   * Rule R (CES-1564): a refusal never lowers what the ledger holds for the call. The provider
+   * calls the admission helper once per explicit attempt, with cumulative figures, so refusing a
+   * later retry must keep the hold of the attempts already sent. Otherwise a sibling admitted in
+   * that window passes a cap the game has already spent.
+   */
+  it("keeps the hold of sent attempts when a later retry is refused, so a sibling is refused too", async () => {
+    expect(spendAdmission).toBeTypeOf("function");
+    const call = claudeCall({ maxOutputTokens: 1_000 });
+    // One attempt's worst case, from the exact body the provider will send.
+    const reservation = claudeReservationUsd(
+      "claude-haiku-5-5",
+      Buffer.byteLength(JSON.stringify(claudeRequest(call, 16_000)), "utf8"),
+      1_000,
+    );
+    // Room for two attempts and half of a third: the third attempt, and any sibling beside it,
+    // is refused.
+    const game = ledger(2.5 * reservation);
+    // The executor's own pre-call estimate is not what this test measures; zero keeps the
+    // arithmetic exactly the provider's reservations.
+    const records = [0, 1].map(() => {
+      const record = game.attempt("claude-haiku-5-5", 1_000);
+      Object.assign(record, { reservedUsd: 0 });
+      game.store.updateAttempt(record);
+      return record;
+    });
+    const [retried, sibling] = records as [ProviderAttemptRecord, ProviderAttemptRecord];
+    const admitRetried = spendAdmission!(game.store, game.gameId, game.config, retried);
+    const admitSibling = spendAdmission!(game.store, game.gameId, game.config, sibling);
+
+    /** Figures already admitted; the stored hold may never fall below the last of them. */
+    const admitted: number[] = [];
+    /** Every write to the retried call's record, against the hold it had already admitted. */
+    const writes: { heldUsd: number; floor: number; inputTokens: number | null }[] = [];
+    const update = game.store.updateAttempt.bind(game.store);
+    game.store.updateAttempt = (attempt: ProviderAttemptRecord) => {
+      update(attempt);
+      const stored = game.store
+        .attempts(game.gameId)
+        .find((record) => record.id === retried.id) as ProviderAttemptRecord & {
+        reservedUsd?: number;
+      };
+      writes.push({
+        heldUsd: stored.reservedUsd ?? 0,
+        floor: admitted.at(-1) ?? 0,
+        inputTokens: stored.usage.inputTokens,
+      });
+    };
+
+    const persist = (record: ProviderAttemptRecord) => ({
+      onUsage: (usage: ProviderAttemptRecord["usage"]) => {
+        record.usage = usage;
+        game.store.updateAttempt(record);
+      },
+      onProviderMetadata: (metadata: Record<string, unknown>) => {
+        record.providerMetadata = metadata;
+        game.store.updateAttempt(record);
+      },
+    });
+    const client = (fetch: () => Promise<Response>) =>
+      new Anthropic({ apiKey: "fake-anthropic-key-for-tests", fetch });
+
+    let siblingSends = 0;
+    let siblingError: unknown;
+    const startSibling = () =>
+      new AnthropicMessagesProvider({
+        client: client(async () => {
+          siblingSends += 1;
+          return reply();
+        }),
+        ledger: recordingLedger().ledger,
+      })
+        .decide(
+          claudeCall({ maxOutputTokens: 1_000, admitSpend: admitSibling, ...persist(sibling) }),
+        )
+        .catch((error: unknown) => (siblingError = error));
+
+    let pending: Promise<unknown> = Promise.resolve();
+    const replies = [overloaded, overloaded, reply];
+    const sends: number[] = [];
+    const retry = new AnthropicMessagesProvider({
+      client: client(async () => {
+        sends.push(sends.length);
+        return replies.shift()!();
+      }),
+      ledger: recordingLedger().ledger,
+    }).decide(
+      claudeCall({
+        maxOutputTokens: 1_000,
+        admitSpend: (usd: number) => {
+          try {
+            admitRetried(usd);
+          } catch (error) {
+            // The reviewer's window, at its worst: the sibling admits as soon as the refusal is
+            // recorded, before the provider's own failure metadata can restore anything.
+            pending = startSibling();
+            throw error;
+          }
+          admitted.push(usd);
+        },
+        ...persist(retried),
+      }),
+    );
+    await expect(retry).rejects.toThrow();
+    await pending;
+
+    // Two attempts were sent and admitted at r then 2r; the third asked 3r and was refused.
+    expect(sends).toHaveLength(2);
+    expect(admitted).toHaveLength(2);
+    expect(admitted[1]).toBeCloseTo(2 * reservation, 15);
+    // The sibling never sent: the hold of the two sent attempts was still there to refuse it.
+    expect(siblingError).toBeInstanceOf(V2BudgetError);
+    expect(siblingSends).toBe(0);
+    // Rule R at every write: the hold never fell below what the call had already admitted, and a
+    // refusal never wrote zero usage over it (zero usage prices the attempt at $0).
+    expect(writes.filter((write) => write.heldUsd < write.floor)).toEqual([]);
+    expect(writes.filter((write) => write.inputTokens === 0)).toEqual([]);
+    // The game is still inside its cap once the sequence settles.
+    expect(() => assertV2Budget(game.store, game.gameId, game.config, 0, false)).not.toThrow();
+  });
+
+  it("records a later refusal without zeroing the hold, the usage, or claiming nothing was sent", () => {
+    expect(spendAdmission).toBeTypeOf("function");
+    const game = ledger(0.01);
+    const record = game.attempt("claude-haiku-5-5", 1_000);
+    Object.assign(record, { reservedUsd: 0 });
+    const admit = spendAdmission!(game.store, game.gameId, game.config, record);
+    admit(0.004);
+    admit(0.008);
+    expect(() => admit(0.012)).toThrow(V2BudgetError);
+    const stored = game.store.attempts(game.gameId)[0] as ProviderAttemptRecord & {
+      reservedUsd?: number;
+    };
+    expect(stored.reservedUsd).toBe(0.008);
+    expect(stored.usage.inputTokens).toBeNull();
+    expect(stored.error).not.toContain("before sending");
+  });
+
+  it("still closes a refused first admission at zero, with zero usage and a never-sent error", () => {
+    // Unchanged behaviour, pinned: with no attempt admitted, nothing was sent.
+    expect(spendAdmission).toBeTypeOf("function");
+    const game = ledger(0.001);
+    const record = game.attempt("claude-haiku-5-5", 1_000);
+    Object.assign(record, { reservedUsd: 0 });
+    const admit = spendAdmission!(game.store, game.gameId, game.config, record);
+    expect(() => admit(0.01)).toThrow(V2BudgetError);
+    const stored = game.store.attempts(game.gameId)[0] as ProviderAttemptRecord & {
+      reservedUsd?: number;
+    };
+    expect(stored).toMatchObject({ status: "invalid", reservedUsd: 0 });
+    expect(stored.usage).toMatchObject({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+    expect(stored.error).toContain("before sending");
   });
 });

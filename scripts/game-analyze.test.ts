@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { symlinkSync } from "node:fs";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,6 +21,7 @@ import { buildContextV2 } from "../packages/simulator/src/context-v2";
 import { actorBriefing } from "../packages/simulator/src/jev-actor";
 import { V2GameOrchestrator } from "../packages/simulator/src/orchestrator-v2";
 import { actorConfig, refreshFixtureBrief } from "../packages/simulator/src/testing/actor-fixtures";
+import * as analysis from "./game-analyze";
 import { analyzeGame, postGameAnalysisRequest } from "./game-analyze";
 import { checkCitations } from "./lib/analyze-citations";
 import { writeReportAtomically } from "./lib/analyze-output";
@@ -378,14 +387,21 @@ describe("post-game surprise analyzer", () => {
     ).toBeNull();
     expect(postGameAnalysisRequest({})).toBeNull();
     expect(() => postGameAnalysisRequest({ analyze: true })).toThrow(/--review-provider/);
-    // An accepted review kind (anthropic is refused until analysis has a USD cap, CES-1040).
+    // A paid review needs the analysis's own cap; a free one does not (CES-1564).
+    const request = {
+      analyze: true,
+      "review-provider": "anthropic",
+      "review-model": "claude-haiku-5-5",
+    };
+    expect(() => postGameAnalysisRequest(request)).toThrow(/analysis-max-spend-usd/);
+    expect(postGameAnalysisRequest({ ...request, "analysis-max-spend-usd": "20" })).toEqual({
+      kind: "anthropic",
+      model: "claude-haiku-5-5",
+      maxSpendUsd: 20,
+    });
     expect(
-      postGameAnalysisRequest({
-        analyze: true,
-        "review-provider": "openai",
-        "review-model": "gpt-6-luna",
-      }),
-    ).toEqual({ kind: "openai", model: "gpt-6-luna" });
+      postGameAnalysisRequest({ analyze: true, "review-provider": "fake", "review-model": "m" }),
+    ).toEqual({ kind: "fake", model: "m" });
   });
 });
 
@@ -703,5 +719,274 @@ describe("post-game analyzer safety and accounting", () => {
       totalTokens: 15,
       costUsd: null,
     });
+  });
+});
+
+/**
+ * CES-1564, after Cesar's decision of 2026-10-23 to ignore Jev costs: the per-run cap bounds the
+ * Claude review only. Before the first call, the review's worst case (its token budget at the
+ * model's highest price, for every attempt) must fit under the cap; Claude reviews then reserve
+ * against the cap and stop by name when a call would not fit. A free review needs no cap.
+ */
+describe("analysis spend cap", () => {
+  interface SpendCap {
+    allow(usd: number): void;
+    reserve(id: string, usd: number): void;
+    settle(id: string, usd: number): void;
+  }
+  // Read through a cast so this file compiles against either report shape (tests first).
+  const api = analysis as unknown as {
+    ReviewSpendCap?: new (ledger: Pick<SpendCap, "reserve" | "settle">) => SpendCap;
+    ReviewSpendLimitError?: new (message: string) => Error;
+  };
+  interface Spend {
+    capUsd: number | null;
+    reviewWorstCaseUsd: number;
+    reviewActualUsd: number | null;
+  }
+  const spendOf = (report: unknown) => (report as { spend: Spend }).spend;
+  const options = (fields: Record<string, unknown>) =>
+    fields as unknown as Parameters<typeof analyzeGame>[0];
+
+  /** Counts Jev's calls. */
+  function countedJev(game: ReturnType<typeof recordedGame>) {
+    const jev = scriptedJev(game.moments);
+    const inputs: string[] = [];
+    const provider: DecisionProvider = {
+      decide: (request) => {
+        inputs.push(request.preparedPrompt!.input);
+        return jev.decide(request);
+      },
+    };
+    return { provider, inputs };
+  }
+  const monthly = () => ({ reserve: () => undefined, settle: () => undefined });
+  function haikuRun(game: ReturnType<typeof recordedGame>, maxSpendUsd: number | undefined) {
+    expect(api.ReviewSpendCap).toBeTypeOf("function");
+    const jev = countedJev(game);
+    const reviewer = scriptedReviewer(plain);
+    const spendCap = new api.ReviewSpendCap!(monthly());
+    const run = analyzeGame(
+      options({
+        dbPath: game.dbPath,
+        gameId: game.gameId,
+        outDir: join(game.directory, "analysis"),
+        jev: jev.provider,
+        jevModel: "jev-latest",
+        review: {
+          provider: reviewer.provider,
+          kind: "anthropic",
+          model: "claude-haiku-5-5",
+          spendCap,
+        },
+        tokenBudget: 200_000,
+        ...(maxSpendUsd === undefined ? {} : { maxSpendUsd }),
+      }),
+    );
+    return { run, jev, reviewer, spendCap };
+  }
+  // Haiku 5.5's highest rate is $2.50/M (long-context output); each review may be sent three
+  // times (one attempt plus the SDK's two retries): 200,000 tokens is $1.50.
+  const REVIEW_WORST_CASE = (200_000 * 2.5 * 3) / 1_000_000;
+
+  it("counts the review's budget at its highest price, every attempt, against the cap", async () => {
+    const game = recordedGame(fixture);
+    const { run, jev, spendCap } = haikuRun(game, 20);
+    const report = await run;
+    const spend = spendOf(report);
+    expect(spend.capUsd).toBe(20);
+    expect(spend.reviewWorstCaseUsd).toBeCloseTo(REVIEW_WORST_CASE, 12);
+    expect(spend.reviewActualUsd).toBe(report.usage.review.costUsd);
+    // Jev's usage is reported for information only.
+    expect(jev.inputs).toHaveLength(7);
+    expect(report.usage.jev).toMatchObject({ calls: 7, inputTokens: 70 });
+    const markdown = readFileSync(join(game.directory, "analysis", "analysis.md"), "utf8");
+    expect(markdown).toContain(`$${REVIEW_WORST_CASE.toFixed(4)} worst case`);
+    // Reviews may reserve up to the whole cap.
+    expect(() => spendCap.reserve("over", 20 + 1e-9)).toThrow();
+    expect(() => spendCap.reserve("under", 20 - 1e-9)).not.toThrow();
+  });
+
+  it("does not count Jev's cost: a cap just above the review's worst case runs every call", async () => {
+    const game = recordedGame(fixture);
+    const { run, jev, reviewer } = haikuRun(game, REVIEW_WORST_CASE + 1e-6);
+    await expect(run).resolves.toBeDefined();
+    expect(jev.inputs).toHaveLength(7);
+    expect(reviewer.calls.length).toBeGreaterThan(0);
+  });
+
+  it("refuses a cap one cent below the review's worst case before any Jev or review call", async () => {
+    const game = recordedGame(fixture);
+    const { run, jev, reviewer } = haikuRun(game, REVIEW_WORST_CASE - 0.01);
+    await expect(run).rejects.toMatchObject({ name: "AnalysisSpendCapError" });
+    expect(jev.inputs).toHaveLength(0);
+    expect(reviewer.calls).toHaveLength(0);
+    expect(existsSync(join(game.directory, "analysis", "analysis.json"))).toBe(false);
+  });
+
+  it("refuses a paid review without a cap by name before any call", async () => {
+    const game = recordedGame(fixture);
+    const { run, jev, reviewer } = haikuRun(game, undefined);
+    await expect(run).rejects.toMatchObject({ name: "MissingAnalysisSpendCapError" });
+    expect(jev.inputs).toHaveLength(0);
+    expect(reviewer.calls).toHaveLength(0);
+  });
+
+  it("runs a free review without a cap", async () => {
+    const game = recordedGame(fixture);
+    const report = await analyzeGame(
+      options({
+        dbPath: game.dbPath,
+        gameId: game.gameId,
+        outDir: join(game.directory, "analysis"),
+        jev: scriptedJev(game.moments),
+        jevModel: "jev-latest",
+        review: { provider: scriptedReviewer(plain).provider, kind: "fake", model: "review" },
+      }),
+    );
+    expect(spendOf(report)).toMatchObject({ capUsd: null, reviewWorstCaseUsd: 0 });
+  });
+
+  it("refuses Claude reviews that do not reserve through the run's cap", async () => {
+    const game = recordedGame(fixture);
+    const jev = countedJev(game);
+    const reviewer = scriptedReviewer(plain);
+    const run = analyzeGame(
+      options({
+        dbPath: game.dbPath,
+        gameId: game.gameId,
+        outDir: join(game.directory, "analysis"),
+        jev: jev.provider,
+        jevModel: "jev-latest",
+        review: { provider: reviewer.provider, kind: "anthropic", model: "claude-haiku-5-5" },
+        maxSpendUsd: 20,
+      }),
+    );
+    await expect(run).rejects.toMatchObject({ name: "UncappedReviewSpendError" });
+    expect(jev.inputs).toHaveLength(0);
+    expect(reviewer.calls).toHaveLength(0);
+  });
+
+  interface Held {
+    reviewActualUsd: number | null;
+    reviewHeldUsd: number | null;
+  }
+  const heldOf = (report: unknown) => (report as { spend: Held }).spend;
+
+  it("keeps a review cost unknown when a call reports none, and shows the held amount", async () => {
+    // Malformed usage: the provider withholds costUsd and reports what the ledger holds.
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain);
+    const malformed: DecisionProvider = {
+      decide: (request) =>
+        reviewer.provider.decide({
+          ...request,
+          onProviderMetadata: (metadata) =>
+            request.onProviderMetadata?.(
+              reviewer.calls.length === 2 ? { heldUsd: 0.05 } : metadata,
+            ),
+        }),
+    };
+    const report = await run(game, { ...reviewer, provider: malformed });
+    const calls = report.usage.review.calls;
+    expect(calls).toBeGreaterThan(2);
+    expect(report.usage.review.costUsd).toBeNull();
+    const spend = heldOf(report);
+    expect(spend.reviewActualUsd).toBeNull();
+    expect(spend.reviewHeldUsd).toBeCloseTo(0.01 * (calls - 1) + 0.05, 12);
+    const markdown = readFileSync(join(game.directory, "analysis", "analysis.md"), "utf8");
+    expect(markdown).toContain(`unknown (held $${spend.reviewHeldUsd!.toFixed(4)})`);
+  });
+
+  it("keeps a failed review's cost unknown, with its held amount shown", async () => {
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain);
+    const failing: DecisionProvider = {
+      decide: async (request) => {
+        if (reviewer.calls.length === 1) {
+          reviewer.calls.push("failed");
+          request.onProviderMetadata?.({ heldUsd: 0.03 });
+          throw new Error("overloaded after every attempt");
+        }
+        return reviewer.provider.decide(request);
+      },
+    };
+    const report = await run(game, { ...reviewer, provider: failing });
+    expect(report.reviews[1]!.status).toBe("failed");
+    expect(report.usage.review.costUsd).toBeNull();
+    const spend = heldOf(report);
+    expect(spend.reviewActualUsd).toBeNull();
+    const calls = report.usage.review.calls;
+    expect(spend.reviewHeldUsd).toBeCloseTo(0.01 * (calls - 1) + 0.03, 12);
+  });
+
+  it("keeps a call's cost unknown once its reports overflow, even after a valid report", async () => {
+    // halcyon's control: MAX_VALUE, MAX_VALUE, then $0.02 within each call.
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain);
+    const overflowing: DecisionProvider = {
+      decide: (request) =>
+        reviewer.provider.decide({
+          ...request,
+          onProviderMetadata: () => {
+            for (const costUsd of [Number.MAX_VALUE, Number.MAX_VALUE, 0.02])
+              request.onProviderMetadata?.({ costUsd });
+          },
+        }),
+    };
+    const report = await run(game, { ...reviewer, provider: overflowing });
+    expect(report.usage.review.costUsd).toBeNull();
+    expect(heldOf(report).reviewActualUsd).toBeNull();
+  });
+
+  it("counts the attempts a review sent, even when its retry was capped", async () => {
+    expect(api.ReviewSpendLimitError).toBeTypeOf("function");
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain);
+    const capped: DecisionProvider = {
+      decide: async (request) => {
+        if (reviewer.calls.length === 1) {
+          reviewer.calls.push("capped");
+          // Two attempts were sent and held; the third would pass the cap.
+          request.onProviderMetadata?.({ heldUsd: 0.05, attempts: 2 });
+          throw new api.ReviewSpendLimitError!("Analysis review cap reached");
+        }
+        return reviewer.provider.decide(request);
+      },
+    };
+    const report = await run(game, { ...reviewer, provider: capped });
+    expect(report.usage.review.calls).toBe(3);
+    expect(report.usage.review.tokens).toBeGreaterThan(1_000);
+    expect(heldOf(report).reviewHeldUsd).toBeCloseTo(0.01 + 0.05, 12);
+  });
+
+  it("sums valid review costs exactly, held equal to actual", async () => {
+    const game = recordedGame(fixture);
+    const report = await run(game, scriptedReviewer(plain));
+    const spend = heldOf(report);
+    expect(spend.reviewActualUsd).toBeCloseTo(0.01 * report.usage.review.calls, 12);
+    expect(spend.reviewHeldUsd).toBeCloseTo(0.01 * report.usage.review.calls, 12);
+  });
+
+  it("stops reviewing by name once a call would pass the cap", async () => {
+    expect(api.ReviewSpendLimitError).toBeTypeOf("function");
+    const game = recordedGame(fixture);
+    const reviewer = scriptedReviewer(plain);
+    const capped: DecisionProvider = {
+      decide: (request) => {
+        if (reviewer.calls.length === 1) {
+          reviewer.calls.push("refused");
+          throw new api.ReviewSpendLimitError!("Analysis review cap reached");
+        }
+        return reviewer.provider.decide(request);
+      },
+    };
+    const report = await run(game, { ...reviewer, provider: capped });
+    expect(reviewer.calls).toHaveLength(2);
+    expect(report.usage.review.calls).toBe(1);
+    const statuses = report.reviews.map((review) => review.status as string);
+    expect(statuses[0]).toBe("accepted");
+    expect(statuses.slice(1)).toEqual(statuses.slice(1).map(() => "skipped_spend_cap"));
+    expect(report.reviews[1]).toMatchObject({ error: expect.stringContaining("cap reached") });
   });
 });
