@@ -105,7 +105,9 @@ export function createActorHoldout(
   );
   const action = actions[label];
   const attention = `Hear ${target.name}'s response to the accusation. The other speakers are repeating public doubt; I have private evidence that could add information.`;
-  const revision = journalEvidenceRevision(packet.sources);
+  // The game's own events, as production passes them, so the revision matches what the
+  // executor and semantic recovery compute for this packet.
+  const revision = journalEvidenceRevision(packet.sources, events);
   if (workflow === "journal_v4") packet.rules.journalRevision = revision;
   packet.journal = {
     ...packet.journal,
