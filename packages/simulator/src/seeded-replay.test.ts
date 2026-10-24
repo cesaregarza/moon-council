@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { GameEventV1 } from "@werewolf/contracts";
+import { GameConfigV2Schema, type GameEventV1 } from "@werewolf/contracts";
 import { LabRepository, openDatabase, type DatabaseConnection } from "@werewolf/db";
 import { AskJevProvider, FakeDecisionProvider, type JevRequest } from "@werewolf/llm";
 import { V2GameOrchestrator } from "./orchestrator-v2";
@@ -63,12 +63,18 @@ async function play(): Promise<GameEventV1[]> {
   return repository.listEvents(game.id);
 }
 
+/** Random IDs: UUIDs and 32-hex IDs. */
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\b[0-9a-f]{32}\b/g;
+/** A view ID hashes a packet that holds source event IDs, so it differs with them; masked by name. */
+const VIEW_ID = /"viewId":"([0-9a-f]{64})"/g;
 const TIME = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g;
+/** Measured wall-clock durations, which no two runs share. */
+const DURATION = /"(latencyMs|elapsedMs|durationMs)":\d+/g;
 
 /**
- * The run's events with every ID renamed by first appearance (so two runs compare equal exactly
- * when they differ only in their random IDs) and wall-clock times masked.
+ * The run's events with every random ID and view ID renamed by first appearance (so two runs
+ * compare equal exactly when they differ only in those), and wall-clock times and durations
+ * masked. Other hashes, such as journal evidence revisions, are compared as they are.
  */
 function apartFromIds(events: GameEventV1[]) {
   const names = new Map<string, string>();
@@ -79,8 +85,43 @@ function apartFromIds(events: GameEventV1[]) {
       if (!names.has(raw)) names.set(raw, `id${names.size}`);
       return names.get(raw)!;
     })
-    .replace(TIME, "<time>");
+    .replace(VIEW_ID, (_match, raw: string) => {
+      if (!names.has(raw)) names.set(raw, `view${names.size}`);
+      return `"viewId":"${names.get(raw)!}"`;
+    })
+    .replace(TIME, "<time>")
+    .replace(DURATION, '"$1":0');
   return JSON.parse(text) as unknown[];
+}
+
+/**
+ * Plays the seeded game to its end: a win, or its one day/night cycle (a night, a day of
+ * reflection, speeches and auctions, and a vote). Both are decided by the game itself; the
+ * wall-clock limit is raised so elapsed time can never stop one run early.
+ */
+async function playToEnd(): Promise<{ events: GameEventV1[]; ended: boolean }> {
+  const connection = openDatabase(":memory:");
+  connections.push(connection);
+  const repository = new LabRepository(connection);
+  const config = GameConfigV2Schema.parse({
+    ...actorConfig(),
+    safety: {
+      ...actorConfig().safety,
+      maxCycles: 1,
+      maxModelCalls: 10_000,
+      maxWallClockMs: 86_400_000,
+    },
+  });
+  const game = repository.createGame(config);
+  new V2GameOrchestrator(repository, new FakeDecisionProvider()).initialize(game.id);
+  const runner = new V2GameOrchestrator(repository, new FakeDecisionProvider(), tiedJev());
+  repository.updateGame(game.id, { status: "running" });
+  const ended = () =>
+    repository
+      .listEvents(game.id)
+      .some((e) => e.type === "game.ended" || e.type === "game.budget_exhausted");
+  for (let step = 0; step < 2_000 && !ended(); step += 1) await runner.runGameStep(game.id);
+  return { events: repository.listEvents(game.id), ended: ended() };
 }
 
 const resolved = (events: GameEventV1[]) =>
@@ -103,4 +144,12 @@ describe("seeded replay", () => {
     // And the same game, event by event, apart from IDs.
     expect(apartFromIds(second)).toEqual(apartFromIds(first));
   }, 180_000);
+
+  it("replays the whole seeded game identically, apart from IDs, times and durations", async () => {
+    const first = await playToEnd();
+    const second = await playToEnd();
+    expect(first.ended).toBe(true);
+    expect(second.ended).toBe(true);
+    expect(apartFromIds(second.events)).toEqual(apartFromIds(first.events));
+  }, 600_000);
 });
