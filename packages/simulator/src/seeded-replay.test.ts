@@ -124,6 +124,25 @@ async function playToEnd(): Promise<{ events: GameEventV1[]; ended: boolean }> {
   return { events: repository.listEvents(game.id), ended: ended() };
 }
 
+/**
+ * The scripted game's intended ending: exactly one terminal event, the maximum-cycle
+ * `game.budget_exhausted`, after a vote resolved earlier on that same final day. Any other budget
+ * ending, or one before the day's vote, is a failure.
+ */
+function expectMaxCycleEnding(events: GameEventV1[]) {
+  const terminal = events.filter(
+    (e) => e.type === "game.ended" || e.type === "game.budget_exhausted",
+  );
+  expect(terminal.map((e) => [e.type, e.payload.reason])).toEqual([
+    ["game.budget_exhausted", "maximum day/night cycles reached"],
+  ]);
+  const end = terminal[0]!;
+  const voted = events.some(
+    (e) => e.type === "vote.resolved" && e.day === end.day && e.sequence < end.sequence,
+  );
+  expect(voted).toBe(true);
+}
+
 const resolved = (events: GameEventV1[]) =>
   events.filter((e) => e.type === "discussion.auction_resolved");
 
@@ -148,8 +167,8 @@ describe("seeded replay", () => {
   it("replays the whole seeded game identically, apart from IDs, times and durations", async () => {
     const first = await playToEnd();
     const second = await playToEnd();
-    expect(first.ended).toBe(true);
-    expect(second.ended).toBe(true);
+    expectMaxCycleEnding(first.events);
+    expectMaxCycleEnding(second.events);
     expect(apartFromIds(second.events)).toEqual(apartFromIds(first.events));
   }, 600_000);
 });
