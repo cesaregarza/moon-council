@@ -8,6 +8,8 @@ import * as anthropic from "./anthropic";
 import { AnthropicMessagesProvider } from "./anthropic";
 import type { DecisionRequest } from "./provider";
 import { ClaudeSpendLedger } from "./spend-ledger";
+import { ClaudeWarmGate } from "./claude-warm-gate";
+import { claudeReservationUsd } from "./anthropic-pricing";
 
 /**
  * CES-1564 ruling 1: no hidden retries. The SDK's own retries are off; the provider retries a
@@ -49,7 +51,7 @@ function recordedLedger() {
       settledUsd: number;
       reservations: Record<string, unknown>;
     };
-  return { recording, reserved, settled, month };
+  return { ledger, recording, reserved, settled, month };
 }
 
 const sse = (events: Record<string, unknown>[]) =>
@@ -342,3 +344,401 @@ const streamedMessage = () =>
       cache_read_input_tokens: 0,
     },
   }) as unknown as Anthropic.Message;
+
+describe("classified Claude connection retries", () => {
+  const reset = () => {
+    throw new TypeError("synthetic fetch failure", {
+      cause: Object.assign(new Error("synthetic socket detail"), { code: "ECONNRESET" }),
+    });
+  };
+  const resetDiagnostic = {
+    errorClass: "APIConnectionError",
+    status: null,
+    causeCode: "ECONNRESET",
+    aborted: false,
+    timedOut: false,
+  };
+
+  it("recovers from a rejected fetch with a classified transient cause", async () => {
+    const requests = scriptedFetch([reset, success]);
+    const book = recordedLedger();
+    const metadata: Record<string, unknown>[] = [];
+    const provider = new AnthropicMessagesProvider({
+      apiKey: FAKE_API_KEY,
+      ledger: book.recording,
+    });
+    await expect(provider.decide(request(metadata))).resolves.toMatchObject({
+      data: { choice: "a" },
+    });
+    expect(requests).toHaveLength(2);
+    expect(book.reserved).toHaveLength(2);
+    expect(book.settled.map((value) => value.id)).toEqual(book.reserved.map((value) => value.id));
+    expect(book.settled[0]!.usd).toBe(book.reserved[0]!.usd);
+    expect(book.settled[1]!.usd).toBeCloseTo(ACTUAL, 15);
+    expect(book.month().reservations).toEqual({});
+    expect(metadata.at(-1)).toMatchObject({
+      heldUsd: expect.closeTo(book.reserved[0]!.usd + ACTUAL, 15),
+      attempts: 2,
+      transportFailures: [resetDiagnostic],
+    });
+    expect(metadata.at(-1)).not.toHaveProperty("costUsd");
+  });
+
+  it("exhausts exactly three rejected fetch attempts with sanitized cause diagnostics", async () => {
+    const requests = scriptedFetch([reset, reset, reset, success]);
+    const book = recordedLedger();
+    const metadata: Record<string, unknown>[] = [];
+    const provider = new AnthropicMessagesProvider({
+      apiKey: FAKE_API_KEY,
+      ledger: book.recording,
+    });
+    await expect(provider.decide(request(metadata))).rejects.toThrow("Connection error");
+    expect(requests).toHaveLength(3);
+    expect(book.settled.map((value) => value.usd)).toEqual(book.reserved.map((value) => value.usd));
+    expect(book.month().reservations).toEqual({});
+    expect(metadata.at(-1)).toMatchObject({
+      attempts: 3,
+      errorDiagnostics: resetDiagnostic,
+      transportFailures: [resetDiagnostic, resetDiagnostic, resetDiagnostic],
+    });
+    expect(JSON.stringify(metadata)).not.toContain("synthetic socket detail");
+    expect(JSON.stringify(metadata)).not.toContain("synthetic fetch failure");
+  });
+});
+
+describe("Claude connection retry safety gates", () => {
+  const failing =
+    (code = "ECONNRESET") =>
+    () => {
+      throw new TypeError("synthetic transport failure", {
+        cause: Object.assign(new Error("synthetic transport cause"), { code }),
+      });
+    };
+
+  it("keeps an injected SDK client's hidden connection retries disabled", async () => {
+    let sends = 0;
+    const replies = [failing(), failing(), success];
+    const client = new Anthropic({
+      apiKey: FAKE_API_KEY,
+      fetch: async () => {
+        sends++;
+        return replies.shift()!();
+      },
+    });
+    const book = recordedLedger();
+    await expect(
+      new AnthropicMessagesProvider({ client, ledger: book.recording }).decide(request([])),
+    ).resolves.toBeDefined();
+    expect(sends).toBe(3);
+    expect(book.reserved).toHaveLength(3);
+    expect(book.settled).toHaveLength(3);
+  });
+
+  it.each(["ENOTFOUND", "CERT_HAS_EXPIRED", "unknown-private-fixture-code"])(
+    "sends once for a permanent or unknown cause (%s)",
+    async (code) => {
+      const sends = scriptedFetch([failing(code), success]);
+      const book = recordedLedger();
+      const metadata: Record<string, unknown>[] = [];
+      await expect(
+        new AnthropicMessagesProvider({ apiKey: FAKE_API_KEY, ledger: book.recording }).decide(
+          request(metadata),
+        ),
+      ).rejects.toThrow();
+      expect(sends).toHaveLength(1);
+      expect(book.reserved).toHaveLength(1);
+      expect(book.settled[0]!.usd).toBe(book.reserved[0]!.usd);
+      expect(book.month().reservations).toEqual({});
+      expect(JSON.stringify(metadata)).not.toContain("unknown-private-fixture-code");
+    },
+  );
+
+  it.each([400, 401, 402, 403, 422])(
+    "does not retry auth, billing or invalid-request status %i",
+    async (status) => {
+      const sends = scriptedFetch([
+        () =>
+          new Response(
+            JSON.stringify({
+              type: "error",
+              error: { type: "invalid_request_error", message: "synthetic terminal response" },
+            }),
+            {
+              status,
+              headers: { "content-type": "application/json" },
+            },
+          ),
+        success,
+      ]);
+      const book = recordedLedger();
+      await expect(
+        new AnthropicMessagesProvider({ apiKey: FAKE_API_KEY, ledger: book.recording }).decide(
+          request([]),
+        ),
+      ).rejects.toThrow();
+      expect(sends).toHaveLength(1);
+      expect(book.reserved).toHaveLength(1);
+      expect(book.month().reservations).toEqual({});
+    },
+  );
+
+  it("does not reserve or send for a pre-aborted request", async () => {
+    const sends = scriptedFetch([success]);
+    const book = recordedLedger();
+    const call = { ...request([]), signal: AbortSignal.abort() };
+    await expect(
+      new AnthropicMessagesProvider({ apiKey: FAKE_API_KEY, ledger: book.recording }).decide(call),
+    ).rejects.toThrow(/aborted/);
+    expect(sends).toHaveLength(0);
+    expect(book.reserved).toHaveLength(0);
+  });
+
+  it("does not retry when cancellation occurs inside a failed fetch", async () => {
+    const controller = new AbortController();
+    const sends = scriptedFetch([
+      () => {
+        controller.abort();
+        return failing()();
+      },
+      success,
+    ]);
+    const book = recordedLedger();
+    const metadata: Record<string, unknown>[] = [];
+    await expect(
+      new AnthropicMessagesProvider({ apiKey: FAKE_API_KEY, ledger: book.recording }).decide({
+        ...request(metadata),
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(/abort|timed out/i);
+    expect(sends).toHaveLength(1);
+    expect(book.reserved).toHaveLength(1);
+    expect(book.month().reservations).toEqual({});
+    expect(metadata.at(-1)).toMatchObject({ errorDiagnostics: { aborted: true } });
+  });
+
+  it("stops during connection backoff when the caller aborts", async () => {
+    const controller = new AbortController();
+    const sends = scriptedFetch([
+      () => {
+        setTimeout(() => controller.abort(), 10);
+        return failing()();
+      },
+      success,
+    ]);
+    const book = recordedLedger();
+    await expect(
+      new AnthropicMessagesProvider({ apiKey: FAKE_API_KEY, ledger: book.recording }).decide({
+        ...request([]),
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(/abort|timed out/i);
+    expect(sends).toHaveLength(1);
+    expect(book.settled[0]!.usd).toBe(book.reserved[0]!.usd);
+    expect(book.month().reservations).toEqual({});
+  });
+
+  it("stops during connection backoff at the original request deadline", async () => {
+    const sends = scriptedFetch([failing(), success]);
+    const book = recordedLedger();
+    const metadata: Record<string, unknown>[] = [];
+    await expect(
+      new AnthropicMessagesProvider({ apiKey: FAKE_API_KEY, ledger: book.recording }).decide({
+        ...request(metadata),
+        timeoutMs: 30,
+      }),
+    ).rejects.toThrow(/abort|timed out/i);
+    expect(sends).toHaveLength(1);
+    expect(book.reserved).toHaveLength(1);
+    expect(book.month().reservations).toEqual({});
+    expect(metadata.at(-1)).toMatchObject({ errorDiagnostics: { aborted: true, timedOut: true } });
+  });
+
+  it("settles an in-flight timed-out request without another fetch", async () => {
+    let sends = 0;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      sends++;
+      const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+      if (!signal) throw new Error("synthetic fetch needs its abort signal");
+      return await new Promise<Response>((_resolve, reject) => {
+        const abort = () => reject(new DOMException("synthetic cancelled fetch", "AbortError"));
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+      });
+    });
+    const book = recordedLedger();
+    const metadata: Record<string, unknown>[] = [];
+    await expect(
+      new AnthropicMessagesProvider({ apiKey: FAKE_API_KEY, ledger: book.recording }).decide({
+        ...request(metadata),
+        timeoutMs: 30,
+      }),
+    ).rejects.toThrow(/abort|timed out/i);
+    expect(sends).toBe(1);
+    expect(book.settled[0]!.usd).toBe(book.reserved[0]!.usd);
+    expect(book.month().reservations).toEqual({});
+    expect(metadata.at(-1)).toMatchObject({ errorDiagnostics: { aborted: true, timedOut: true } });
+  });
+
+  it("does not retry an SDK request timeout", async () => {
+    const sends = scriptedFetch([
+      () => {
+        throw new DOMException("synthetic SDK timeout", "AbortError");
+      },
+      success,
+    ]);
+    const book = recordedLedger();
+    const metadata: Record<string, unknown>[] = [];
+    await expect(
+      new AnthropicMessagesProvider({ apiKey: FAKE_API_KEY, ledger: book.recording }).decide(
+        request(metadata),
+      ),
+    ).rejects.toThrow();
+    expect(sends).toHaveLength(1);
+    expect(book.reserved).toHaveLength(1);
+    expect(metadata.at(-1)).toMatchObject({ errorDiagnostics: { timedOut: true } });
+  });
+
+  it("refuses a later connection retry at the game cap while retaining the first unknown charge", async () => {
+    const sends = scriptedFetch([failing(), success]);
+    const book = recordedLedger();
+    const admitted: number[] = [];
+    let cap = 0;
+    const metadata: Record<string, unknown>[] = [];
+    const call = {
+      ...request(metadata),
+      admitSpend: (usd: number) => {
+        admitted.push(usd);
+        if (!cap) cap = usd * 1.5;
+        if (usd > cap) throw new Error("synthetic game cap reached");
+      },
+    };
+    await expect(
+      new AnthropicMessagesProvider({ apiKey: FAKE_API_KEY, ledger: book.recording }).decide(call),
+    ).rejects.toThrow("synthetic game cap reached");
+    expect(admitted).toHaveLength(2);
+    expect(admitted[1]).toBeCloseTo(2 * admitted[0]!, 15);
+    expect(sends).toHaveLength(1);
+    expect(book.reserved).toHaveLength(1);
+    expect(book.month().settledUsd).toBe(book.reserved[0]!.usd);
+    expect(book.month().reservations).toEqual({});
+    expect(metadata.at(-1)).toMatchObject({ heldUsd: book.reserved[0]!.usd, attempts: 1 });
+  });
+
+  it("retains a monthly cap when a second connection attempt cannot reserve", async () => {
+    const sends = scriptedFetch([failing(), success]);
+    const book = recordedLedger();
+    const call = request([]);
+    const body = anthropic.claudeRequest(call, 16000);
+    const held = claudeReservationUsd(
+      call.model,
+      Buffer.byteLength(JSON.stringify(body)),
+      body.max_tokens,
+    );
+    const previous = 200 - 1.5 * held;
+    book.ledger.reserve("synthetic-previous", previous);
+    book.ledger.settle("synthetic-previous", previous);
+    await expect(
+      new AnthropicMessagesProvider({ apiKey: FAKE_API_KEY, ledger: book.recording }).decide(call),
+    ).rejects.toThrow();
+    expect(sends).toHaveLength(1);
+    expect(book.reserved).toHaveLength(1);
+    expect(book.month().settledUsd).toBeCloseTo(previous + held, 12);
+    expect(book.month().settledUsd).toBeLessThanOrEqual(200);
+    expect(book.month().reservations).toEqual({});
+  });
+
+  it("does not retry when settling a failed transport attempt throws", async () => {
+    const sends = scriptedFetch([failing(), success]);
+    const reserve = vi.fn();
+    const settle = vi.fn(() => {
+      throw new Error("synthetic ledger unavailable");
+    });
+    const metadata: Record<string, unknown>[] = [];
+    await expect(
+      new AnthropicMessagesProvider({ apiKey: FAKE_API_KEY, ledger: { reserve, settle } }).decide(
+        request(metadata),
+      ),
+    ).rejects.toThrow("synthetic ledger unavailable");
+    expect(sends).toHaveLength(1);
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledOnce();
+    expect(metadata.at(-1)).toHaveProperty("heldUsd");
+    expect(metadata.at(-1)).not.toHaveProperty("costUsd");
+  });
+
+  it("does not retry schema validation and preserves its known settled cost", async () => {
+    const sends = scriptedFetch([success, success]);
+    const book = recordedLedger();
+    const metadata: Record<string, unknown>[] = [];
+    const call = { ...request(metadata), schema: z.object({ choice: z.literal("different") }) };
+    await expect(
+      new AnthropicMessagesProvider({ apiKey: FAKE_API_KEY, ledger: book.recording }).decide(call),
+    ).rejects.toThrow();
+    expect(sends).toHaveLength(1);
+    expect(book.reserved).toHaveLength(1);
+    expect(book.settled[0]!.usd).toBeCloseTo(ACTUAL, 15);
+    expect(metadata.at(-1)?.costUsd).toBeCloseTo(ACTUAL, 15);
+    const combined = Object.assign({}, ...metadata);
+    expect(combined.costUsd).toBeCloseTo(ACTUAL, 15);
+    expect(combined).not.toHaveProperty("heldUsd");
+    expect(combined).toHaveProperty("errorDiagnostics");
+  });
+});
+
+describe("Claude cancellation at admission and stream boundaries", () => {
+  it("sends and reserves nothing when game admission observes cancellation", async () => {
+    const sends = scriptedFetch([success]);
+    const book = recordedLedger();
+    const controller = new AbortController();
+    const provider = new AnthropicMessagesProvider({
+      apiKey: FAKE_API_KEY,
+      ledger: book.recording,
+    });
+    await expect(
+      provider.decide({
+        ...request([]),
+        signal: controller.signal,
+        admitSpend: () => controller.abort(),
+      }),
+    ).rejects.toThrow(/abort|timed out/i);
+    expect(sends).toHaveLength(0);
+    expect(book.reserved).toHaveLength(0);
+    expect(book.ledger.status()).toMatchObject({ settledUsd: 0, openReservations: 0 });
+  });
+
+  it("does not send after the asynchronous warm gate returns an aborted signal", async () => {
+    const sends = scriptedFetch([success]);
+    const book = recordedLedger();
+    const controller = new AbortController();
+    let releases = 0;
+    class CancellingGate extends ClaudeWarmGate {
+      override async enter() {
+        controller.abort();
+        return () => {
+          releases++;
+        };
+      }
+    }
+    const provider = new AnthropicMessagesProvider({
+      apiKey: FAKE_API_KEY,
+      ledger: book.recording,
+      warmGate: new CancellingGate(),
+    });
+    await expect(
+      provider.decide({
+        ...request([]),
+        signal: controller.signal,
+        claudeHarness: {
+          system: [{ type: "text", text: "Synthetic instructions." }],
+          messages: [{ role: "user", content: "Synthetic input." }],
+          warmGateKey: "synthetic-cancel-guard",
+        },
+      }),
+    ).rejects.toThrow(/abort|timed out/i);
+    expect(sends).toHaveLength(0);
+    expect(book.reserved).toHaveLength(1);
+    expect(book.settled[0]!.usd).toBe(book.reserved[0]!.usd);
+    expect(book.month().reservations).toEqual({});
+    expect(releases).toBe(1);
+  });
+});
