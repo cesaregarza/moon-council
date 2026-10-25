@@ -330,6 +330,14 @@ export type ExperimentSummaryV2 = z.infer<typeof ExperimentSummaryV2Schema>;
 export type StoredExperimentSummary = z.infer<typeof StoredExperimentSummarySchema>;
 const Id = z.string().min(1).max(120);
 const Brief = z.string().max(240);
+export const RATIONALE_TARGET_CHARACTERS = 300;
+export const RATIONALE_REJECTION_CHARACTERS = 600;
+export const RATIONALE_INSTRUCTIONS = `Aim for about ${RATIONALE_TARGET_CHARACTERS} characters of rationale. Use at most ${RATIONALE_REJECTION_CHARACTERS - 1} characters; a rationale of ${RATIONALE_REJECTION_CHARACTERS} characters or more is invalid.`;
+/** Existing Zod string-length semantics: Unicode code points, without trimming. */
+export const RationaleSchema = z
+  .string()
+  .max(RATIONALE_REJECTION_CHARACTERS - 1)
+  .describe(RATIONALE_INSTRUCTIONS);
 const SourceId = z
   .string()
   .min(1)
@@ -488,13 +496,13 @@ export const DiscussionBidV3Schema = z.strictObject({
   plan: DiscussionPlanV3Schema.nullable(),
   listen: z.record(z.string(), z.number().min(0).max(1)),
   memory: MemorySuggestionsV3Schema,
-  rationale: z.string().max(300),
+  rationale: RationaleSchema,
 });
 export const ListenerBidV3Schema = z.strictObject({
   ready: z.boolean(),
   listen: z.record(z.string(), z.number().min(0).max(1)),
   memory: MemorySuggestionsV3Schema,
-  rationale: z.string().max(300),
+  rationale: RationaleSchema,
 });
 const SpeechActSuggestionV3Schema = z.strictObject({
   kind: z.enum(["accusation", "challenge", "role_claim", "result_claim", "reply"]),
@@ -506,13 +514,13 @@ export const SpeechSubmissionV3Schema = z.strictObject({
   text: z.string().min(1).max(1_200).nullable(),
   acts: z.array(SpeechActSuggestionV3Schema).max(4),
   respondsTo: EvidenceHandlesV3Schema,
-  rationale: z.string().max(300),
+  rationale: RationaleSchema,
   memory: MemorySuggestionsV3Schema,
 });
 export const TargetChoiceSubmissionV3Schema = z.strictObject({
   mode: z.enum(["direct", "uniform", "abstain"]),
   choiceHandles: z.array(z.string().min(1).max(8)).max(16),
-  rationale: z.string().max(300),
+  rationale: RationaleSchema,
   evidence: EvidenceHandlesV3Schema,
   memory: MemorySuggestionsV3Schema,
   reconsiderationQuestion: Brief.nullable(),
@@ -545,7 +553,7 @@ export const DecisionReportV2Schema = z.strictObject({
   selectedAlternativeId: Id,
   proposal: ActionProposalV2Schema,
   confidence: z.number().min(0).max(1),
-  summary: Brief,
+  summary: RationaleSchema,
   journalPatch: z.array(JournalOperationSchema).max(6),
   control: z.strictObject({
     kind: z.enum(["commit", "continue"]),
@@ -575,7 +583,9 @@ export function reportSchema(
   // episode; the executor deterministically commits a valid final proposal even
   // if the model redundantly asks to continue.
   void commitOnly;
-  const base = DecisionReportV2Schema.extend({ proposal });
+  // V3 compatibility reports retain the full rationale; archived V2 provider
+  // requests keep their original concise-summary contract.
+  const base = DecisionReportV2Schema.extend({ proposal, summary: Brief });
   if (kind !== "discussion") return base;
   // Keep provider schemas stable across players and turns. Delivered source IDs are
   // intentionally checked by validateReport after parsing; baking them into enums

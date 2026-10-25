@@ -65,6 +65,13 @@ plan is not recorded as an action the player took. V3 stores a concise contempor
 it is an inspectable game artifact, not hidden chain-of-thought and not a claim that every internal
 causal step was captured.
 
+V3.1-style requests (`agent_v3_1`, `agent_v3_2`, and `agent_claude_session_v1`) ask for
+approximately 300 characters of rationale. Lengths below 600 are accepted; 600 or more are rejected.
+The count uses the existing Zod string-length semantics (Unicode code points). The complete accepted
+rationale is preserved as the compatibility report's summary; it is never silently truncated. This
+prose allowance does not change speech-act, action, reference, journal, context, output-token, or
+spend limits.
+
 Every `decision.reported` record contains both the small validated `submission` and the
 application-constructed compatibility report. The decision inspector shows the task type, submitted
 result, resulting journal patch, continuation verdict, attempts, and committed event.
