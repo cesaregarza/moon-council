@@ -216,6 +216,14 @@ export class V2GameOrchestrator {
     const game = this.repository.getGame(id)!;
     if (!game || !["queued", "lobby", "running", "stepping"].includes(game.status)) return;
     let state = this.initialize(id);
+    if (isEveryTurn(state.config) && !this.policies) {
+      // Checked before any work, on every start and resume: no event but the pause, no call.
+      const reason =
+        "auction_every_turn needs a no-lynch day-end policy (open rule N); none was supplied";
+      this.append(state, "game.paused", { reason, unresolved: true });
+      this.repository.updateGame(id, { status: "paused", error: reason });
+      return;
+    }
     if (game.status === "queued" || game.status === "lobby")
       this.repository.updateGame(id, { status: "running" });
     const initial = `${state.day}:${state.phase}`;
@@ -1003,16 +1011,14 @@ export class V2GameOrchestrator {
    * pauses the game. It never picks a speaker, forces a speech or forces a vote.
    */
   private async discussEveryTurn(state: GameState, events: GameEventV1[]): Promise<boolean> {
-    if (!this.policies)
-      throw new DecisionPausedError(
-        "auction_every_turn needs a no-lynch day-end policy (open rule N); none was supplied",
-      );
+    // runGameStep refuses the mode without its policies before any work.
+    const policies = this.policies!;
     const accusation = pendingAccusation(state, events);
     if (accusation) return this.resolveAccusation(state, events, accusation);
     const turn = everyTurnStatus(state, events);
     if (
       turn.lastAllDeclined &&
-      this.policies.noLynchDayEnd({ reason: "all_declined", state, events }) === "end_day"
+      policies.noLynchDayEnd({ reason: "all_declined", state, events }) === "end_day"
     ) {
       this.store.atomic(() => {
         this.append(state, "discussion.ended", { reason: "no_lynch" }, "moderator");
@@ -1190,7 +1196,7 @@ export class V2GameOrchestrator {
         this.procedureDecision(state, accusation, "lynch_ballot", at),
       );
     const ballots = Object.fromEntries(voters.map((playerId) => [playerId, cast.get(playerId)!]));
-    const outcome = lynchOutcome(ballots);
+    const outcome = lynchOutcome(ballots, voters);
     const target = state.players.find((player) => player.id === accusation.targetId)!;
     this.store.atomic(() => {
       const record = { accusationId: accusation.id, targetId: target.id };

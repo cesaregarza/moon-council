@@ -87,9 +87,16 @@ export function chooseSeconder(
   );
 }
 
-/** A lynch vote passes only on a strict majority of the living: yes > living / 2. */
-export function lynchOutcome(ballots: Record<string, "yes" | "no">) {
-  const values = Object.values(ballots);
-  const yes = values.filter((ballot) => ballot === "yes").length;
-  return { yes, no: values.length - yes, living: values.length, passed: yes > values.length / 2 };
+/**
+ * A lynch vote passes only on a strict majority of the living: yes > living / 2. The denominator
+ * is the living roster, never the ballots at hand: a missing or extra ballot is refused, so a
+ * partial count can never carry the vote.
+ */
+export function lynchOutcome(ballots: Record<string, "yes" | "no">, livingPlayerIds: string[]) {
+  const voters = Object.keys(ballots).sort();
+  if (JSON.stringify(voters) !== JSON.stringify([...livingPlayerIds].sort()))
+    throw new Error("lynch ballots must be exactly one per living player");
+  const yes = voters.filter((voter) => ballots[voter] === "yes").length;
+  const living = livingPlayerIds.length;
+  return { yes, no: living - yes, living, passed: yes > living / 2 };
 }
