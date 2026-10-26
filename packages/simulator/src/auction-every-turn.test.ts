@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GameConfigV2Schema,
   emptyJournalV2,
@@ -15,9 +15,11 @@ import {
   type DecisionProvider,
   type JevRequest,
 } from "@werewolf/llm";
+import { buildApi } from "../../../apps/api/src/app";
 import { observerEvents } from "../../../apps/api/src/observer";
 import { auditGameV2 } from "./audit-v2";
 import { buildContextV2, publicPayload } from "./context-v2";
+import { lynchOutcome } from "./every-turn";
 import { V2GameOrchestrator, type EveryTurnPolicies } from "./orchestrator-v2";
 import { JOURNAL_EVIDENCE_TYPES } from "./player-brief";
 import { v31ApiResponseFormat, v31SubmissionSchema, validateV31Submission } from "./request-v3-1";
@@ -35,8 +37,15 @@ import { actorConfig } from "./testing/actor-fixtures";
  * no lynch ends).
  */
 const connections: DatabaseConnection[] = [];
-afterEach(() => {
+const apis: Awaited<ReturnType<typeof buildApi>>[] = [];
+afterEach(async () => {
+  vi.restoreAllMocks();
   while (connections.length) connections.pop()!.close();
+  while (apis.length) {
+    const built = apis.pop()!;
+    await built.app.close();
+    built.connection.close();
+  }
 });
 
 function everyTurnConfig(seed: string, turnBudgetFactor = 1): GameConfigV2 {
@@ -78,7 +87,13 @@ interface Script {
   secondUrgency?: (seat: string) => number;
   /** The seat's lynch ballot: "yes" or "no", or anything else for garbage. */
   ballot?: (seat: string) => string;
+  /**
+   * Called on every request with its procedure point (the urge, second, urgency or ballot
+   * question it asks) and seat; a number returned is reported as that call's token usage.
+   */
+  onCall?: (point: string, seat: string) => number | void;
 }
+const POINTS = ["urge", "second", "urgency", "ballot"];
 
 /** Scripted Jev, recording every request it is asked. */
 function scriptedJev(script: Script) {
@@ -87,6 +102,8 @@ function scriptedJev(script: Script) {
     const request = JSON.parse(input) as JevRequest;
     const seat = seatOf(input) ?? "";
     inputs.push({ seat, input });
+    const point = POINTS.find((key) => key in request.questions) ?? "other";
+    const tokens = script.onCall?.(point, seat) ?? 1;
     const answers = Object.fromEntries(
       Object.entries(request.questions).map(([key, q]) => {
         if (key === "urge") return [key, score(script.urge(seat, input))];
@@ -105,7 +122,11 @@ function scriptedJev(script: Script) {
         return [key, { type: "choice", choice, confidence: 1, probabilities }];
       }),
     );
-    return JSON.stringify({ model: "fake", usage: { input_tokens: 1, output_tokens: 1 }, answers });
+    return JSON.stringify({
+      model: "fake",
+      usage: { input_tokens: tokens, output_tokens: 1 },
+      answers,
+    });
   });
   return { jev, inputs };
 }
@@ -862,4 +883,372 @@ describe("auction_every_turn: records, schemas and dockets", () => {
     const moderator = observerEvents(repository, id, { kind: "moderator" });
     expect(moderator.some((e) => e.type === "discussion.ended")).toBe(true);
   }, 180_000);
+});
+
+describe("auction_every_turn: required setup is checked before any work (round 2)", () => {
+  /** The runner's construction: a provider, no Jev provider, no policies. Counts every call. */
+  const counted = () => {
+    const fake = new FakeDecisionProvider();
+    const calls: string[] = [];
+    const provider: DecisionProvider = {
+      decide: (request) => {
+        calls.push(request.kind);
+        return fake.decide(request);
+      },
+    };
+    return { provider, calls };
+  };
+  const setup = async (firstCycle: "day_first" | "night_first") => {
+    const built = await buildApi({ databaseUrl: ":memory:" });
+    apis.push(built);
+    const base = everyTurnConfig(`setup-${firstCycle}`);
+    const config = GameConfigV2Schema.parse({ ...base, rules: { ...base.rules, firstCycle } });
+    const game = built.repository.createGame(config);
+    const { provider, calls } = counted();
+    const runner = new V2GameOrchestrator(built.repository, provider);
+    return { built, id: game.id, runner, calls };
+  };
+  const expectRefusedWithoutWork = (
+    built: Awaited<ReturnType<typeof buildApi>>,
+    id: string,
+    calls: string[],
+    after: string[],
+  ) => {
+    const store = new DecisionStore(built.repository);
+    expect(calls).toEqual([]);
+    expect(store.opportunities(id)).toEqual([]);
+    expect(store.attempts(id)).toEqual([]);
+    const events = built.repository.listEvents(id);
+    expect(events[0]!.type).toBe("game.created");
+    expect(events.slice(1).map((e) => e.type)).toEqual(after);
+    expect(String(events.at(-1)!.payload.reason)).toMatch(/open rule N/);
+    expect(built.repository.getGame(id)!.status).toBe("paused");
+  };
+
+  for (const firstCycle of ["day_first", "night_first"] as const)
+    it(`refuses a ${firstCycle} game without the no-lynch policy before any work, and on resume`, async () => {
+      const { built, id, runner, calls } = await setup(firstCycle);
+      await runner.runGameStep(id);
+      expectRefusedWithoutWork(built, id, calls, ["game.paused"]);
+      // Resume through the operator control path: it refuses again, still without any work.
+      const resumed = await built.app.inject({
+        method: "POST",
+        url: `/api/v1/games/${id}/control`,
+        payload: { action: "resume" },
+      });
+      expect(resumed.statusCode).toBe(200);
+      await runner.runGameStep(id);
+      expectRefusedWithoutWork(built, id, calls, ["game.paused", "game.resumed", "game.paused"]);
+    });
+
+  it("starts with the policy, and leaves staged games without one unaffected", async () => {
+    const { built, id } = await setup("day_first");
+    const { jev } = scriptedJev({ urge: () => 2 });
+    /** Decision stepping: each run stops after one committed decision. */
+    const stepOnce = async (runner: V2GameOrchestrator, gameId: string) => {
+      new DecisionStore(built.repository).put(gameId, "stepUnit", "decision");
+      built.repository.updateGame(gameId, { status: "stepping" });
+      for (let step = 0; step < 5; step += 1) await runner.runGameStep(gameId);
+    };
+    const { provider, calls } = counted();
+    await stepOnce(new V2GameOrchestrator(built.repository, provider, jev, policies()), id);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(built.repository.listEvents(id).some((e) => e.type === "game.started")).toBe(true);
+    const refusals = built.repository
+      .listEvents(id)
+      .filter((e) => e.type === "game.paused" && /open rule N/.test(String(e.payload.reason)));
+    expect(refusals).toEqual([]);
+    const staged = built.repository.createGame(
+      GameConfigV2Schema.parse({ ...actorConfig(), rules: { firstCycle: "day_first" } }),
+    );
+    const plain = counted();
+    await stepOnce(new V2GameOrchestrator(built.repository, plain.provider, jev), staged.id);
+    expect(plain.calls.length).toBeGreaterThan(0);
+    expect(built.repository.getGame(staged.id)!.status).not.toBe("paused");
+  }, 120_000);
+});
+
+describe("auction_every_turn: resource ceilings during the procedures (round 2)", () => {
+  type Point = "urge" | "second" | "urgency" | "ballot";
+  interface Call {
+    point: string;
+    seat: string;
+    attempts: number;
+  }
+  /** The first speaker accuses Hollis (p8), or Gale (p7) if the speaker is Hollis. */
+  const accuseFirst = () =>
+    players((seat, n) =>
+      n === 0 ? { kind: "accuse", targetId: seat === "p8" ? "p7" : "p8" } : { kind: "continue" },
+    );
+  /** Everyone seconds, urgency ranked by seat, and five seats vote yes. */
+  const script: Script = {
+    ...freshSpeakersFirst,
+    second: () => "yes",
+    secondUrgency: (seat) => Number(seat.slice(1)) % 5,
+    ballot: (seat) => (["p1", "p2", "p3", "p4", "p5"].includes(seat) ? "yes" : "no"),
+  };
+  /**
+   * When each procedure has resolved. The bids are those of the second auction round: the
+   * model-call ceiling cannot be set below 20, which the first round's bids come before.
+   */
+  const done: Record<Point, (events: GameEventV1[]) => boolean> = {
+    urge: (events) => auctions(events).length > 1,
+    second: (events) => ofType(events, "accusation.seconded").length > 0,
+    urgency: (events) => ofType(events, "accusation.seconded").length > 0,
+    ballot: (events) => ofType(events, "lynch.resolved").length > 0,
+  };
+  /** The procedure's result, without random IDs. */
+  const outcome = (point: Point, events: GameEventV1[]) => {
+    const strip = ({ accusationId: _a, auctionKey: _k, ...rest }: Record<string, unknown>) => rest;
+    if (point === "urge") return strip(auctions(events)[1]!.payload);
+    if (point !== "ballot") return strip(ofType(events, "accusation.seconded")[0]!.payload);
+    return [
+      strip(ofType(events, "lynch.ballots_revealed")[0]!.payload),
+      strip(ofType(events, "lynch.resolved")[0]!.payload),
+    ];
+  };
+  const taskOf: Record<Point, string> = {
+    urge: "discussion_score",
+    second: "second_poll",
+    urgency: "second_urgency",
+    ballot: "lynch_ballot",
+  };
+
+  /** One accusation game in an API database, so the operator's extend_budget runs as in use. */
+  async function ceilingGame(
+    point: Point,
+    limits: { maxTotalTokens?: number; maxModelCalls?: number },
+    onCall?: (call: Call, nth: number) => number | void,
+  ) {
+    const built = await buildApi({ databaseUrl: ":memory:" });
+    apis.push(built);
+    const base = everyTurnConfig("ceilings", 0.5);
+    // The default active-runtime limit, so an operator extension can raise it.
+    const config = GameConfigV2Schema.parse({
+      ...base,
+      maxTotalTokens: limits.maxTotalTokens ?? base.maxTotalTokens,
+      safety: {
+        ...base.safety,
+        maxModelCalls: limits.maxModelCalls ?? 10_000,
+        maxWallClockMs: 1_800_000,
+      },
+    });
+    const game = built.repository.createGame(config);
+    const store = new DecisionStore(built.repository);
+    const calls: Call[] = [];
+    const { jev } = scriptedJev({
+      ...script,
+      onCall: (point, seat) => {
+        calls.push({ point, seat, attempts: store.attempts(game.id).length });
+        return onCall?.(calls.at(-1)!, calls.filter((call) => call.point === point).length);
+      },
+    });
+    new V2GameOrchestrator(built.repository, new FakeDecisionProvider()).initialize(game.id);
+    // The bids are measured in a day without accusations, which a first-speech lynch would end.
+    const speakers = point === "urge" ? players() : accuseFirst();
+    const runner = new V2GameOrchestrator(built.repository, speakers, jev, policies());
+    built.repository.updateGame(game.id, { status: "running" });
+    const events = () => built.repository.listEvents(game.id);
+    const status = () => built.repository.getGame(game.id)!.status;
+    return {
+      config,
+      store,
+      id: game.id,
+      calls,
+      events,
+      status,
+      run: async (until: (events: GameEventV1[]) => boolean) => {
+        for (let step = 0; step < 400 && status() === "running" && !until(events()); step += 1)
+          await runner.runGameStep(game.id);
+      },
+      extend: (payload: Record<string, unknown>) =>
+        built.app.inject({
+          method: "POST",
+          url: `/api/v1/games/${game.id}/control`,
+          payload: { action: "extend_budget", ...payload },
+        }),
+    };
+  }
+  /**
+   * The procedure's answers by seat, as validated proposals. For the bids, only the second
+   * auction round's: each seat bid in the first round too.
+   */
+  const answers = (store: DecisionStore, id: string, point: Point, events: GameEventV1[]) => {
+    const after = point === "urge" ? auctions(events)[0]!.sequence : -1;
+    const opened = new Map(
+      events
+        .filter((e) => e.type === "decision.opened")
+        .map((e) => [String(e.payload.decisionId), e.sequence]),
+    );
+    return Object.fromEntries(
+      store
+        .opportunities(id)
+        .filter((op) => op.taskType === taskOf[point] && op.best && opened.get(op.id)! > after)
+        .map((op) => [op.playerId, op.best!.proposal]),
+    );
+  };
+  /** The seats asked in the procedure, in order: for the bids, those of the second round. */
+  const procedureSeats = (calls: Call[], point: Point) =>
+    seatsAsked(calls, point).slice(point === "urge" ? 8 : 0);
+  /** The uninterrupted run each stop is compared with, played once per procedure. */
+  const references = new Map<Point, ReturnType<typeof referenceRun>>();
+  const referenceRun = async (point: Point) => {
+    const game = await ceilingGame(point, {});
+    await game.run(done[point]);
+    expect(done[point](game.events()), `${point} resolves without a stop`).toBe(true);
+    return {
+      config: game.config,
+      calls: [...game.calls],
+      events: game.events(),
+      answers: answers(game.store, game.id, point, game.events()),
+    };
+  };
+  const reference = (point: Point) => {
+    if (!references.has(point)) references.set(point, referenceRun(point));
+    return references.get(point)!;
+  };
+  const seatsAsked = (calls: Call[], point: Point) =>
+    calls.filter((call) => call.point === point).map((call) => call.seat);
+  /** The nth call of each procedure that the stops land on: some answers are in, some are not. */
+  const STOP: Record<Point, number> = { urge: 11, second: 3, urgency: 3, ballot: 4 };
+
+  for (const point of ["urge", "second", "urgency", "ballot"] as const)
+    for (const ceiling of ["tokens", "runtime"] as const)
+      it(`resumes the ${point} procedure after the ${ceiling} ceiling, keeping every answer`, async () => {
+        const ref = await reference(point);
+        const realNow = Date.now.bind(Date);
+        let offset = 0;
+        vi.spyOn(Date, "now").mockImplementation(() => realNow() + offset);
+        const game = await ceilingGame(point, {}, (call, nth) => {
+          if (call.point !== point || nth !== STOP[point]) return;
+          if (ceiling === "runtime") offset += 2 * ref.config.safety.maxWallClockMs;
+          return ceiling === "tokens" ? 10 * ref.config.maxTotalTokens! : undefined;
+        });
+        await game.run(done[point]);
+        expect(game.status()).toBe("budget_exhausted");
+        expect(done[point](game.events())).toBe(false);
+        expect(seatsAsked(game.calls, point)).toEqual(
+          seatsAsked(ref.calls, point).slice(0, STOP[point]),
+        );
+        const extended = await game.extend({
+          maxTotalTokens: 100_000_000,
+          maxWallClockMs: 86_400_000,
+        });
+        expect(extended.statusCode).toBe(200);
+        await game.run(done[point]);
+        expect(done[point](game.events())).toBe(true);
+        // Each seat asked once, in the same order as the uninterrupted run: no answer asked again.
+        expect(seatsAsked(game.calls, point)).toEqual(seatsAsked(ref.calls, point));
+        expect(outcome(point, game.events())).toEqual(outcome(point, ref.events));
+        const denominator =
+          point === "ballot"
+            ? living(everyTurnConfig("x"))
+            : point === "second"
+              ? living(everyTurnConfig("x")).filter(
+                  (seat) =>
+                    seat !==
+                    String(ofType(game.events(), "accusation.raised")[0]!.payload.accuserId),
+                )
+              : undefined;
+        if (denominator)
+          expect(
+            game.store
+              .opportunities(game.id)
+              .filter((op) => op.taskType === taskOf[point])
+              .map((op) => op.playerId)
+              .sort(),
+          ).toEqual(denominator);
+      }, 180_000);
+
+  for (const point of ["urge", "second", "urgency", "ballot"] as const)
+    it(`resolves nothing when the model-call ceiling stops the ${point} procedure`, async () => {
+      const ref = await reference(point);
+      const target = ref.calls.filter((call) => call.point === point)[STOP[point] - 1]!;
+      const game = await ceilingGame(point, { maxModelCalls: target.attempts });
+      await game.run(done[point]);
+      expect(game.status()).toBe("budget_exhausted");
+      const events = game.events();
+      // Nothing the interrupted procedure decides is recorded.
+      const unresolved =
+        point === "ballot"
+          ? ["lynch.ballots_revealed", "lynch.resolved"]
+          : [
+              "accusation.seconded",
+              "accusation.unseconded",
+              "lynch.ballots_revealed",
+              "lynch.resolved",
+            ];
+      for (const type of unresolved) expect(ofType(events, type), type).toEqual([]);
+      if (point === "urge")
+        expect(auctions(events), "no speaker from a partial round").toHaveLength(1);
+      // The answers validated before the stop stay as they were; nothing else was answered.
+      const asked = procedureSeats(game.calls, point);
+      expect(asked).toEqual(procedureSeats(ref.calls, point).slice(0, asked.length));
+      expect(asked.length).toBeLessThan(procedureSeats(ref.calls, point).length);
+      const kept = answers(game.store, game.id, point, events);
+      expect(Object.keys(kept).sort()).toEqual([...asked].sort());
+      for (const seat of asked) expect(kept[seat], seat).toEqual(ref.answers[seat]);
+    }, 180_000);
+});
+
+describe("auction_every_turn: the lynch denominator and the docket contract (round 2)", () => {
+  const outcomeOf = lynchOutcome as (
+    ballots: Record<string, "yes" | "no">,
+    livingPlayerIds: string[],
+  ) => ReturnType<typeof lynchOutcome>;
+  const roster = ["p1", "p2", "p3", "p4"];
+
+  it("takes the denominator from the living roster and refuses a missing or extra ballot", () => {
+    expect(outcomeOf({ p1: "yes", p2: "yes", p3: "yes", p4: "no" }, roster)).toEqual({
+      yes: 3,
+      no: 1,
+      living: 4,
+      passed: true,
+    });
+    expect(outcomeOf({ p1: "yes", p2: "yes", p3: "no", p4: "no" }, roster).passed).toBe(false);
+    // Two yes of a partial map would be a majority of the map, never of the living.
+    expect(() => outcomeOf({ p1: "yes", p2: "yes", p3: "no" }, roster)).toThrow(/ballot/);
+    expect(() =>
+      outcomeOf({ p1: "yes", p2: "yes", p3: "no", p4: "no", p9: "yes" }, roster),
+    ).toThrow(/ballot/);
+  });
+
+  it("pins the docket contract: a decline clears what the seat was shown", async () => {
+    // A seat that sees a challenge to it declines that turn; its docket entry is then gone from
+    // its next briefing unless it is challenged again. The public speech and journals remain.
+    const silenced = new Set<string>();
+    const { jev } = scriptedJev({
+      urge: (seat, input) => {
+        if (input.includes("Unanswered challenge")) silenced.add(seat);
+        return silenced.has(seat) ? 0 : 1 + (hash(input) % 4);
+      },
+    });
+    const { repository, id, events } = await playDay(everyTurnConfig("docket-contract"), jev);
+    const store = new DecisionStore(repository);
+    const opened = new Map(
+      events
+        .filter((e) => e.type === "decision.opened")
+        .map((e) => [String(e.payload.decisionId), e.sequence]),
+    );
+    let pinned = 0;
+    for (const seat of silenced) {
+      const challenges = speeches(events).filter((e) =>
+        (e.payload.acts as { kind: string; targetId: string | null }[]).some(
+          (act) => act.kind === "challenge" && act.targetId === seat,
+        ),
+      );
+      const bids = store
+        .opportunities(id)
+        .filter((op) => op.playerId === seat && op.taskType === "discussion_score")
+        .sort((a, b) => opened.get(a.id)! - opened.get(b.id)!);
+      const first = challenges[0]!;
+      const shown = bids.findIndex((op) => op.packet.responseDocket.includes(first.id));
+      expect(shown, `${seat} is shown the challenge`).toBeGreaterThanOrEqual(0);
+      const next = bids[shown + 1];
+      if (!next) continue;
+      expect(next.packet.responseDocket, `${seat}'s next briefing`).not.toContain(first.id);
+      pinned += 1;
+    }
+    expect(pinned).toBeGreaterThan(0);
+  }, 120_000);
 });
