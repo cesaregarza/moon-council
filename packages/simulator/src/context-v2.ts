@@ -16,7 +16,7 @@ import { shuffled, validateNightAction, type GameState } from "@werewolf/engine"
 import { decisionRequestV2, estimatedTokens } from "./request-v2";
 import { isDemotable, tierPayload, type DeliveryTier } from "./evidence-tiers";
 import { journalText, journalTokens } from "./freeform-journal";
-import { isEveryTurn } from "./every-turn";
+import { isEveryTurn, pendingAccusation } from "./every-turn";
 export { estimatedTokens } from "./request-v2";
 
 export class ContextLimitError extends Error {}
@@ -47,13 +47,17 @@ function nonVoteTargets(
   if (!PROCEDURE_KINDS.has(kind)) return legalActions[0]?.targets ?? [];
   return [String(events.findLast((e) => e.type === "accusation.raised")?.payload.targetId)];
 }
-/** The speaker-selection rules a packet states; the auction-every-turn mode has no candidate limit. */
-function speakerRules(state: GameState) {
+/**
+ * The speaker-selection rules a packet states. The auction-every-turn mode has no candidate limit,
+ * and while an accusation is pending, a speech cannot raise another (CES-1575).
+ */
+function speakerRules(state: GameState, events: GameEventV1[]) {
   const formula = "(bias + urge) * normalized aggregate willingness to listen; maximum wins";
   return isEveryTurn(state.config)
     ? {
         speakerPriorityFormula: `${formula}; every living player is a candidate every turn`,
         discussionMode: "auction_every_turn",
+        ...(pendingAccusation(state, events) ? { accusationPending: true } : {}),
       }
     : {
         speakerPriorityFormula: `${formula}; response rights restrict the candidate set before scoring`,
@@ -64,6 +68,8 @@ function endActionErrors(proposal: ActionProposalV2, packet: PlayerContextV2): s
   if (proposal.kind !== "discussion" || !proposal.speech || !packet.rules.discussionMode) return [];
   const end = proposal.speech.endAction;
   if (!end) return ["speeches in this mode must end with an endAction"];
+  if (end.kind === "accuse" && packet.rules.accusationPending)
+    return ["no formal accusation while another is pending"];
   const living = packet.players.some(
     (p) =>
       p.alive && p.id === (end.kind === "accuse" ? end.targetId : "") && p.id !== packet.self.id,
@@ -282,7 +288,7 @@ export function buildContextV2(
         : {}),
       speakerSelection: closing ? "frozen_closing" : config.discussion.speakerSelection,
       speakerBias: config.discussion.speakerBias,
-      ...speakerRules(state),
+      ...speakerRules(state, events),
       listenerIntent:
         "For listener auctions, privately rate willingness to listen to every other living player. This is scheduling preference, not an alignment fact.",
     },

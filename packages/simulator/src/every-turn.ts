@@ -20,24 +20,41 @@ export function namesWholeWord(text: string, name: string): boolean {
 const today = (state: GameState, events: GameEventV1[]) =>
   events.filter((event) => event.day === state.day);
 
-/** Where today's discussion stands: turns completed, and whether the last one was all-decline. */
+/** A completed turn: a speech, or an auction in which every bidder declined. */
+const completesTurn = (event: GameEventV1) =>
+  event.type === "speech.public" ||
+  (event.type === "discussion.auction_resolved" && event.payload.selectedPlayerId === null);
+
+/**
+ * Where today's discussion stands: the turns completed (the post-second window's included), the
+ * day's turn budget, ceil(living x turnBudgetFactor) plus the operator's grants for this day, and
+ * whether the last turn was an all-decline round of the ordinary auction, which ends the day.
+ */
 export function everyTurnStatus(state: GameState, events: GameEventV1[]) {
   const day = today(state, events);
-  const turns = day.filter(
-    (event) =>
-      event.type === "speech.public" ||
-      (event.type === "discussion.auction_resolved" && event.payload.selectedPlayerId === null),
-  );
+  const turns = day.filter(completesTurn);
   const living = state.players.filter((player) => player.alive).length;
   const factor =
     state.config.schemaVersion === "game_config_v2"
       ? state.config.discussion.turnBudgetFactor
       : undefined;
+  const granted = day
+    .filter((event) => event.type === "discussion.turns_extended")
+    .reduce((sum, event) => sum + Number(event.payload.extraTurns), 0);
+  const last = turns.at(-1);
   return {
     round: turns.length,
-    lastAllDeclined: turns.at(-1)?.type === "discussion.auction_resolved",
-    budget: Math.ceil(living * (factor ?? 0)),
+    lastAllDeclined: last?.type === "discussion.auction_resolved" && last.payload.stage === "turn",
+    budget: Math.ceil(living * (factor ?? 0)) + granted,
   };
+}
+
+/** The turns after a second before its ballot (CES-1575). */
+export const WINDOW_TURNS = 3;
+
+/** The post-second window's turns completed since the accusation was seconded. */
+export function windowTurnsDone(events: GameEventV1[], secondedSequence: number): number {
+  return events.filter((event) => event.sequence > secondedSequence && completesTurn(event)).length;
 }
 
 export interface Accusation {
