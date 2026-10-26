@@ -28,7 +28,11 @@ export type V3TaskSpec =
   | { type: "closing_response"; revision: string }
   | { type: "vote_choice"; proposalKind: "vote" }
   | { type: "night_choice"; proposalKind: "night_action" }
-  | { type: "team_point_choice"; proposalKind: "team_point" };
+  | { type: "team_point_choice"; proposalKind: "team_point" }
+  // CES-1575, auction_every_turn only: the seconding poll, its urgency poll, the lynch ballot.
+  | { type: "second_poll"; accusationId: string; targetId: string }
+  | { type: "second_urgency"; accusationId: string; targetId: string }
+  | { type: "lynch_ballot"; accusationId: string; targetId: string };
 
 export type V3Submission =
   DiscussionBidV3 | ListenerBidV3 | SpeechSubmissionV3 | TargetChoiceSubmissionV3;

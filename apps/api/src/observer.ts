@@ -148,6 +148,13 @@ export function observerEvents(
         "moderator.announcement",
         "phase.changed",
         "game.ended",
+        // CES-1575: public accusation records. Poll answers, urgencies and the auction-every-turn
+        // discussion.ended are moderator records, filtered out above.
+        "accusation.raised",
+        "accusation.seconded",
+        "accusation.unseconded",
+        "lynch.ballots_revealed",
+        "lynch.resolved",
       ].includes(event.type)
     )
       payload = publicPayload(event);

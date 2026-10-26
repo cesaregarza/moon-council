@@ -9,6 +9,7 @@ import {
   type ContextSourceV2,
   type DecisionReportV2,
   type DiscussionPlanV3,
+  type EndAction,
   type MemorySuggestionsV3,
   type PlayerContextV2,
   type PrivateJournalV2,
@@ -83,7 +84,12 @@ type V31Speech = {
   respondsTo: string[];
   rationale: string;
   memory: V31Memory;
+  endAction?: EndAction;
 };
+/** CES-1575 accusation-procedure answers, each one field plus the shared provenance. */
+type V31Procedure = { rationale: string; evidence: string[]; memory: V31Memory } & (
+  { second: boolean } | { urgency: number } | { ballot: "yes" | "no" }
+);
 type V31Choice = {
   mode: "direct" | "uniform" | "abstain";
   choiceHandles: string[];
@@ -92,7 +98,18 @@ type V31Choice = {
   memory: V31Memory;
   reconsiderationQuestion: string | null;
 };
-export type V31Submission = V31Bid | V31Listen | V31Speech | V31Choice | V31Score | V31Journal;
+export type V31Submission =
+  V31Bid | V31Listen | V31Speech | V31Choice | V31Score | V31Journal | V31Procedure;
+const PROCEDURE_TASKS = new Set(["second_poll", "second_urgency", "lynch_ballot"]);
+/** Whether speeches in this packet's game end with an endAction (auction_every_turn). */
+const endsWithAction = (packet: PlayerContextV2) =>
+  packet.rules.discussionMode === "auction_every_turn";
+/** A speech's endAction schema; an accusation names a seat (validation checks it is living). */
+const endActionSchema = (player: z.ZodType<string>) =>
+  z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("continue") }),
+    z.strictObject({ kind: z.literal("accuse"), targetId: player }),
+  ]);
 
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 const asEnum = (values: string[]) => z.enum(values as [string, ...string[]]);
@@ -237,11 +254,30 @@ export function v31SubmissionSchema(
       claim: Brief,
       evidence: EvidenceHandle.nullable(),
     });
-    return z.strictObject({
+    const speech = z.strictObject({
       text: z.string().min(1).max(1_200).nullable(),
       acts: z.array(act).max(4),
       respondsTo: publicEvidence,
       rationale: RationaleSchema,
+      memory,
+    });
+    return (
+      endsWithAction(packet) && task.type !== "closing_response"
+        ? speech.extend({ endAction: endActionSchema(player) })
+        : speech
+    ) as z.ZodType<V31Submission>;
+  }
+  if (PROCEDURE_TASKS.has(task.type)) {
+    const answer =
+      task.type === "second_poll"
+        ? { second: z.boolean() }
+        : task.type === "second_urgency"
+          ? { urgency: z.number().min(0).max(1) }
+          : { ballot: z.enum(["yes", "no"]) };
+    return z.strictObject({
+      ...answer,
+      rationale: RationaleSchema,
+      evidence: allEvidence,
       memory,
     }) as z.ZodType<V31Submission>;
   }
@@ -279,6 +315,7 @@ export function v31ApiResponseFormat(
       )
       .max(4),
     respondsTo: z.array(PublicHandle).max(6),
+    ...(endsWithAction(packet) ? { endAction: endActionSchema(player) } : {}),
   });
   const schema = z.strictObject({
     task: z.enum(["journal_update", "discussion_free_speech", "closing_response"]),
@@ -301,7 +338,10 @@ export function v31ApiResponseFormat(
       (proseWorkflow(packet)
         ? "For speech tasks, memory.journalUpdate must be null. For journal_update return a prose append/replace update, or null if nothing changed. "
         : "") +
-      "API response envelope: task must exactly match REQUEST.task.type. For journal_update, speech must be null. For discussion_free_speech or closing_response, put text/acts/respondsTo in speech and leave memory unchanged (all update fields null or empty). Closing responses may only use reply acts. The task-specific game constraints still apply. Evidence is grouped by durability; E numbers preserve public event order, not the order of the message layers.",
+      "API response envelope: task must exactly match REQUEST.task.type. For journal_update, speech must be null. For discussion_free_speech or closing_response, put text/acts/respondsTo in speech and leave memory unchanged (all update fields null or empty). Closing responses may only use reply acts. The task-specific game constraints still apply. Evidence is grouped by durability; E numbers preserve public event order, not the order of the message layers." +
+      (endsWithAction(packet)
+        ? ' Every speech ends with speech.endAction: {"kind":"continue"}, or {"kind":"accuse","targetId":...} to formally accuse a living player other than yourself. A formal accusation goes to a poll of the other living players; if anyone seconds it, every living player votes yes or no in public, and a strict majority of the living eliminates the accused. The social accusation act is not a formal accusation. For journal_update, speech is null.'
+        : ""),
     decode(value) {
       const data = schema.parse(value);
       if (data.task !== task.type)
@@ -806,6 +846,61 @@ function baseReport(
   };
 }
 
+/** The public speech a submission makes, or null when the speaker stays silent. */
+function publicSpeechOf(
+  speech: V31Speech,
+  respondsTo: string[],
+  canonical: (id: string) => string,
+): Extract<ActionProposalV2, { kind: "discussion" }>["speech"] {
+  if (!speech.text) return null;
+  return {
+    text: speech.text,
+    acts: speech.acts.map((act) => ({
+      kind: act.kind,
+      targetId: act.targetId,
+      claim: act.claim,
+      sourceId: act.evidence?.startsWith("E") ? canonical(act.evidence) : null,
+    })),
+    respondsTo,
+    ...(speech.endAction ? { endAction: speech.endAction } : {}),
+  };
+}
+/** CES-1575: a seconding answer, an urgency, or a lynch ballot, as its proposal. */
+function normalizeProcedure(packet: PlayerContextV2, answer: V31Procedure, decisionId: string) {
+  const source = evidenceMapV31(packet);
+  const proposal: ActionProposalV2 =
+    "second" in answer
+      ? { kind: "second", second: answer.second }
+      : "urgency" in answer
+        ? { kind: "second_urgency", urgency: answer.urgency }
+        : { kind: "lynch_ballot", ballot: answer.ballot };
+  const report = baseReport(
+    answer.rationale,
+    memoryPatch(packet, answer.memory, decisionId),
+    proposal,
+  );
+  report.observations = answer.evidence.map((id) => source.toCanonical.get(id) ?? id);
+  return report;
+}
+/** A closing response may only reply, and only to its frozen docket. */
+function closingErrors(packet: PlayerContextV2, speech: V31Speech, handles: HandleMap): string[] {
+  const errors: string[] = [];
+  const replies = speech.respondsTo.map((handle) => handles.toCanonical.get(handle) ?? handle);
+  if (speech.acts.some((act) => act.kind !== "reply")) errors.push("closing acts may only reply");
+  if (speech.text && !replies.some((id) => packet.responseDocket.includes(id)))
+    errors.push("closing speech must reply to the frozen docket");
+  if (replies.some((id) => !packet.responseDocket.includes(id)))
+    errors.push("closing reply references must come from the frozen docket");
+  return errors;
+}
+/** A formal accusation (CES-1575) must name a living player other than the speaker. */
+function accusationErrors(packet: PlayerContextV2, speech: V31Speech): string[] {
+  const end = speech.endAction;
+  if (end?.kind !== "accuse") return [];
+  return packet.players.some((p) => p.alive && p.id === end.targetId && p.id !== packet.self.id)
+    ? []
+    : ["a formal accusation must name a living player other than the speaker"];
+}
 export function normalizeV31Submission(
   packet: PlayerContextV2,
   task: V3TaskSpec,
@@ -863,18 +958,7 @@ export function normalizeV31Submission(
       canonical = (id: string) => handles.toCanonical.get(id) ?? id;
     const respondsTo =
       task.type === "discussion_speech" ? task.plan.respondsTo : speech.respondsTo.map(canonical);
-    const publicSpeech = speech.text
-      ? {
-          text: speech.text,
-          acts: speech.acts.map((act) => ({
-            kind: act.kind,
-            targetId: act.targetId,
-            claim: act.claim,
-            sourceId: act.evidence?.startsWith("E") ? canonical(act.evidence) : null,
-          })),
-          respondsTo,
-        }
-      : null;
+    const publicSpeech = publicSpeechOf(speech, respondsTo, canonical);
     return baseReport(speech.rationale, memoryPatch(packet, speech.memory, decisionId), {
       kind: "discussion",
       speech: publicSpeech,
@@ -891,6 +975,8 @@ export function normalizeV31Submission(
           },
     });
   }
+  if (PROCEDURE_TASKS.has(task.type))
+    return normalizeProcedure(packet, submission as V31Procedure, decisionId);
   const choice = submission as V31Choice,
     choices = choiceMap(packet),
     source = evidenceMapV31(packet),
@@ -1033,6 +1119,7 @@ export function validateV31Submission(
       );
     if (!speech.text && (speech.acts.length || speech.respondsTo.length))
       errors.push("a declined speech cannot contain acts or replies");
+    errors.push(...accusationErrors(packet, speech));
     if (task.type === "discussion_speech") {
       if (!speech.text) errors.push("the selected speaker must deliver the frozen plan");
       if (
@@ -1043,15 +1130,9 @@ export function validateV31Submission(
         errors.push("selected speech must contain an act matching the frozen plan kind and target");
     } else if (task.type === "discussion_free_speech") {
       if (!speech.text) errors.push("the selected speaker must deliver a speech");
-    } else {
-      const replies = speech.respondsTo.map((handle) => handles.toCanonical.get(handle) ?? handle);
-      if (speech.acts.some((act) => act.kind !== "reply"))
-        errors.push("closing acts may only reply");
-      if (speech.text && !replies.some((id) => packet.responseDocket.includes(id)))
-        errors.push("closing speech must reply to the frozen docket");
-      if (replies.some((id) => !packet.responseDocket.includes(id)))
-        errors.push("closing reply references must come from the frozen docket");
-    }
+    } else errors.push(...closingErrors(packet, speech, handles));
+  } else if (PROCEDURE_TASKS.has(task.type)) {
+    evidence.push(...(submission as V31Procedure).evidence);
   } else {
     const choice = submission as V31Choice;
     evidence.push(...choice.evidence);

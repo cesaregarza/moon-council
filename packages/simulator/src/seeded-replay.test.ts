@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { GameConfigV2Schema, type GameEventV1 } from "@werewolf/contracts";
 import { LabRepository, openDatabase, type DatabaseConnection } from "@werewolf/db";
@@ -143,6 +144,8 @@ function expectMaxCycleEnding(events: GameEventV1[]) {
   expect(voted).toBe(true);
 }
 
+const RECORDED_STAGED_GAME = "a491cc8da15f55d2b942727ef619a8458f9c3b5b59c562c9afbd42d7bc4589b5";
+
 const resolved = (events: GameEventV1[]) =>
   events.filter((e) => e.type === "discussion.auction_resolved");
 
@@ -163,6 +166,18 @@ describe("seeded replay", () => {
     // And the same game, event by event, apart from IDs.
     expect(apartFromIds(second)).toEqual(apartFromIds(first));
   }, 180_000);
+
+  /**
+   * CES-1575: the staged discussion mode must replay exactly as recorded. This is the sha256 of
+   * the normalized event stream of the whole seeded game, recorded at main 0be1fe76 before the
+   * auction_every_turn mode was added.
+   */
+  it("replays the recorded staged-mode game byte for byte", async () => {
+    const { events } = await playToEnd();
+    expectMaxCycleEnding(events);
+    const normalized = JSON.stringify(apartFromIds(events));
+    expect(createHash("sha256").update(normalized).digest("hex")).toBe(RECORDED_STAGED_GAME);
+  }, 600_000);
 
   it("replays the whole seeded game identically, apart from IDs, times and durations", async () => {
     const first = await playToEnd();
