@@ -6,8 +6,12 @@ import {
   unknownUsage,
   type UsageV2,
 } from "@werewolf/contracts";
-import { DecisionStore, type LabRepository } from "@werewolf/db";
-import type { DecisionProvider } from "@werewolf/llm";
+import { DecisionStore, type LabRepository, type ProviderAttemptRecord } from "@werewolf/db";
+import {
+  CLAUDE_ERROR_FEEDBACK_VERSION,
+  claudeErrorText,
+  type DecisionProvider,
+} from "@werewolf/llm";
 import {
   assertV2Budget,
   claudeNextReservationUsd,
@@ -57,8 +61,43 @@ const instructions =
   "You are a neutral Werewolf moderator. Narrate only the supplied engine-produced public disclosure packet. Do not infer, reveal, or invent private information, player context, hidden reasoning, actions, or outcomes. Return only {text} as a concise atmospheric announcement.";
 const active = (repository: LabRepository, gameId: string) =>
   ["running", "stepping"].includes(repository.getGame(gameId)?.status ?? "");
-const errorText = (error: unknown) =>
-  (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+const claudeOrUnknown = (provider?: string) =>
+  provider === undefined || provider === "unknown" || provider === "anthropic";
+const errorText = (error: unknown, provider?: string, signal?: AbortSignal) =>
+  (claudeOrUnknown(provider)
+    ? claudeErrorText(error, signal)
+    : error instanceof Error
+      ? error.message
+      : String(error)
+  ).slice(0, 2_000);
+function correctionText(
+  attempt: ProviderAttemptRecord | undefined,
+  fallback: string | null,
+  provider?: string,
+): string | null {
+  if (attempt?.providerMetadata?.errorFeedbackVersion === CLAUDE_ERROR_FEEDBACK_VERSION)
+    return attempt.error;
+  return claudeOrUnknown(provider) || claudeOrUnknown(attempt?.provider)
+    ? claudeErrorText(undefined)
+    : fallback;
+}
+
+function narrationFailureText(
+  error: unknown,
+  attempt: ProviderAttemptRecord,
+  provider: string | undefined,
+  signal: AbortSignal,
+): string {
+  // Missing routing metadata is never permission to persist raw provider text.
+  const claude = claudeOrUnknown(provider) || claudeOrUnknown(attempt.provider);
+  const text = errorText(error, claude ? "anthropic" : provider, signal);
+  if (claude)
+    attempt.providerMetadata = {
+      ...attempt.providerMetadata,
+      errorFeedbackVersion: CLAUDE_ERROR_FEEDBACK_VERSION,
+    };
+  return text;
+}
 
 /**
  * How a failed attempt ends narration: a Claude call the game refused at its exact reservation,
@@ -213,6 +252,8 @@ export class NarrationV2 {
       return skip();
     }
     let repair = priorAttempts.length > 0;
+    // Stored errors may predate diagnostic sanitization. Do not replay their text to Claude.
+    let correction = correctionText(priorAttempts.at(-1), checkpoint.error, options.provider);
     for (let index = priorAttempts.length; index < 2; index += 1) {
       const prompt: Prompt =
         index === 0
@@ -221,7 +262,7 @@ export class NarrationV2 {
               instructions,
               input: JSON.stringify({
                 disclosurePacket: options.disclosurePacket,
-                correctionRequired: checkpoint.error,
+                correctionRequired: correction,
               }),
             };
       if (!admitsBudget(prompt)) {
@@ -275,7 +316,9 @@ export class NarrationV2 {
         if (usageReceived) return;
         usageReceived = true;
         attempt.usage = usageValue;
-        attempt.provider = metadata.provider;
+        // A Claude-only pre-send admission already established the trusted route. Usage arrives
+        // too late to establish it and must not downgrade its spend/privacy classification.
+        if (attempt.provider !== "anthropic") attempt.provider = metadata.provider;
         attempt.model = metadata.model;
         attempt.outputLimitEnforced = metadata.outputLimitEnforced;
         attempt.status = "received";
@@ -362,7 +405,7 @@ export class NarrationV2 {
               ? "invalid"
               : "unknown"
             : "invalid";
-        attempt.error = errorText(error);
+        attempt.error = narrationFailureText(error, attempt, options.provider, controller.signal);
         attempt.endedAt = new Date().toISOString();
         attempt.latencyMs = Date.now() - Date.parse(attempt.startedAt);
         this.store.updateAttempt(attempt);
@@ -372,6 +415,7 @@ export class NarrationV2 {
           recovery: checkpoint.recovery,
         });
         checkpoint = { ...checkpoint, error: attempt.error };
+        correction = attempt.error;
         if (!active(this.repository, options.gameId)) {
           checkpoint = { ...checkpoint, status: "paused" };
           this.store.put(options.gameId, keyOf(options.decisionId), checkpoint);

@@ -13,6 +13,9 @@ import { ClaudeSessions } from "./claude-session";
 import {
   AskJevProvider,
   claudeReservationUsd,
+  claudeErrorDiagnostics,
+  claudeErrorText,
+  CLAUDE_ERROR_FEEDBACK_VERSION,
   claudeUsageCostUsd,
   UnpricedModelError,
   type DecisionProvider,
@@ -65,6 +68,22 @@ export function validatePreparedReport(
   return essentialErrors.length
     ? { report, errors, annotationErrors: [] as string[] }
     : { report: withoutJournal, errors: [] as string[], annotationErrors: errors };
+}
+
+/** Constructed only from local submission/report validators after provider decoding. */
+class DecisionValidationError extends Error {}
+
+function recoveryFeedback(
+  attempt: ProviderAttemptRecord | undefined,
+  packet: DecisionOpportunityV1["packet"],
+  maximumTokens: number,
+): string | undefined {
+  if (!attempt?.error) return undefined;
+  if (attempt.error.startsWith("journal_limit:"))
+    return journalLimitMessage(packet.journal, maximumTokens);
+  if (attempt.providerMetadata?.errorFeedbackVersion === CLAUDE_ERROR_FEEDBACK_VERSION)
+    return attempt.error;
+  return attempt.provider === "anthropic" ? claudeErrorText(undefined) : attempt.error;
 }
 
 export class DecisionPausedError extends Error {}
@@ -143,7 +162,9 @@ function claudeAttemptUsd(attempt: ProviderAttemptRecord): number {
 function claudeSpendUsd(store: DecisionStore, gameId: string, next?: NextCallReservation): number {
   const settled = store
     .attempts(gameId)
-    .filter((attempt) => attempt.provider === "anthropic")
+    // Unknown historical routes cannot be assumed to have cost no Claude budget.
+    // Bound them conservatively, or refuse admission if no trustworthy bound exists.
+    .filter((attempt) => attempt.provider === "anthropic" || attempt.provider === "unknown")
     .reduce((sum, attempt) => sum + claudeAttemptUsd(attempt), 0);
   return settled + ((next && claudeNextReservationUsd(next)) ?? 0);
 }
@@ -197,6 +218,9 @@ export function claudeSpendAdmission(
   /** The last figure this call admitted; null until a check passes, so nothing was sent. */
   let admittedUsd: number | null = null;
   return (usd) => {
+    // This callback is a Claude-only adapter contract, invoked before ledger reservation/send.
+    // Establish that route before the budget reads the attempt, including omitted routing hints.
+    attempt.provider = "anthropic";
     attempt.reservedUsd = usd;
     store.updateAttempt(attempt);
     try {
@@ -418,10 +442,12 @@ export class DecisionExecutorV2 {
     // An explicit recovery keeps the last validation failure instead of repeating a blind first call.
     let feedback: string | undefined =
       op.recovery > 0
-        ? (prior.findLast((attempt) => attempt.status === "invalid")?.error ?? undefined)
+        ? recoveryFeedback(
+            prior.findLast((attempt) => attempt.status === "invalid"),
+            op.packet,
+            policy.maxJournalTokens,
+          )
         : undefined;
-    if (feedback?.startsWith("journal_limit:"))
-      feedback = journalLimitMessage(op.packet.journal, policy.maxJournalTokens);
     const maxAttempts =
       policy.mode === "single" ? Math.min(2, policy.maxCalls + 1) : policy.maxCalls;
     let optional = Boolean(op.jevState);
@@ -678,7 +704,7 @@ export class DecisionExecutorV2 {
             errors: submissionErrors,
             attemptId: attempt.id,
           });
-          throw new Error(submissionErrors.join("; "));
+          throw new DecisionValidationError(submissionErrors.join("; "));
         }
         let report = basePrepared.normalize(submission);
         const validation = validatePreparedReport(
@@ -736,7 +762,7 @@ export class DecisionExecutorV2 {
             errors: repairErrors,
             attemptId: attempt.id,
           });
-          throw new Error(repairErrors.join("; "));
+          throw new DecisionValidationError(repairErrors.join("; "));
         }
         const assessment = stage?.assess?.(rawSubmission);
         if (assessment?.issues.length) {
@@ -874,17 +900,13 @@ export class DecisionExecutorV2 {
           error instanceof DecisionPausedError
         )
           throw error;
-        attempt.status = controller.signal.aborted ? "unknown" : "invalid";
-        attempt.error =
-          error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000);
-        attempt.endedAt = new Date().toISOString();
-        attempt.latencyMs = Date.now() - Date.parse(attempt.startedAt);
-        this.store.updateAttempt(attempt);
-        this.log(op, "decision.attempt_failed", {
-          attemptId: attempt.id,
-          error: attempt.error,
-          recovery: op.recovery,
-        });
+        const failure = this.recordAttemptFailure(
+          op,
+          attempt,
+          error,
+          controller.signal,
+          attemptProvider,
+        );
         if (!this.active(op.gameId)) {
           op.status = op.best ? "pending" : "paused";
           this.store.save(op);
@@ -892,7 +914,7 @@ export class DecisionExecutorV2 {
         }
         if (repairUsed || finalCall || controller.signal.aborted) break;
         repairUsed = true;
-        feedback = attempt.error.slice(0, 800);
+        feedback = failure.slice(0, 800);
       } finally {
         clearInterval(abortPoll);
         clearTimeout(timer);
@@ -913,6 +935,40 @@ export class DecisionExecutorV2 {
     throw new DecisionPausedError(
       "exhausted decision retries without a valid proposal; no action fabricated",
     );
+  }
+  private recordAttemptFailure(
+    op: DecisionOpportunityV1,
+    attempt: ProviderAttemptRecord,
+    error: unknown,
+    signal: AbortSignal,
+    provider: string,
+  ): string {
+    attempt.status = signal.aborted ? "unknown" : "invalid";
+    attempt.error = (
+      provider === "anthropic" && !(error instanceof DecisionValidationError)
+        ? claudeErrorText(error, signal)
+        : error instanceof Error
+          ? error.message
+          : String(error)
+    ).slice(0, 2_000);
+    const errorDiagnostics =
+      provider === "anthropic" ? claudeErrorDiagnostics(error, signal) : undefined;
+    if (errorDiagnostics)
+      attempt.providerMetadata = {
+        ...attempt.providerMetadata,
+        errorDiagnostics,
+        errorFeedbackVersion: CLAUDE_ERROR_FEEDBACK_VERSION,
+      };
+    attempt.endedAt = new Date().toISOString();
+    attempt.latencyMs = Date.now() - Date.parse(attempt.startedAt);
+    this.store.updateAttempt(attempt);
+    this.log(op, "decision.attempt_failed", {
+      attemptId: attempt.id,
+      error: attempt.error,
+      ...(errorDiagnostics ? { errorDiagnostics } : {}),
+      recovery: op.recovery,
+    });
+    return attempt.error;
   }
   private allowJevReasoning(
     op: DecisionOpportunityV1,

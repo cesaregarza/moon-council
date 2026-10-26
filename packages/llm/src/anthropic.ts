@@ -6,6 +6,11 @@ import { assertClaudePriced, claudeReservationUsd, isTokenCount } from "./anthro
 import { promptFor } from "./prompt";
 import type { DecisionProvider, DecisionRequest, DecisionResult } from "./provider";
 import { ClaudeWarmGate } from "./claude-warm-gate";
+import {
+  claudeErrorDiagnostics,
+  retryableClaudeError,
+  type ClaudeErrorDiagnostics,
+} from "./anthropic-errors";
 import { ClaudeSpendLedger } from "./spend-ledger";
 import { mappedUsage, markedTtls, parseClaudeUsage, recordCostUsd } from "./anthropic-usage";
 
@@ -35,11 +40,6 @@ export const CLAUDE_MAX_ATTEMPTS = 3;
 export const MAX_RETRY_WAIT_MS = 60_000;
 
 type ClaudeApiError = InstanceType<typeof Anthropic.APIError>;
-/** Rate limits (429) and server errors, overload (529) included, are worth another attempt. */
-const retryable = (error: unknown): error is ClaudeApiError =>
-  error instanceof Anthropic.APIError &&
-  typeof error.status === "number" &&
-  (error.status === 429 || error.status >= 500);
 
 /**
  * The wait the API asked for (retry-after-ms, then retry-after in seconds or as a date), clamped
@@ -268,8 +268,11 @@ export class AnthropicMessagesProvider implements DecisionProvider {
       promptCeilingTokens(body, replayedTokens),
       body.max_tokens,
     );
-    const call: ClaudeCall = { recordedUsd: 0, held: false, attempts: 0 };
-    const reported = { usage: false, metadata: false };
+    const call: ClaudeCall = { recordedUsd: 0, held: false, attempts: 0, transportFailures: [] };
+    const reported: { usage: boolean; metadata: Record<string, unknown> | null } = {
+      usage: false,
+      metadata: null,
+    };
     const tracked: DecisionRequest<T> = {
       ...request,
       onUsage: (usage, metadata) => {
@@ -277,7 +280,7 @@ export class AnthropicMessagesProvider implements DecisionProvider {
         request.onUsage?.(usage, metadata);
       },
       onProviderMetadata: (metadata) => {
-        reported.metadata = true;
+        reported.metadata = metadata;
         request.onProviderMetadata?.(metadata);
       },
     };
@@ -288,11 +291,12 @@ export class AnthropicMessagesProvider implements DecisionProvider {
       for (let attempt = 1; ; attempt++) {
         try {
           const sent = await this.attempt(body, reservation, signal, call, request);
-          const cost = call.held ? { heldUsd: call.recordedUsd } : { costUsd: sent.cost! };
-          const spend = { ...cost, attempts: call.attempts };
+          const spend = claudeSpendMetadata(call, sent.cost);
           return claudeResult(tracked, sent.message, spend, sent.usage);
         } catch (error) {
-          if (!retryable(error) || attempt >= CLAUDE_MAX_ATTEMPTS) throw error;
+          if (error instanceof Anthropic.APIError)
+            call.transportFailures.push(claudeErrorDiagnostics(error, signal));
+          if (!retryableClaudeError(error, signal) || attempt >= CLAUDE_MAX_ATTEMPTS) throw error;
           await sleep(retryDelayMs(error, attempt), undefined, { signal });
         }
       }
@@ -303,12 +307,10 @@ export class AnthropicMessagesProvider implements DecisionProvider {
           model: body.model,
           outputLimitEnforced: true,
         });
-      if (call.attempts > 0 && !reported.metadata)
-        request.onProviderMetadata?.({
-          model: body.model,
-          heldUsd: call.recordedUsd,
-          attempts: call.attempts,
-        });
+      if (call.attempts > 0)
+        request.onProviderMetadata?.(
+          claudeFailureMetadata(call, body.model, error, signal, reported.metadata),
+        );
       throw claudeFailure(error, signal);
     }
   }
@@ -325,10 +327,12 @@ export class AnthropicMessagesProvider implements DecisionProvider {
     call: ClaudeCall,
     request: Pick<DecisionRequest<unknown>, "admitSpend" | "claudeHarness">,
   ) {
+    signal.throwIfAborted();
     const id = randomUUID();
     // In order and with no await between: the game admits the call's running total (what earlier
     // attempts hold, plus this attempt), then the month reserves this attempt.
     request.admitSpend?.(call.recordedUsd + reservation);
+    signal.throwIfAborted();
     this.ledger.reserve(id, reservation);
     call.attempts += 1;
     let cost: number | null = null;
@@ -360,6 +364,7 @@ export class AnthropicMessagesProvider implements DecisionProvider {
     const release = warmGateKey ? await this.warmGate.enter(warmGateKey, signal) : undefined;
     try {
       // maxRetries 0 on the request itself: an injected client's own retries are off too.
+      signal.throwIfAborted();
       const stream = this.client.messages.stream(body, { signal, maxRetries: 0 });
       stream.on("streamEvent", (event) => {
         if (event.type === "content_block_start") release?.(true);
@@ -382,13 +387,41 @@ interface ClaudeCall {
   held: boolean;
   /** Attempts sent so far (admitted and reserved). */
   attempts: number;
+  transportFailures: ClaudeErrorDiagnostics[];
+}
+
+/** Spend reflects every explicit attempt, including conservatively settled unknown usage. */
+function claudeSpendMetadata(call: ClaudeCall, cost: number | null) {
+  return {
+    ...(call.held ? { heldUsd: call.recordedUsd } : { costUsd: cost! }),
+    attempts: call.attempts,
+    ...(call.transportFailures.length ? { transportFailures: call.transportFailures } : {}),
+  };
+}
+
+/** A parse failure already reported actual spend; diagnostics must not replace it with a hold. */
+function claudeFailureMetadata(
+  call: ClaudeCall,
+  model: string,
+  error: unknown,
+  signal: AbortSignal,
+  reported: Record<string, unknown> | null,
+) {
+  return {
+    ...(reported ?? { model, heldUsd: call.recordedUsd, attempts: call.attempts }),
+    errorDiagnostics: claudeErrorDiagnostics(error, signal),
+    ...(call.transportFailures.length ? { transportFailures: call.transportFailures } : {}),
+  };
 }
 
 /** Records usage and metadata, then decodes the structured answer. */
 function claudeResult<T>(
   request: DecisionRequest<T>,
   message: Anthropic.Message,
-  spend: ({ costUsd: number } | { heldUsd: number }) & { attempts: number },
+  spend: ({ costUsd: number } | { heldUsd: number }) & {
+    attempts: number;
+    transportFailures?: ClaudeErrorDiagnostics[];
+  },
   usage: UsageV2,
 ): DecisionResult<T> {
   request.onUsage?.(usage, {

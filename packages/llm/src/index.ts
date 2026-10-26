@@ -7,6 +7,7 @@ import { FakeDecisionProvider } from "./fake";
 import { OpenAIResponsesProvider } from "./openai";
 
 export * from "./anthropic";
+export * from "./anthropic-errors";
 export * from "./anthropic-pricing";
 export * from "./claude-warm-gate";
 export * from "./codex";
