@@ -18,7 +18,7 @@ import {
 import { observerEvents } from "../../../apps/api/src/observer";
 import { auditGameV2 } from "./audit-v2";
 import { buildContextV2, publicPayload } from "./context-v2";
-import { V2GameOrchestrator } from "./orchestrator-v2";
+import { V2GameOrchestrator, type EveryTurnPolicies } from "./orchestrator-v2";
 import { JOURNAL_EVIDENCE_TYPES } from "./player-brief";
 import { v31ApiResponseFormat, v31SubmissionSchema, validateV31Submission } from "./request-v3-1";
 import { publicRevision, rankSpeakerAuction, responseDockets } from "./scheduler-v2";
@@ -38,20 +38,6 @@ const connections: DatabaseConnection[] = [];
 afterEach(() => {
   while (connections.length) connections.pop()!.close();
 });
-
-/**
- * The rule the orchestrator takes for what Cesar has not decided. Declared here, with the
- * constructor's new parameter, so this tests-first commit typechecks before the fix exists.
- */
-interface EveryTurnPolicies {
-  noLynchDayEnd(input: { reason: "all_declined"; events: GameEventV1[] }): "end_day" | "next_turn";
-}
-const Orchestrator = V2GameOrchestrator as new (
-  repository: LabRepository,
-  provider: DecisionProvider,
-  jevProvider?: DecisionProvider,
-  policies?: EveryTurnPolicies,
-) => V2GameOrchestrator;
 
 function everyTurnConfig(seed: string, turnBudgetFactor = 1): GameConfigV2 {
   const base = actorConfig();
@@ -153,7 +139,7 @@ async function playDay(
   const repository = new LabRepository(connection);
   const game = repository.createGame(config);
   new V2GameOrchestrator(repository, new FakeDecisionProvider()).initialize(game.id);
-  const runner = new Orchestrator(repository, llm, jev, rules ?? undefined);
+  const runner = new V2GameOrchestrator(repository, llm, jev, rules ?? undefined);
   repository.updateGame(game.id, { status: "running" });
   const over = () =>
     repository.getGame(game.id)!.status !== "running" ||
