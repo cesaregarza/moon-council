@@ -9,8 +9,8 @@ import { isEveryTurn, namesWholeWord } from "./every-turn";
 import { revisionIsCurrent } from "./revisions";
 export { publicRevision } from "./revisions";
 
-/** "turn" is the auction-every-turn mode's only stage (CES-1575). */
-export type DiscussionStage = "opening" | "followup" | "closing" | "turn";
+/** The auction-every-turn mode's stages (CES-1575): ordinary turns, and the window after a second. */
+export type DiscussionStage = "opening" | "followup" | "closing" | "turn" | "post_second";
 export function responseDockets(state: GameState, events: GameEventV1[]): Record<string, string[]> {
   const result: Record<string, string[]> = Object.fromEntries(
     state.players.filter((p) => p.alive).map((p) => [p.id, []]),

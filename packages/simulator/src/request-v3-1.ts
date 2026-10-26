@@ -105,11 +105,15 @@ const PROCEDURE_TASKS = new Set(["second_poll", "second_urgency", "lynch_ballot"
 const endsWithAction = (packet: PlayerContextV2) =>
   packet.rules.discussionMode === "auction_every_turn";
 /** A speech's endAction schema; an accusation names a seat (validation checks it is living). */
-const endActionSchema = (player: z.ZodType<string>) =>
-  z.discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("continue") }),
+const endActionSchema = (packet: PlayerContextV2, player: z.ZodType<string>) => {
+  const proceed = z.strictObject({ kind: z.literal("continue") });
+  // While an accusation is pending, a speech cannot raise another (CES-1575).
+  if (packet.rules.accusationPending) return proceed;
+  return z.discriminatedUnion("kind", [
+    proceed,
     z.strictObject({ kind: z.literal("accuse"), targetId: player }),
   ]);
+};
 
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 const asEnum = (values: string[]) => z.enum(values as [string, ...string[]]);
@@ -263,7 +267,7 @@ export function v31SubmissionSchema(
     });
     return (
       endsWithAction(packet) && task.type !== "closing_response"
-        ? speech.extend({ endAction: endActionSchema(player) })
+        ? speech.extend({ endAction: endActionSchema(packet, player) })
         : speech
     ) as z.ZodType<V31Submission>;
   }
@@ -315,7 +319,7 @@ export function v31ApiResponseFormat(
       )
       .max(4),
     respondsTo: z.array(PublicHandle).max(6),
-    ...(endsWithAction(packet) ? { endAction: endActionSchema(player) } : {}),
+    ...(endsWithAction(packet) ? { endAction: endActionSchema(packet, player) } : {}),
   });
   const schema = z.strictObject({
     task: z.enum(["journal_update", "discussion_free_speech", "closing_response"]),
@@ -340,7 +344,10 @@ export function v31ApiResponseFormat(
         : "") +
       "API response envelope: task must exactly match REQUEST.task.type. For journal_update, speech must be null. For discussion_free_speech or closing_response, put text/acts/respondsTo in speech and leave memory unchanged (all update fields null or empty). Closing responses may only use reply acts. The task-specific game constraints still apply. Evidence is grouped by durability; E numbers preserve public event order, not the order of the message layers." +
       (endsWithAction(packet)
-        ? ' Every speech ends with speech.endAction: {"kind":"continue"}, or {"kind":"accuse","targetId":...} to formally accuse a living player other than yourself. A formal accusation goes to a poll of the other living players; if anyone seconds it, every living player votes yes or no in public, and a strict majority of the living eliminates the accused. The social accusation act is not a formal accusation. For journal_update, speech is null.'
+        ? ' Every speech ends with speech.endAction: {"kind":"continue"}, or {"kind":"accuse","targetId":...} to formally accuse a living player other than yourself. A formal accusation goes to a poll of the other living players; if anyone seconds it, three more auction turns follow, then every living player votes yes or no in public, and a strict majority of the living eliminates the accused. The social accusation act is not a formal accusation. For journal_update, speech is null.' +
+          (packet.rules.accusationPending
+            ? ' An accusation is pending now, so this speech ends with {"kind":"continue"}.'
+            : "")
         : ""),
     decode(value) {
       const data = schema.parse(value);
@@ -893,10 +900,14 @@ function closingErrors(packet: PlayerContextV2, speech: V31Speech, handles: Hand
     errors.push("closing reply references must come from the frozen docket");
   return errors;
 }
-/** A formal accusation (CES-1575) must name a living player other than the speaker. */
+/**
+ * A formal accusation (CES-1575) must name a living player other than the speaker, and cannot be
+ * raised while another is pending.
+ */
 function accusationErrors(packet: PlayerContextV2, speech: V31Speech): string[] {
   const end = speech.endAction;
   if (end?.kind !== "accuse") return [];
+  if (packet.rules.accusationPending) return ["no formal accusation while another is pending"];
   return packet.players.some((p) => p.alive && p.id === end.targetId && p.id !== packet.self.id)
     ? []
     : ["a formal accusation must name a living player other than the speaker"];

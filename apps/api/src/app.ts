@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import {
   CreateGameV2RequestSchema,
   GameConfigV2Schema,
@@ -20,7 +20,12 @@ import {
   resolveModeratorModel,
   selectedProviderKind,
 } from "@werewolf/llm";
-import { acknowledgeSemanticAnomaly, summarizeExperiment } from "@werewolf/simulator";
+import {
+  acknowledgeSemanticAnomaly,
+  everyTurnStatus,
+  isEveryTurn,
+  summarizeExperiment,
+} from "@werewolf/simulator";
 import { z } from "zod";
 import {
   decisionDetail,
@@ -50,6 +55,7 @@ const Control = z.object({
     "abort",
     "speed",
     "extend_budget",
+    "extend_turns",
     "acknowledge_semantic_anomaly",
   ]),
   decisionId: z.string().min(1).optional(),
@@ -58,6 +64,8 @@ const Control = z.object({
   maxTotalTokens: z.number().int().min(1_000).max(100_000_000).nullable().optional(),
   maxWallClockMs: z.number().int().min(60_000).max(86_400_000).optional(),
   maxContextTokens: z.number().int().min(1_000).max(32_000).optional(),
+  /** extend_turns: extra discussion turns for the paused day (CES-1575). */
+  extraTurns: z.number().int().min(1).max(64).optional(),
 });
 function viewer(query: z.infer<typeof Query>): Viewer {
   if (query.view === "player") {
@@ -69,6 +77,57 @@ function viewer(query: z.infer<typeof Query>): Viewer {
     return { kind: "team", teamId: query.teamId };
   }
   return { kind: query.view };
+}
+/**
+ * CES-1575: the operator grants extra discussion turns to an auction-every-turn game paused on
+ * its turn budget, for the paused day only. Any other pause, mode or game state is refused.
+ */
+function extendTurns(
+  repository: LabRepository,
+  store: DecisionStore,
+  game: NonNullable<ReturnType<LabRepository["getGame"]>>,
+  input: z.infer<typeof Control>,
+  reply: FastifyReply,
+) {
+  if (!isEveryTurn(game.config))
+    return reply.status(409).send({ error: "not_an_auction_every_turn_game" });
+  if (game.status !== "paused" || !game.error?.startsWith("turn_budget:"))
+    return reply.status(409).send({ error: "game_not_paused_on_turn_budget" });
+  if (input.extraTurns === undefined)
+    return reply.status(400).send({ error: "extraTurns_required" });
+  const extraTurns = input.extraTurns;
+  const events = repository.listEvents(game.id);
+  const state = reduceGame(game.id, events);
+  const pause = events.findLast((event) => event.type === "game.paused")!;
+  const previousBudget = everyTurnStatus(state, events).budget;
+  const newBudget = previousBudget + extraTurns;
+  store.atomic(() => {
+    repository.appendEvent(game.id, {
+      type: "discussion.turns_extended",
+      phase: state.phase,
+      day: state.day,
+      visibility: "moderator",
+      payload: {
+        day: state.day,
+        extraTurns,
+        previousBudget,
+        newBudget,
+        resumedFromSequence: pause.sequence,
+      },
+    });
+    // The same record an operator resume makes, which the reducer folds into a running status.
+    repository.appendEvent(game.id, {
+      type: "game.resumed",
+      phase: state.phase,
+      day: state.day,
+      visibility: "public",
+      payload: { reason: "operator extend_turns" },
+    });
+    store.put(game.id, "stepUnit", "phase");
+    repository.updateGame(game.id, { status: "running", error: null });
+    repository.enqueueJob("game", game.id);
+  });
+  return { ok: true, status: "running", previousBudget, newBudget };
 }
 export interface ApiOptions {
   databaseUrl?: string;
@@ -241,6 +300,7 @@ export async function buildApi(
         maxContextTokens: config.deliberation.maxContextTokens,
       };
     }
+    if (input.action === "extend_turns") return extendTurns(repository, store, game, input, reply);
     if (["completed", "aborted", "budget_exhausted", "failed"].includes(game.status))
       return reply.status(409).send({ error: "game_is_terminal" });
     ensureInitialized(repository, game);

@@ -54,6 +54,8 @@ import {
   isEveryTurn,
   lynchOutcome,
   pendingAccusation,
+  WINDOW_TURNS,
+  windowTurnsDone,
   type Accusation,
 } from "./every-turn";
 import { usesJournalWorkflow } from "./jev-actions";
@@ -81,19 +83,6 @@ interface ClosingState {
 interface AuctionResolution {
   selectedPlayerId: string | null;
   declinedCandidateIds: string[];
-}
-/**
- * CES-1575: the auction-every-turn mode's rule that Cesar has not decided (open question N). No
- * production default exists: the mode refuses to start without it. It must be a pure function of
- * the events, because it may be asked again for the same round.
- */
-export interface EveryTurnPolicies {
-  /** After a round in which every bidder declined: end the day without a lynch, or run a turn. */
-  noLynchDayEnd(input: {
-    reason: "all_declined";
-    state: GameState;
-    events: GameEventV1[];
-  }): "end_day" | "next_turn";
 }
 /**
  * Deaths from the night that just ended, as seen from the dawn announcement.
@@ -171,7 +160,6 @@ export class V2GameOrchestrator {
     private repository: LabRepository,
     provider: DecisionProvider,
     jevProvider?: DecisionProvider,
-    private policies?: EveryTurnPolicies,
   ) {
     this.store = new DecisionStore(repository);
     this.executor = new DecisionExecutorV2(repository, provider, jevProvider);
@@ -216,14 +204,6 @@ export class V2GameOrchestrator {
     const game = this.repository.getGame(id)!;
     if (!game || !["queued", "lobby", "running", "stepping"].includes(game.status)) return;
     let state = this.initialize(id);
-    if (isEveryTurn(state.config) && !this.policies) {
-      // Checked before any work, on every start and resume: no event but the pause, no call.
-      const reason =
-        "auction_every_turn needs a no-lynch day-end policy (open rule N); none was supplied";
-      this.append(state, "game.paused", { reason, unresolved: true });
-      this.repository.updateGame(id, { status: "paused", error: reason });
-      return;
-    }
     if (game.status === "queued" || game.status === "lobby")
       this.repository.updateGame(id, { status: "running" });
     const initial = `${state.day}:${state.phase}`;
@@ -1006,53 +986,67 @@ export class V2GameOrchestrator {
   }
   /**
    * CES-1575, the auction-every-turn mode. Each turn every living player bids and the speaker
-   * auction alone picks the speaker; the scheduler only administers: a pending accusation is
-   * resolved first, an all-decline round goes to the no-lynch policy, and a spent turn budget
-   * pauses the game. It never picks a speaker, forces a speech or forces a vote.
+   * auction alone picks the speaker; the scheduler only administers. A pending accusation is
+   * resolved first. Otherwise an all-decline round ends the day with no elimination, a spent turn
+   * budget pauses the game, and anything else is another auction turn. It never picks a speaker,
+   * forces a speech or forces a vote.
    */
   private async discussEveryTurn(state: GameState, events: GameEventV1[]): Promise<boolean> {
-    // runGameStep refuses the mode without its policies before any work.
-    const policies = this.policies!;
     const accusation = pendingAccusation(state, events);
     if (accusation) return this.resolveAccusation(state, events, accusation);
-    const turn = everyTurnStatus(state, events);
-    if (
-      turn.lastAllDeclined &&
-      policies.noLynchDayEnd({ reason: "all_declined", state, events }) === "end_day"
-    ) {
+    if (everyTurnStatus(state, events).lastAllDeclined) {
       this.store.atomic(() => {
         this.append(state, "discussion.ended", { reason: "no_lynch" }, "moderator");
         this.closeDay(this.state(state.gameId));
       });
       return false;
     }
+    return this.auctionTurn(state, events, "turn", everyTurnStatus(state, events).round);
+  }
+  /**
+   * One auction turn of the given stage, after the day's turn budget check: a spent budget pauses
+   * the game with a stable `turn_budget:` reason, which the operator's extend_turns resumes.
+   */
+  private auctionTurn(
+    state: GameState,
+    events: GameEventV1[],
+    stage: "turn" | "post_second",
+    round: number,
+  ): Promise<boolean> {
+    const turn = everyTurnStatus(state, events);
     if (turn.round >= turn.budget)
       throw new DecisionPausedError(
-        `discussion turn budget reached: ${turn.round} of ${turn.budget} turns on day ${state.day}`,
+        `turn_budget: ${turn.round} of ${turn.budget} turns used on day ${state.day}`,
       );
     const living = state.players
       .filter((player) => player.alive)
       .map((player) => player.id)
       .sort();
     return this.auctionDiscussionV3(state, events, {
-      stage: "turn",
-      round: turn.round,
+      stage,
+      round,
       candidates: living,
       listeners: living,
       dockets: responseDockets(state, events),
     });
   }
+  /**
+   * A pending accusation: the seconding poll; once seconded, exactly three auction turns (the
+   * window, stage post_second, turns 1 to 3, all-decline rounds included), then the lynch ballot.
+   */
   private resolveAccusation(
     state: GameState,
     events: GameEventV1[],
     accusation: Accusation,
   ): Promise<boolean> {
-    const seconded = events.some(
+    const seconded = events.find(
       (e) => e.type === "accusation.seconded" && e.payload.accusationId === accusation.id,
     );
-    return seconded
-      ? this.lynchVote(state, events, accusation)
-      : this.secondAccusation(state, events, accusation);
+    if (!seconded) return this.secondAccusation(state, events, accusation);
+    const done = windowTurnsDone(events, seconded.sequence);
+    return done < WINDOW_TURNS
+      ? this.auctionTurn(state, events, "post_second", done + 1)
+      : this.lynchVote(state, events, accusation);
   }
   /** The sequence every decision of one poll is built at: the state when the poll began. */
   private snapshot(state: GameState, name: string, events: GameEventV1[]): number {
