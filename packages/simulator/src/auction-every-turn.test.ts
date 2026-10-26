@@ -104,10 +104,10 @@ function scriptedJev(script: Script) {
     const answers = Object.fromEntries(
       Object.entries(request.questions).map(([key, q]) => {
         if (key === "urge") return [key, score(script.urge(seat, input))];
+        if (key === "urgency") return [key, score(script.secondUrgency?.(seat) ?? 2)];
         if (q.type === "noul") return [key, { type: "noul", noul: 0 }];
         if (q.type === "score")
           return [key, score(script.listen?.(key, input) ?? hash(`${key}:${input}`) % 5)];
-        if (key === "urgency") return [key, score(script.secondUrgency?.(seat) ?? 2)];
         const handles = Object.keys(q.criteria as Record<string, unknown>);
         const choice =
           key === "second"
@@ -146,14 +146,14 @@ async function playDay(
   config: GameConfigV2,
   jev: AskJevProvider,
   llm: DecisionProvider = players(),
-  rules: EveryTurnPolicies | undefined = policies(),
+  rules: EveryTurnPolicies | null = policies(),
 ) {
   const connection = openDatabase(":memory:");
   connections.push(connection);
   const repository = new LabRepository(connection);
   const game = repository.createGame(config);
   new V2GameOrchestrator(repository, new FakeDecisionProvider()).initialize(game.id);
-  const runner = new Orchestrator(repository, llm, jev, rules);
+  const runner = new Orchestrator(repository, llm, jev, rules ?? undefined);
   repository.updateGame(game.id, { status: "running" });
   const over = () =>
     repository.getGame(game.id)!.status !== "running" ||
@@ -195,7 +195,7 @@ describe("auction_every_turn: the turn loop", () => {
       everyTurnConfig("no-policies"),
       jev,
       players(),
-      undefined,
+      null,
     );
     expect(repository.getGame(id)!.status).toBe("paused");
     expect(repository.getGame(id)!.error).toMatch(/no-lynch/);
@@ -271,27 +271,37 @@ describe("auction_every_turn: the turn loop", () => {
 
   it("shows a docket in the briefing without forcing the named player to speak", async () => {
     const config = everyTurnConfig("docket-briefing");
-    // The fake players challenge the first other living seat, so Arden (p1) is challenged.
-    const { jev, inputs } = scriptedJev({
-      urge: (seat, input) => (seat === "p1" ? 0 : 1 + (hash(input) % 4)),
+    // A seat's briefing lists only challenges owed to it; once it sees one, it never bids again.
+    const silenced = new Set<string>();
+    const { jev } = scriptedJev({
+      urge: (seat, input) => {
+        if (input.includes("Unanswered challenge")) silenced.add(seat);
+        return silenced.has(seat) ? 0 : 1 + (hash(input) % 4);
+      },
     });
     const { repository, id, events } = await playDay(config, jev);
-    const challenged = speeches(events).filter((e) =>
-      (e.payload.acts as { kind: string; targetId: string | null }[]).some(
-        (act) => act.kind === "challenge" && act.targetId === "p1",
-      ),
-    );
-    expect(challenged.length).toBeGreaterThan(0);
-    const bids = new DecisionStore(repository)
-      .opportunities(id)
-      .filter((op) => op.playerId === "p1" && op.taskType === "discussion_score");
-    expect(
-      bids.some((op) => challenged.some((speech) => op.packet.responseDocket.includes(speech.id))),
-    ).toBe(true);
-    expect(
-      inputs.some((call) => call.seat === "p1" && call.input.includes("Unanswered challenge")),
-    ).toBe(true);
-    expect(speeches(events).filter((e) => e.payload.playerId === "p1")).toEqual([]);
+    expect(silenced.size).toBeGreaterThan(0);
+    for (const seat of silenced) {
+      const challenge = speeches(events).find((e) =>
+        (e.payload.acts as { kind: string; targetId: string | null }[]).some(
+          (act) => act.kind === "challenge" && act.targetId === seat,
+        ),
+      );
+      expect(challenge, `a challenge to ${seat}`).toBeDefined();
+      const bids = new DecisionStore(repository)
+        .opportunities(id)
+        .filter((op) => op.playerId === seat && op.taskType === "discussion_score");
+      expect(
+        bids.some((op) => op.packet.responseDocket.includes(challenge!.id)),
+        seat,
+      ).toBe(true);
+      expect(
+        speeches(events).filter(
+          (e) => e.payload.playerId === seat && e.sequence > challenge!.sequence,
+        ),
+        `${seat} is not forced to speak`,
+      ).toEqual([]);
+    }
   }, 120_000);
 
   it("asks the no-lynch policy after an all-decline round: ending the day goes to night", async () => {
@@ -344,11 +354,18 @@ describe("auction_every_turn: the turn loop", () => {
 });
 
 describe("auction_every_turn: accusations, seconding and the lynch vote", () => {
-  /** The first speaker accuses Hollis (p8), or Gale (p7) if the speaker is Hollis. */
-  const accuseOnFirstSpeech = () =>
-    players((seat, n) =>
-      n === 0 ? { kind: "accuse", targetId: seat === "p8" ? "p7" : "p8" } : { kind: "continue" },
-    );
+  /**
+   * The first speaker not in `exclude` accuses Hollis (p8), or Gale (p7) if the speaker is
+   * Hollis; every other speech continues.
+   */
+  const accuseOnce = (exclude: string[] = []) => {
+    let accused = false;
+    return players((seat) => {
+      if (accused || exclude.includes(seat)) return { kind: "continue" };
+      accused = true;
+      return { kind: "accuse", targetId: seat === "p8" ? "p7" : "p8" };
+    });
+  };
   /** Everyone seconds at equal urgency; `yes` seats then vote yes and everyone else no. */
   const lynchVote = (yes: string[]): Script => ({
     ...freshSpeakersFirst,
@@ -372,7 +389,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
     const { repository, id, events } = await playDay(
       everyTurnConfig("second-poll", 0.5),
       jev,
-      accuseOnFirstSpeech(),
+      accuseOnce(),
     );
     const first = speeches(events)[0]!;
     const { raised, accuser, target } = accusationOf(events);
@@ -384,10 +401,24 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
       living(everyTurnConfig("x")).filter((seat) => seat !== accuser),
     );
     expect(polled.map((op) => op.playerId)).toContain(target);
-    // One frozen snapshot: every poll packet holds the same public record.
-    const publicRecord = (op: (typeof polled)[number]) =>
-      JSON.stringify(op.packet.sources.filter((source) => source.scope === "public"));
-    expect(new Set(polled.map(publicRecord)).size).toBe(1);
+    // One frozen snapshot: every poll packet is built through the same latest public record,
+    // and every poll opened before any answer was recorded, so no answer can see another.
+    const sequence = new Map(events.map((e) => [e.id, e.sequence]));
+    const latestPublic = polled.map((op) =>
+      Math.max(
+        ...op.packet.sources
+          .filter((source) => source.scope === "public")
+          .map((source) => sequence.get(source.id) ?? -1),
+      ),
+    );
+    expect(new Set(latestPublic).size).toBe(1);
+    const decisionIds = new Set(polled.map((op) => op.id));
+    const opened = events.filter(
+      (e) => e.type === "decision.opened" && decisionIds.has(String(e.payload.decisionId)),
+    );
+    const firstAnswer = events.find((e) => e.type === "accusation.poll_answered")!;
+    expect(opened).toHaveLength(polled.length);
+    expect(opened.every((e) => e.sequence < firstAnswer.sequence)).toBe(true);
     // No seconds: recorded publicly, no urgency poll, no ballots, and the auction resumes.
     const unseconded = ofType(events, "accusation.unseconded");
     expect(unseconded.map((e) => [e.visibility, e.payload.accusationId])).toEqual([
@@ -406,11 +437,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
     const { repository, id, events } = await playDay(
       everyTurnConfig("second-single", 0.5),
       jev,
-      players((seat, n) =>
-        n === 0 && seat !== "p3"
-          ? { kind: "accuse", targetId: seat === "p8" ? "p7" : "p8" }
-          : { kind: "continue" },
-      ),
+      accuseOnce(["p3"]),
     );
     expect(ofType(events, "accusation.seconded").map((e) => e.payload.seconderId)).toEqual(["p3"]);
     expect(ops(repository, id, "second_urgency")).toEqual([]);
@@ -427,11 +454,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
     const { repository, id, events } = await playDay(
       everyTurnConfig("second-urgency", 0.5),
       jev,
-      players((seat, n) =>
-        n === 0 && !yes.includes(seat)
-          ? { kind: "accuse", targetId: seat === "p8" ? "p7" : "p8" }
-          : { kind: "continue" },
-      ),
+      accuseOnce(yes),
     );
     const { accuser } = accusationOf(events);
     expect(yes).not.toContain(accuser);
@@ -446,7 +469,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
   it("breaks an urgency tie by the seeded order, identically on replay", async () => {
     const run = async () => {
       const { jev } = scriptedJev({ ...freshSpeakersFirst, second: () => "yes" });
-      return playDay(everyTurnConfig("second-tie", 0.5), jev, accuseOnFirstSpeech());
+      return playDay(everyTurnConfig("second-tie", 0.5), jev, accuseOnce());
     };
     const first = await run();
     const second = await run();
@@ -469,11 +492,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
     const { repository, id, events } = await playDay(
       everyTurnConfig("second-privacy", 0.5),
       jev,
-      players((seat, n) =>
-        n === 0 && !yes.includes(seat)
-          ? { kind: "accuse", targetId: seat === "p8" ? "p7" : "p8" }
-          : { kind: "continue" },
-      ),
+      accuseOnce(yes),
     );
     const seconded = ofType(events, "accusation.seconded");
     expect(seconded.map((e) => [e.visibility, Object.keys(e.payload).sort()])).toEqual([
@@ -503,11 +522,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
     const { repository, id, events } = await playDay(
       everyTurnConfig("second-invalid", 0.5),
       jev,
-      players((seat, n) =>
-        n === 0 && seat !== "p4"
-          ? { kind: "accuse", targetId: seat === "p8" ? "p7" : "p8" }
-          : { kind: "continue" },
-      ),
+      accuseOnce(["p4"]),
     );
     const { raised } = accusationOf(events);
     expect(repository.getGame(id)!.status).toBe("paused");
@@ -521,7 +536,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
   it("eliminates the accused at exactly a strict majority of the living, then goes to night", async () => {
     // 8 living: 5 yes is floor(8/2)+1. The accuser and the accused vote too.
     const { jev, inputs } = scriptedJev(lynchVote(["p1", "p2", "p3", "p4", "p5"]));
-    const { events } = await playDay(everyTurnConfig("lynch-passes"), jev, accuseOnFirstSpeech());
+    const { events } = await playDay(everyTurnConfig("lynch-passes"), jev, accuseOnce());
     const { accuser, target } = accusationOf(events);
     const revealed = ofType(events, "lynch.ballots_revealed");
     expect(revealed.map((e) => e.visibility)).toEqual(["public"]);
@@ -547,11 +562,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
 
   it("fails at a tie, half the living, and returns to the auction", async () => {
     const { jev } = scriptedJev(lynchVote(["p1", "p2", "p3", "p4"]));
-    const { events } = await playDay(
-      everyTurnConfig("lynch-ties", 0.5),
-      jev,
-      accuseOnFirstSpeech(),
-    );
+    const { events } = await playDay(everyTurnConfig("lynch-ties", 0.5), jev, accuseOnce());
     const resolved = ofType(events, "lynch.resolved");
     expect(resolved.map((e) => [e.visibility, e.payload.passed, e.payload.yes])).toEqual([
       ["public", false, 4],
@@ -561,8 +572,8 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
   }, 180_000);
 
   it("checks for a winner after a passing lynch: eliminating the last wolf ends the game", async () => {
-    // Five seats: Arden (p1), the only wolf, a seer and three villagers. The wolf never bids, so
-    // a village player speaks and accuses Arden, the others second, and all four vote yes.
+    // Five seats: one wolf, a seer and three villagers, dealt by the seed. The wolf never bids,
+    // so a village player speaks and accuses it, the others second, and all four vote yes.
     const base = everyTurnConfig("lynch-wins");
     const seats = base.seats.slice(0, 5);
     const config = GameConfigV2Schema.parse({
@@ -573,22 +584,25 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
         seats.map((seat) => [seat.id, base.modelSettings[seat.id]]),
       ),
     });
+    const wolf = createGameState("dealt", config).players.find(
+      (player) => player.role.alignment === "werewolf",
+    )!.id;
     const { jev } = scriptedJev({
-      urge: (seat) => (seat === "p1" ? 0 : 4),
+      urge: (seat) => (seat === wolf ? 0 : 4),
       listen: () => 3,
-      second: (seat) => (seat === "p1" ? "no" : "yes"),
-      ballot: (seat) => (seat === "p1" ? "no" : "yes"),
+      second: (seat) => (seat === wolf ? "no" : "yes"),
+      ballot: (seat) => (seat === wolf ? "no" : "yes"),
     });
     const { events } = await playDay(
       config,
       jev,
-      players(() => ({ kind: "accuse", targetId: "p1" })),
+      players(() => ({ kind: "accuse", targetId: wolf })),
     );
     expect(ofType(events, "lynch.resolved").map((e) => [e.payload.passed, e.payload.yes])).toEqual([
       [true, 4],
     ]);
     const eliminated = ofType(events, "player.eliminated");
-    expect(eliminated.map((e) => e.payload.playerId)).toEqual(["p1"]);
+    expect(eliminated.map((e) => e.payload.playerId)).toEqual([wolf]);
     const ended = ofType(events, "game.ended");
     expect(ended.map((e) => e.payload.winnerAlignments)).toEqual([["village"]]);
     expect(ended[0]!.sequence).toBeGreaterThan(eliminated[0]!.sequence);
@@ -605,7 +619,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
     const { repository, id, events } = await playDay(
       everyTurnConfig("lynch-missing-ballot"),
       jev,
-      accuseOnFirstSpeech(),
+      accuseOnce(),
     );
     expect(ofType(events, "accusation.seconded")).toHaveLength(1);
     expect(repository.getGame(id)!.status).toBe("paused");
@@ -621,7 +635,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
       const { repository, id, events } = await playDay(
         everyTurnConfig(`audit-${n}`, 0.5),
         jev,
-        accuseOnFirstSpeech(),
+        accuseOnce(),
       );
       expect(ofType(events, "lynch.resolved").length, `seed ${n}`).toBe(1);
       expect(auditGameV2(repository, id).issues, `seed ${n}`).toEqual([]);
@@ -707,7 +721,7 @@ describe("auction_every_turn: records, schemas and dockets", () => {
         endAction: { kind: "accuse", targetId },
       } as never);
     expect(accusing("p8")).toEqual([]);
-    expect(accusing("p1").join(" ")).toMatch(/accuse/);
+    expect(accusing("p1").join(" ")).toMatch(/accusation/);
     const staged = v31SubmissionSchema(packetFor(actorConfig()), task);
     expect(staged.safeParse(submission).success).toBe(true);
     expect(staged.safeParse({ ...submission, endAction: { kind: "continue" } }).success).toBe(
