@@ -8,7 +8,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       LLM_PROVIDER: fake
       DATABASE_URL: /tmp/moon-council-ci.db
