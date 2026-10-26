@@ -1,13 +1,22 @@
 import { createHash } from "node:crypto";
 import type { ContextSourceV2, GameEventV1, PlayerContextV2 } from "@werewolf/contracts";
 
-export const JOURNAL_EVIDENCE_TYPES = new Set([
+/** CES-1575: the public accusation and lynch records of the auction-every-turn mode. */
+export const ACCUSATION_RECORD_TYPES = [
+  "accusation.raised",
+  "accusation.seconded",
+  "accusation.unseconded",
+  "lynch.ballots_revealed",
+  "lynch.resolved",
+] as const;
+export const JOURNAL_EVIDENCE_TYPES = new Set<string>([
   "speech.public",
   "vote.resolved",
   "player.eliminated",
   "role.revealed",
   "inspection.delivered",
   "moderator.announcement",
+  ...ACCUSATION_RECORD_TYPES,
 ]);
 
 /**

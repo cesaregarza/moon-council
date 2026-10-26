@@ -16,13 +16,20 @@ import { shuffled, validateNightAction, type GameState } from "@werewolf/engine"
 import { decisionRequestV2, estimatedTokens } from "./request-v2";
 import { isDemotable, tierPayload, type DeliveryTier } from "./evidence-tiers";
 import { journalText, journalTokens } from "./freeform-journal";
+import { isEveryTurn } from "./every-turn";
 export { estimatedTokens } from "./request-v2";
 
 export class ContextLimitError extends Error {}
 export const contentHash = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const publicFields: Record<string, string[]> = {
-  "speech.public": ["playerId", "playerName", "text", "acts", "respondsTo", "closing"],
+  "speech.public": ["playerId", "playerName", "text", "acts", "respondsTo", "closing", "endAction"],
+  // CES-1575, auction_every_turn only. Poll answers and urgencies are moderator records.
+  "accusation.raised": ["accuserId", "accuserName", "targetId", "targetName"],
+  "accusation.seconded": ["accusationId", "targetId", "targetName", "seconderId", "seconderName"],
+  "accusation.unseconded": ["accusationId", "targetId", "targetName"],
+  "lynch.ballots_revealed": ["accusationId", "targetId", "ballots"],
+  "lynch.resolved": ["accusationId", "targetId", "targetName", "yes", "no", "living", "passed"],
   "player.eliminated": ["playerId", "playerName", "roleName", "cause"],
   "role.revealed": ["playerId", "playerName", "roleName"],
   "vote.resolved": ["ballots", "tally", "tied", "targetId", "targetName"],
@@ -30,6 +37,41 @@ const publicFields: Record<string, string[]> = {
   "phase.changed": ["from", "to"],
   "game.ended": ["winnerAlignments", "winnerPlayerIds", "reason"],
 };
+/** The accusation procedure's decisions: their sole legal target is the accused (CES-1575). */
+const PROCEDURE_KINDS = new Set<string>(["second", "second_urgency", "lynch_ballot"]);
+function nonVoteTargets(
+  kind: ActionProposalV2["kind"],
+  events: GameEventV1[],
+  legalActions: { targets: string[] }[],
+): string[] {
+  if (!PROCEDURE_KINDS.has(kind)) return legalActions[0]?.targets ?? [];
+  return [String(events.findLast((e) => e.type === "accusation.raised")?.payload.targetId)];
+}
+/** The speaker-selection rules a packet states; the auction-every-turn mode has no candidate limit. */
+function speakerRules(state: GameState) {
+  const formula = "(bias + urge) * normalized aggregate willingness to listen; maximum wins";
+  return isEveryTurn(state.config)
+    ? {
+        speakerPriorityFormula: `${formula}; every living player is a candidate every turn`,
+        discussionMode: "auction_every_turn",
+      }
+    : {
+        speakerPriorityFormula: `${formula}; response rights restrict the candidate set before scoring`,
+      };
+}
+/** In the auction-every-turn mode, every speech ends with an endAction naming a valid target. */
+function endActionErrors(proposal: ActionProposalV2, packet: PlayerContextV2): string[] {
+  if (proposal.kind !== "discussion" || !proposal.speech || !packet.rules.discussionMode) return [];
+  const end = proposal.speech.endAction;
+  if (!end) return ["speeches in this mode must end with an endAction"];
+  const living = packet.players.some(
+    (p) =>
+      p.alive && p.id === (end.kind === "accuse" ? end.targetId : "") && p.id !== packet.self.id,
+  );
+  return end.kind === "accuse" && !living
+    ? ["a formal accusation must name a living player other than the speaker"]
+    : [];
+}
 export function publicPayload(event: GameEventV1): Record<string, unknown> {
   return Object.fromEntries(
     (publicFields[event.type] ?? [])
@@ -240,8 +282,7 @@ export function buildContextV2(
         : {}),
       speakerSelection: closing ? "frozen_closing" : config.discussion.speakerSelection,
       speakerBias: config.discussion.speakerBias,
-      speakerPriorityFormula:
-        "(bias + urge) * normalized aggregate willingness to listen; maximum wins; response rights restrict the candidate set before scoring",
+      ...speakerRules(state),
       listenerIntent:
         "For listener auctions, privately rate willingness to listen to every other living player. This is scheduling preference, not an alignment fact.",
     },
@@ -253,7 +294,7 @@ export function buildContextV2(
             state.players.filter((p) => p.alive && p.id !== playerId).map((p) => p.id),
             `${salt}:votes`,
           )
-        : (legalActions[0]?.targets ?? []),
+        : nonVoteTargets(kind, events, legalActions),
     journal,
     responseDocket: docket,
     closing,
@@ -642,6 +683,7 @@ export function validateReport(
     if (choice?.mode === "direct" && choice.playerIds.length !== 1)
       errors.push("direct proposal must name exactly one target");
   }
+  errors.push(...endActionErrors(proposal, packet));
   if (proposal.kind === "discussion") {
     if (
       proposal.speech?.acts.some(

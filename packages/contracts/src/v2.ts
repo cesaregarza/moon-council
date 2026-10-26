@@ -107,6 +107,10 @@ export const DecisionEngineSchema = z.object({
 });
 /** Per-seat cached day sessions on Claude (CES-1556): the v3.2 ledger plus a session harness. */
 export const CLAUDE_SESSION_PROTOCOL = "agent_claude_session_v1" as const;
+/** Protocols that use V3.1 evidence and choice handles. */
+export function isHandleProtocolVersion(protocol: string): boolean {
+  return ["agent_v3_1", "agent_v3_2", CLAUDE_SESSION_PROTOCOL].includes(protocol);
+}
 /** Protocols whose context carries every public record as a tiered ledger. */
 export function isLedgerProtocolVersion(protocol: string): boolean {
   return protocol === "agent_v3_2" || protocol === CLAUDE_SESSION_PROTOCOL;
@@ -156,16 +160,53 @@ export const ModelSettingsSchema = z.object({
   reasoningEffort: z.string().default("medium"),
   provider: z.enum(["fake", "codex", "codex_direct", "openai", "anthropic"]),
 });
+/**
+ * CES-1575: optional, without defaults, so a config written before the mode existed parses to the
+ * same object. `auction_every_turn` runs the speaker auction every turn; absent means the staged
+ * opening/follow-up/closing discussion. `turnBudgetFactor` sets a day's turn budget, ceil(living
+ * players x factor), past which the game pauses; the mode requires it.
+ */
+const EveryTurnDiscussionFields = {
+  mode: z.enum(["auction_every_turn"]).optional(),
+  turnBudgetFactor: z.number().positive().max(8).optional(),
+};
 export const DiscussionPolicyV2Schema = DiscussionPolicySchema.extend({
   speakerSelection: z.enum(["event_queue", "listener_auction"]).default("event_queue"),
   speakerBias: z.number().min(0.01).max(1).default(0.25),
   maxParallelDecisions: z.number().int().min(1).max(16).default(1),
+  ...EveryTurnDiscussionFields,
 });
 const CreateDiscussionPolicyV2Schema = DiscussionPolicySchema.extend({
   speakerSelection: z.enum(["event_queue", "listener_auction"]).default("listener_auction"),
   speakerBias: z.number().min(0.01).max(1).default(0.25),
   maxParallelDecisions: z.number().int().min(1).max(16).default(4),
+  ...EveryTurnDiscussionFields,
 });
+/** The auction-every-turn mode reuses the journal_v4 Jev bids and polls and the handle protocol. */
+function requireEveryTurnSetup(
+  value: {
+    protocolVersion: string;
+    discussion: z.infer<typeof DiscussionPolicyV2Schema>;
+    decisionEngine: z.infer<typeof DecisionEngineSchema>;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.discussion.mode !== "auction_every_turn") return;
+  const missing = [
+    value.discussion.turnBudgetFactor === undefined && "discussion.turnBudgetFactor",
+    value.discussion.speakerSelection !== "listener_auction" &&
+      "listener_auction speaker selection",
+    (value.decisionEngine.mode !== "jev" || value.decisionEngine.workflow !== "journal_v4") &&
+      "the journal_v4 Jev workflow",
+    !isHandleProtocolVersion(value.protocolVersion) && "a V3.1/V3.2 handle protocol",
+  ].filter(Boolean);
+  if (missing.length)
+    ctx.addIssue({
+      code: "custom",
+      path: ["discussion", "mode"],
+      message: `auction_every_turn requires ${missing.join(", ")}`,
+    });
+}
 /** The Responses API output ceiling includes internal reasoning and final JSON. */
 export const SafetyLimitsV2Schema = SafetyLimitsSchema.extend({
   maxOutputTokens: z.number().int().min(100).max(32_768).default(600),
@@ -209,6 +250,7 @@ export const GameConfigV2Schema = z
     validateAttentionExperiment(value, ctx);
     requireClaudeSpendLimit(value, ctx);
     requireClaudeSessionPairing(value, ctx);
+    requireEveryTurnSetup(value, ctx);
     if (
       value.decisionEngine.mode === "jev" &&
       !["agent_v3_1", "agent_v3_2", CLAUDE_SESSION_PROTOCOL].includes(value.protocolVersion)
@@ -423,6 +465,11 @@ export const SpeechActV2Schema = z.strictObject({
   claim: Brief,
   sourceId: SourceId.nullable(),
 });
+/**
+ * CES-1575: how a speech ends in the auction-every-turn mode. `accuse` formally accuses a living
+ * player, which starts the seconding poll; the social `accusation` act stays a signal only.
+ */
+export type EndAction = { kind: "continue" } | { kind: "accuse"; targetId: string };
 export const PublicSpeechV2Schema = z.strictObject({
   text: z.string().min(1).max(1_200),
   acts: z.array(SpeechActV2Schema).max(4),
@@ -444,8 +491,21 @@ export const ActionProposalV2Schema = z.discriminatedUnion("kind", [
     silenceCase: z.strictObject({ speechAlternative: Brief, advantage: Brief }).nullable(),
   }),
   z.strictObject({ kind: z.literal("pass"), reason: Brief }),
+  // CES-1575 accusation procedure: the seconding poll, its urgency poll, and the lynch ballot.
+  z.strictObject({ kind: z.literal("second"), second: z.boolean() }),
+  z.strictObject({ kind: z.literal("second_urgency"), urgency: z.number().min(0).max(1) }),
+  z.strictObject({ kind: z.literal("lynch_ballot"), ballot: z.enum(["yes", "no"]) }),
 ]);
-export type ActionProposalV2 = z.infer<typeof ActionProposalV2Schema>;
+type ProposalFromSchema = z.infer<typeof ActionProposalV2Schema>;
+/**
+ * A speech in the auction-every-turn mode also records how it ended. The field lives on the type
+ * only: the V2 provider report schema is built from the schema above, and old protocols must
+ * keep sending it byte for byte. The V3.1 speech schemas validate it in that mode.
+ */
+export type PublicSpeechV2 = z.infer<typeof PublicSpeechV2Schema> & { endAction?: EndAction };
+export type ActionProposalV2 =
+  | Exclude<ProposalFromSchema, { kind: "discussion" }>
+  | (Extract<ProposalFromSchema, { kind: "discussion" }> & { speech: PublicSpeechV2 | null });
 export const ListenerPreferenceV1Schema = z.strictObject({
   playerId: Id,
   willingness: z.number().min(0).max(1),
@@ -541,7 +601,10 @@ export type V3TaskKind =
   | "closing_response"
   | "vote_choice"
   | "night_choice"
-  | "team_point_choice";
+  | "team_point_choice"
+  | "second_poll"
+  | "second_urgency"
+  | "lynch_ballot";
 
 export const DecisionReportV2Schema = z.strictObject({
   observations: Refs,
