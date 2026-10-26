@@ -400,7 +400,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
       second: (seat) => (seat === "p3" ? "yes" : "no"),
     });
     const { repository, id, events } = await playDay(
-      everyTurnConfig("second-single", 0.5),
+      everyTurnConfig("second-single"),
       jev,
       accuseOnce(["p3"]),
     );
