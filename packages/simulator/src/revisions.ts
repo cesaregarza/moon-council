@@ -1,12 +1,18 @@
 import type { ContextSourceV2, GameEventV1, PrivateJournalV2 } from "@werewolf/contracts";
-import { journalEvidenceRevision } from "./player-brief";
+import { ACCUSATION_RECORD_TYPES, journalEvidenceRevision } from "./player-brief";
 
-/** Public events that change what players can respond to; the latest one names the revision. */
-const revisesPublicRecord = (e: GameEventV1) =>
-  e.type === "speech.public" ||
-  e.type === "vote.resolved" ||
-  e.type === "player.eliminated" ||
-  e.type === "role.revealed";
+/**
+ * Public events that change what players can respond to; the latest one names the revision. The
+ * accusation and lynch records occur only in the auction-every-turn mode (CES-1575).
+ */
+const PUBLIC_RECORD_TYPES = new Set([
+  "speech.public",
+  "vote.resolved",
+  "player.eliminated",
+  "role.revealed",
+  ...ACCUSATION_RECORD_TYPES,
+]);
+const revisesPublicRecord = (e: GameEventV1) => PUBLIC_RECORD_TYPES.has(e.type);
 
 /**
  * The public revision: the sequence number of the latest public event players can respond to,

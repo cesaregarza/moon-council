@@ -7,6 +7,7 @@ import type {
   DecisionReportV2,
   DecisionReportWithSpeakerIntentV1,
   DiscussionBidV3,
+  EndAction,
   GameConfigV2,
   GameEventV1,
   ListenerBidV3,
@@ -47,6 +48,14 @@ import {
   type DiscussionStage,
 } from "./scheduler-v2";
 import { NarrationV2 } from "./narration-v2";
+import {
+  chooseSeconder,
+  everyTurnStatus,
+  isEveryTurn,
+  lynchOutcome,
+  pendingAccusation,
+  type Accusation,
+} from "./every-turn";
 import { usesJournalWorkflow } from "./jev-actions";
 import { prepareJevStage, usesJev } from "./jev-decision";
 import {
@@ -74,6 +83,19 @@ interface AuctionResolution {
   declinedCandidateIds: string[];
 }
 /**
+ * CES-1575: the auction-every-turn mode's rule that Cesar has not decided (open question N). No
+ * production default exists: the mode refuses to start without it. It must be a pure function of
+ * the events, because it may be asked again for the same round.
+ */
+export interface EveryTurnPolicies {
+  /** After a round in which every bidder declined: end the day without a lynch, or run a turn. */
+  noLynchDayEnd(input: {
+    reason: "all_declined";
+    state: GameState;
+    events: GameEventV1[];
+  }): "end_day" | "next_turn";
+}
+/**
  * Deaths from the night that just ended, as seen from the dawn announcement.
  *
  * A day-first cycle advances the day counter on the way into `day_announcement`, so that
@@ -95,6 +117,42 @@ export function overnightEliminations(
   );
 }
 
+/**
+ * The record of one accusation-procedure answer. Poll answers and urgencies are moderator-only
+ * audit records; a lynch ballot is sealed to its voter until all ballots are revealed together.
+ */
+function procedureRecord(
+  state: GameState,
+  accusation: Accusation,
+  playerId: string,
+  proposal: ActionProposalV2,
+): EngineEventInput {
+  const base = { phase: state.phase, day: state.day };
+  const ids = { accusationId: accusation.id, playerId };
+  if (proposal.kind === "second")
+    return {
+      ...base,
+      type: "accusation.poll_answered",
+      visibility: "moderator",
+      payload: { ...ids, second: proposal.second },
+    };
+  if (proposal.kind === "second_urgency")
+    return {
+      ...base,
+      type: "accusation.urgency_answered",
+      visibility: "moderator",
+      payload: { ...ids, urgency: proposal.urgency },
+    };
+  if (proposal.kind === "lynch_ballot")
+    return {
+      ...base,
+      type: "lynch.ballot_cast",
+      visibility: "player",
+      audienceIds: [playerId],
+      payload: { ...ids, ballot: proposal.ballot },
+    };
+  throw new DecisionPausedError(`unexpected accusation procedure proposal ${proposal.kind}`);
+}
 const usesSplitDecisions = (protocol: string): boolean =>
   protocol === "agent_v3" || protocol === "agent_v3_1" || isLedgerProtocolVersion(protocol);
 /**
@@ -113,6 +171,7 @@ export class V2GameOrchestrator {
     private repository: LabRepository,
     provider: DecisionProvider,
     jevProvider?: DecisionProvider,
+    private policies?: EveryTurnPolicies,
   ) {
     this.store = new DecisionStore(repository);
     this.executor = new DecisionExecutorV2(repository, provider, jevProvider);
@@ -556,28 +615,32 @@ export class V2GameOrchestrator {
             ...(state.config.revealRolesOnDeath ? { roleName: target.role.name } : {}),
             cause: "vote",
           });
-        const current = this.state(id);
-        if (this.finishIfWon(current)) return;
-        if (config.rules.firstCycle !== "day_first" && state.day >= config.safety.maxCycles) {
-          this.append(current, "game.budget_exhausted", {
-            reason: "maximum day/night cycles reached",
-            terminalClass: "budget",
-          });
-          this.repository.updateGame(id, { status: "budget_exhausted" });
-          return;
-        }
-        this.repository.appendEvent(
-          id,
-          transition(
-            current,
-            "night_team",
-            config.rules.firstCycle === "day_first" ? current.day : current.day + 1,
-          ),
-        );
+        this.closeDay(this.state(id));
       });
       return false;
     }
     throw new DecisionPausedError(`unexpected V2 phase ${state.phase}`);
+  }
+  /** After the day's elimination, if any: a win ends the game, the cycle budget ends it, or night. */
+  private closeDay(current: GameState): void {
+    const config = this.config(current);
+    if (this.finishIfWon(current)) return;
+    if (config.rules.firstCycle !== "day_first" && current.day >= config.safety.maxCycles) {
+      this.append(current, "game.budget_exhausted", {
+        reason: "maximum day/night cycles reached",
+        terminalClass: "budget",
+      });
+      this.repository.updateGame(current.gameId, { status: "budget_exhausted" });
+      return;
+    }
+    this.repository.appendEvent(
+      current.gameId,
+      transition(
+        current,
+        "night_team",
+        config.rules.firstCycle === "day_first" ? current.day : current.day + 1,
+      ),
+    );
   }
   private async coordinateTeamsParallel(
     state: GameState,
@@ -840,6 +903,7 @@ export class V2GameOrchestrator {
   private async discuss(state: GameState, events: GameEventV1[]): Promise<boolean> {
     const id = state.gameId;
     const config = this.config(state);
+    if (isEveryTurn(config)) return this.discussEveryTurn(state, events);
     const closingKey = `closing:${state.day}`;
     let closing = this.store.get<ClosingState>(id, closingKey);
     const auction =
@@ -931,6 +995,218 @@ export class V2GameOrchestrator {
       this.repository.appendEvent(id, transition(state, "day_vote"));
     });
     return false;
+  }
+  /**
+   * CES-1575, the auction-every-turn mode. Each turn every living player bids and the speaker
+   * auction alone picks the speaker; the scheduler only administers: a pending accusation is
+   * resolved first, an all-decline round goes to the no-lynch policy, and a spent turn budget
+   * pauses the game. It never picks a speaker, forces a speech or forces a vote.
+   */
+  private async discussEveryTurn(state: GameState, events: GameEventV1[]): Promise<boolean> {
+    if (!this.policies)
+      throw new DecisionPausedError(
+        "auction_every_turn needs a no-lynch day-end policy (open rule N); none was supplied",
+      );
+    const accusation = pendingAccusation(state, events);
+    if (accusation) return this.resolveAccusation(state, events, accusation);
+    const turn = everyTurnStatus(state, events);
+    if (
+      turn.lastAllDeclined &&
+      this.policies.noLynchDayEnd({ reason: "all_declined", state, events }) === "end_day"
+    ) {
+      this.store.atomic(() => {
+        this.append(state, "discussion.ended", { reason: "no_lynch" }, "moderator");
+        this.closeDay(this.state(state.gameId));
+      });
+      return false;
+    }
+    if (turn.round >= turn.budget)
+      throw new DecisionPausedError(
+        `discussion turn budget reached: ${turn.round} of ${turn.budget} turns on day ${state.day}`,
+      );
+    const living = state.players
+      .filter((player) => player.alive)
+      .map((player) => player.id)
+      .sort();
+    return this.auctionDiscussionV3(state, events, {
+      stage: "turn",
+      round: turn.round,
+      candidates: living,
+      listeners: living,
+      dockets: responseDockets(state, events),
+    });
+  }
+  private resolveAccusation(
+    state: GameState,
+    events: GameEventV1[],
+    accusation: Accusation,
+  ): Promise<boolean> {
+    const seconded = events.some(
+      (e) => e.type === "accusation.seconded" && e.payload.accusationId === accusation.id,
+    );
+    return seconded
+      ? this.lynchVote(state, events, accusation)
+      : this.secondAccusation(state, events, accusation);
+  }
+  /** The sequence every decision of one poll is built at: the state when the poll began. */
+  private snapshot(state: GameState, name: string, events: GameEventV1[]): number {
+    const key = `snapshot:${state.day}:${name}`;
+    let at = this.store.get<number>(state.gameId, key);
+    if (at === undefined) {
+      at = events.at(-1)!.sequence;
+      this.store.put(state.gameId, key, at);
+    }
+    return at;
+  }
+  /** Each player's recorded answer of one kind for one accusation. */
+  private answers<T>(events: GameEventV1[], type: string, accusation: Accusation, field: string) {
+    return new Map(
+      events
+        .filter((e) => e.type === type && e.payload.accusationId === accusation.id)
+        .map((e) => [String(e.payload.playerId), e.payload[field] as T]),
+    );
+  }
+  /** Asks every player concurrently, on one snapshot, then commits the answers in order. */
+  private async poll(
+    state: GameState,
+    players: string[],
+    decision: (playerId: string, defer: boolean) => Promise<boolean>,
+  ): Promise<boolean> {
+    await this.parallel(players, this.config(state).discussion.maxParallelDecisions, (playerId) =>
+      decision(playerId, true),
+    );
+    let committed = false;
+    for (const playerId of players) committed = (await decision(playerId, false)) || committed;
+    return committed;
+  }
+  /** One moderator-only procedure decision: its answer is audited, never public. */
+  private procedureDecision(
+    state: GameState,
+    accusation: Accusation,
+    task: "second_poll" | "second_urgency" | "lynch_ballot",
+    at: number,
+  ) {
+    const kind = {
+      second_poll: "second",
+      second_urgency: "second_urgency",
+      lynch_ballot: "lynch_ballot",
+    } as const;
+    return (playerId: string, defer: boolean) =>
+      this.decide(
+        state,
+        playerId,
+        kind[task],
+        `${task}:${accusation.sequence}:${playerId}`,
+        [],
+        false,
+        at,
+        (report) => [procedureRecord(state, accusation, playerId, report.proposal)],
+        defer,
+        { type: task, accusationId: accusation.id, targetId: accusation.targetId },
+      );
+  }
+  /**
+   * Every living player but the accuser, the accused included, is asked on one snapshot whether
+   * to second. No yes returns play to the auction; one yes seconds; among several, an urgency
+   * poll of the yes answers on the same snapshot picks the seconder, ties broken by the seeded
+   * order. Only the outcome and the seconder are public.
+   */
+  private async secondAccusation(
+    state: GameState,
+    events: GameEventV1[],
+    accusation: Accusation,
+  ): Promise<boolean> {
+    const at = this.snapshot(state, `second:${accusation.sequence}`, events);
+    const polled = state.players
+      .filter((player) => player.alive && player.id !== accusation.accuserId)
+      .map((player) => player.id)
+      .sort();
+    const answers = this.answers<boolean>(events, "accusation.poll_answered", accusation, "second");
+    const unanswered = polled.filter((playerId) => !answers.has(playerId));
+    if (unanswered.length)
+      return this.poll(
+        state,
+        unanswered,
+        this.procedureDecision(state, accusation, "second_poll", at),
+      );
+    const yes = polled.filter((playerId) => answers.get(playerId));
+    const target = state.players.find((player) => player.id === accusation.targetId)!;
+    if (!yes.length) {
+      this.append(state, "accusation.unseconded", {
+        accusationId: accusation.id,
+        targetId: target.id,
+        targetName: target.name,
+      });
+      return true;
+    }
+    const urgencies = this.answers<number>(
+      events,
+      "accusation.urgency_answered",
+      accusation,
+      "urgency",
+    );
+    const unrated = yes.length > 1 ? yes.filter((playerId) => !urgencies.has(playerId)) : [];
+    if (unrated.length)
+      return this.poll(
+        state,
+        unrated,
+        this.procedureDecision(state, accusation, "second_urgency", at),
+      );
+    const seconderId =
+      yes.length === 1
+        ? yes[0]!
+        : chooseSeconder(urgencies, state.config.seed, state.day, accusation.sequence);
+    this.append(state, "accusation.seconded", {
+      accusationId: accusation.id,
+      targetId: target.id,
+      targetName: target.name,
+      seconderId,
+      seconderName: state.players.find((player) => player.id === seconderId)!.name,
+    });
+    return true;
+  }
+  /**
+   * Every living player, the accuser and the accused included, casts a sealed yes/no ballot on
+   * one snapshot; abstaining is not a ballot, and a ballot that never validates pauses the game.
+   * The ballots are then revealed, and a strict majority of the living eliminates the accused
+   * and ends the day. Otherwise play returns to the auction.
+   */
+  private async lynchVote(
+    state: GameState,
+    events: GameEventV1[],
+    accusation: Accusation,
+  ): Promise<boolean> {
+    const at = this.snapshot(state, `lynch:${accusation.sequence}`, events);
+    const voters = state.players
+      .filter((player) => player.alive)
+      .map((player) => player.id)
+      .sort();
+    const cast = this.answers<"yes" | "no">(events, "lynch.ballot_cast", accusation, "ballot");
+    const missing = voters.filter((playerId) => !cast.has(playerId));
+    if (missing.length)
+      return this.poll(
+        state,
+        missing,
+        this.procedureDecision(state, accusation, "lynch_ballot", at),
+      );
+    const ballots = Object.fromEntries(voters.map((playerId) => [playerId, cast.get(playerId)!]));
+    const outcome = lynchOutcome(ballots);
+    const target = state.players.find((player) => player.id === accusation.targetId)!;
+    this.store.atomic(() => {
+      const record = { accusationId: accusation.id, targetId: target.id };
+      this.append(state, "lynch.ballots_revealed", { ...record, ballots });
+      this.append(state, "lynch.resolved", { ...record, targetName: target.name, ...outcome });
+      if (!outcome.passed) return;
+      this.append(state, "player.eliminated", {
+        playerId: target.id,
+        playerName: target.name,
+        ...(state.config.revealRolesOnDeath ? { roleName: target.role.name } : {}),
+        cause: "vote",
+      });
+      this.append(state, "discussion.ended", { reason: "lynch_passed" }, "moderator");
+      this.closeDay(this.state(state.gameId));
+    });
+    return !outcome.passed;
   }
   /** The stored decision a key names this phase, if any (decide() derives the same ID). */
   private storedDecision(state: GameState, key: string) {
@@ -1239,11 +1515,35 @@ export class V2GameOrchestrator {
               publicRevision: revision,
             },
           },
+          ...this.accusationRaised(state, selected.playerId, proposal.speech.endAction),
         ];
       },
       false,
       task,
     );
+  }
+  /** A speech that ends by formally accusing a player raises a public accusation (CES-1575). */
+  private accusationRaised(
+    state: GameState,
+    accuserId: string,
+    endAction: EndAction | undefined,
+  ): EngineEventInput[] {
+    if (endAction?.kind !== "accuse") return [];
+    const name = (id: string) => state.players.find((player) => player.id === id)!.name;
+    return [
+      {
+        type: "accusation.raised",
+        phase: state.phase,
+        day: state.day,
+        visibility: "public",
+        payload: {
+          accuserId,
+          accuserName: name(accuserId),
+          targetId: endAction.targetId,
+          targetName: name(endAction.targetId),
+        },
+      },
+    ];
   }
   private async auctionDiscussion(
     state: GameState,

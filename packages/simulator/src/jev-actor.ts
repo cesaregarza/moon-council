@@ -97,6 +97,67 @@ export function actorBriefing(op: Opportunity) {
   };
 }
 
+const SCALE = [
+  "Not important",
+  "Slightly important",
+  "Moderately important",
+  "Very important",
+  "Essential",
+];
+
+/**
+ * CES-1575: the accusation procedure's single questions, asked of each player on the same frozen
+ * snapshot. The packet's sole legal target is the accused.
+ */
+function procedureQuestions(op: Opportunity): Record<string, JevQuestion> | undefined {
+  const id = op.packet.legalTargets[0];
+  const accused = `${op.packet.players.find((p) => p.id === id)?.name ?? id} (${id})`;
+  if (op.taskType === "second_poll")
+    return {
+      second: {
+        type: "choice",
+        instructions: `${perspective} Decide as the player: do you want to second the formal accusation against ${accused}? One second sends it to a public yes/no vote of every living player, where a strict majority of the living eliminates ${accused}; with no second, play returns to the speaker auction.`,
+        criteria: { yes: `Second the accusation against ${accused}.`, no: "Do not second it." },
+      },
+    };
+  if (op.taskType === "second_urgency")
+    return {
+      urgency: {
+        type: "score",
+        instructions: `${perspective} Decide as the player: how important is it to you to be the one who seconds the accusation against ${accused}? Only the seconder's name becomes public.`,
+        criteria: SCALE,
+      },
+    };
+  if (op.taskType === "lynch_ballot")
+    return {
+      ballot: {
+        type: "choice",
+        instructions: `${perspective} Decide as the player: cast your public ballot on eliminating ${accused}. Every living player votes and abstaining is not allowed; the elimination passes only if yes votes exceed half of the living players.`,
+        criteria: { yes: `Eliminate ${accused}.`, no: `Do not eliminate ${accused}.` },
+      },
+    };
+  return undefined;
+}
+
+/** A procedure answer as a submission; an answer outside its options is never coerced. */
+function procedureSubmission(
+  answers: Record<string, { type: string; choice?: string; score?: number }>,
+  provenance: { memory: unknown; rationale: string },
+) {
+  const shared = { ...provenance, evidence: [] };
+  const choice = (key: string) => {
+    const answer = answers[key];
+    if (answer?.type !== "choice" || !["yes", "no"].includes(String(answer.choice)))
+      throw new Error(`Missing yes/no answer: ${key}`);
+    return answer.choice as "yes" | "no";
+  };
+  if (answers.second) return { ...shared, second: choice("second") === "yes" };
+  if (answers.ballot) return { ...shared, ballot: choice("ballot") };
+  const urgency = answers.urgency;
+  if (urgency?.type !== "score") throw new Error("Missing score: urgency");
+  return { ...shared, urgency: urgency.score! / 4 };
+}
+
 export function prepareActorJevAction(
   op: Opportunity,
   config: GameConfigV2,
@@ -106,7 +167,9 @@ export function prepareActorJevAction(
   const listenTask = op.taskType === "discussion_listen";
   const choices = actorChoices(op.packet, op.taskType);
   const questions: Record<string, JevQuestion> = {};
-  if (scoreTask || listenTask) {
+  const procedure = procedureQuestions(op);
+  if (procedure) Object.assign(questions, procedure);
+  else if (scoreTask || listenTask) {
     questions.ready = {
       type: "noul",
       instructions: `${perspective} Are you ready to finish discussion and vote? Consider unresolved questions and useful remaining exchanges independently of your urgency to speak.`,
@@ -190,6 +253,7 @@ export function prepareActorJevAction(
       const memory = { journalUpdate: null, decisionBrief: null };
       const rationale =
         "Jev decided from the acting player's current brief and authorized facts; see the recorded distribution and semantic assessment.";
+      if (procedure) return procedureSubmission(answers, { memory, rationale });
       if (scoreTask || listenTask) {
         const score = (key: string) => {
           const answer = answers[key];
