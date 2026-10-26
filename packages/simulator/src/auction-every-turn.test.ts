@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GameConfigV2Schema,
   emptyJournalV2,
+  providerJsonSchema,
   type GameConfigV2,
   type GameEventV1,
   type SpeakerIntentV1,
@@ -261,39 +262,14 @@ describe("auction_every_turn: the turn loop", () => {
     }
   }, 120_000);
 
-  it("shows a docket in the briefing without forcing the named player to speak", async () => {
-    const config = everyTurnConfig("docket-briefing");
-    // A seat's briefing lists only challenges owed to it; once it sees one, it never bids again.
-    const silenced = new Set<string>();
-    const { jev } = scriptedJev({
-      urge: (seat, input) => {
-        if (input.includes("Unanswered challenge")) silenced.add(seat);
-        return silenced.has(seat) ? 0 : 1 + (hash(input) % 4);
-      },
-    });
-    const { repository, id, events } = await playDay(config, jev);
-    expect(silenced.size).toBeGreaterThan(0);
-    for (const seat of silenced) {
-      const challenge = speeches(events).find((e) =>
-        (e.payload.acts as { kind: string; targetId: string | null }[]).some(
-          (act) => act.kind === "challenge" && act.targetId === seat,
-        ),
-      );
-      expect(challenge, `a challenge to ${seat}`).toBeDefined();
-      const bids = new DecisionStore(repository)
-        .opportunities(id)
-        .filter((op) => op.playerId === seat && op.taskType === "discussion_score");
-      expect(
-        bids.some((op) => op.packet.responseDocket.includes(challenge!.id)),
-        seat,
-      ).toBe(true);
-      expect(
-        speeches(events).filter(
-          (e) => e.payload.playerId === seat && e.sequence > challenge!.sequence,
-        ),
-        `${seat} is not forced to speak`,
-      ).toEqual([]);
-    }
+  it("briefs no dockets or unanswered-challenge lines in the new mode", async () => {
+    // The fake players name another seat in every speech; the staged mode would docket that.
+    const { jev, inputs } = scriptedJev({ urge: (_seat, input) => 1 + (hash(input) % 4) });
+    const { repository, id, events } = await playDay(everyTurnConfig("no-dockets"), jev);
+    expect(speeches(events).length).toBeGreaterThan(1);
+    for (const op of new DecisionStore(repository).opportunities(id))
+      expect(op.packet.responseDocket, op.id).toEqual([]);
+    expect(inputs.filter((call) => /Unanswered /.test(call.input))).toEqual([]);
   }, 120_000);
 
   it("ends the day with no elimination on an all-decline round with no accusation pending", async () => {
@@ -649,27 +625,28 @@ describe("auction_every_turn: records, schemas and dockets", () => {
       seats: config.seats.map((seat) => (seat.id === "p5" ? { ...seat, name: "Eli" } : seat)),
     });
 
-  it("matches docket names on whole words in the new mode only", () => {
-    const believe = [speech("I believe the quiet ones are hiding something.")];
-    const everyTurn = withEli(everyTurnConfig("dockets"));
-    expect(responseDockets(everyTurn, believe).p5).toEqual([]);
-    expect(responseDockets(everyTurn, [speech("Eli, where were you?")]).p5).toEqual([
-      "speech.public-5",
-    ]);
+  it("keeps no dockets in the new mode; the staged mode keeps its recorded ones", () => {
+    const named = speech("Eli, where were you? I believe you are hiding something.", {
+      acts: [{ kind: "challenge", targetId: "p5", claim: "Explain.", sourceId: null }],
+    });
+    const everyTurn = responseDockets(withEli(everyTurnConfig("dockets")), [named]);
+    expect(Object.values(everyTurn).flat()).toEqual([]);
     // The staged mode keeps its recorded substring behaviour, so old games replay unchanged.
-    expect(responseDockets(withEli(actorConfig()), believe).p5).toEqual(["speech.public-5"]);
+    const believe = speech("I believe the quiet ones are hiding something.");
+    expect(responseDockets(withEli(actorConfig()), [believe]).p5).toEqual(["speech.public-5"]);
   });
 
   const packetFor = (config: GameConfigV2, playerId = "p1") =>
     buildContextV2(stateFor(config), [], playerId, emptyJournalV2(), "speech", "discussion");
   const task = { type: "discussion_free_speech", ready: true, revision: "1" } as const;
+  /** A new-mode speech: natural text, then the formal endAction. */
   const submission = {
     text: "Hollis has dodged every question.",
-    acts: [],
-    respondsTo: [],
     rationale: "Press the suspect.",
     memory: { journalUpdate: null, decisionBrief: null },
   };
+  /** A staged speech, with its social annotations. */
+  const annotated = { ...submission, acts: [], respondsTo: [] };
 
   it("requires an endAction on the new mode's speeches only, accusing a living other player", () => {
     const packet = packetFor(everyTurnConfig("schema"));
@@ -687,11 +664,16 @@ describe("auction_every_turn: records, schemas and dockets", () => {
       } as never);
     expect(accusing("p8")).toEqual([]);
     expect(accusing("p1").join(" ")).toMatch(/accusation/);
+    // No social annotations in the new mode: a speech carrying acts or respondsTo is refused.
+    for (const extra of [{ acts: [] }, { respondsTo: [] }])
+      expect(
+        everyTurn.safeParse({ ...submission, endAction: { kind: "continue" }, ...extra }).success,
+        Object.keys(extra)[0],
+      ).toBe(false);
     const staged = v31SubmissionSchema(packetFor(actorConfig()), task);
-    expect(staged.safeParse(submission).success).toBe(true);
-    expect(staged.safeParse({ ...submission, endAction: { kind: "continue" } }).success).toBe(
-      false,
-    );
+    expect(staged.safeParse(annotated).success).toBe(true);
+    expect(staged.safeParse(submission).success).toBe(false);
+    expect(staged.safeParse({ ...annotated, endAction: { kind: "continue" } }).success).toBe(false);
     // The journal response envelope carries it too.
     const format = v31ApiResponseFormat(packet, task)!;
     let decoded: unknown;
@@ -699,16 +681,19 @@ describe("auction_every_turn: records, schemas and dockets", () => {
       decoded = format.decode({
         task: "discussion_free_speech",
         memory: { journalUpdate: null, decisionBrief: null },
-        speech: {
-          text: submission.text,
-          acts: [],
-          respondsTo: [],
-          endAction: { kind: "accuse", targetId: "p8" },
-        },
+        speech: { text: submission.text, endAction: { kind: "accuse", targetId: "p8" } },
         rationale: submission.rationale,
       });
     }).not.toThrow();
     expect(decoded).toMatchObject({ endAction: { kind: "accuse", targetId: "p8" } });
+    expect(() =>
+      format.decode({
+        task: "discussion_free_speech",
+        memory: { journalUpdate: null, decisionBrief: null },
+        speech: { text: submission.text, acts: [], endAction: { kind: "continue" } },
+        rationale: submission.rationale,
+      }),
+    ).toThrow();
   });
 
   it("does not offer accuse while an accusation is pending, and refuses one returned anyway", () => {
@@ -1138,7 +1123,7 @@ describe("auction_every_turn: resource ceilings during the procedures (round 2)"
     }, 180_000);
 });
 
-describe("auction_every_turn: the lynch denominator and the docket contract (round 2)", () => {
+describe("auction_every_turn: the lynch denominator (round 2)", () => {
   const roster = ["p1", "p2", "p3", "p4"];
 
   it("takes the denominator from the living roster and refuses a missing or extra ballot", () => {
@@ -1155,45 +1140,6 @@ describe("auction_every_turn: the lynch denominator and the docket contract (rou
       lynchOutcome({ p1: "yes", p2: "yes", p3: "no", p4: "no", p9: "yes" }, roster),
     ).toThrow(/ballot/);
   });
-
-  it("pins the docket contract: a decline clears what the seat was shown", async () => {
-    // A seat that sees a challenge to it declines that turn; its docket entry is then gone from
-    // its next briefing unless it is challenged again. The public speech and journals remain.
-    const silenced = new Set<string>();
-    const { jev } = scriptedJev({
-      urge: (seat, input) => {
-        if (input.includes("Unanswered challenge")) silenced.add(seat);
-        return silenced.has(seat) ? 0 : 1 + (hash(input) % 4);
-      },
-    });
-    const { repository, id, events } = await playDay(everyTurnConfig("docket-contract"), jev);
-    const store = new DecisionStore(repository);
-    const opened = new Map(
-      events
-        .filter((e) => e.type === "decision.opened")
-        .map((e) => [String(e.payload.decisionId), e.sequence]),
-    );
-    let pinned = 0;
-    for (const seat of silenced) {
-      const challenges = speeches(events).filter((e) =>
-        (e.payload.acts as { kind: string; targetId: string | null }[]).some(
-          (act) => act.kind === "challenge" && act.targetId === seat,
-        ),
-      );
-      const bids = store
-        .opportunities(id)
-        .filter((op) => op.playerId === seat && op.taskType === "discussion_score")
-        .sort((a, b) => opened.get(a.id)! - opened.get(b.id)!);
-      const first = challenges[0]!;
-      const shown = bids.findIndex((op) => op.packet.responseDocket.includes(first.id));
-      expect(shown, `${seat} is shown the challenge`).toBeGreaterThanOrEqual(0);
-      const next = bids[shown + 1];
-      if (!next) continue;
-      expect(next.packet.responseDocket, `${seat}'s next briefing`).not.toContain(first.id);
-      pinned += 1;
-    }
-    expect(pinned).toBeGreaterThan(0);
-  }, 120_000);
 });
 
 describe("auction_every_turn: the window after a second, turn grants and repeats (part 2)", () => {
@@ -1277,8 +1223,6 @@ describe("auction_every_turn: the window after a second, turn grants and repeats
       expect(
         v31SubmissionSchema(op.packet, speechTask).safeParse({
           text: "Hollis again.",
-          acts: [],
-          respondsTo: [],
           rationale: "Press.",
           memory: { journalUpdate: null, decisionBrief: null },
           endAction: { kind: "accuse", targetId: "p6" },
@@ -1455,5 +1399,102 @@ describe("auction_every_turn: the window after a second, turn grants and repeats
     expect(game.status()).toBe("paused");
     const pause = ofType(events, "game.paused").at(-1)!;
     expect([pause.day, pause.payload.reason]).toEqual([2, expect.stringMatching(/^turn_budget: /)]);
+  }, 300_000);
+});
+
+describe("auction_every_turn: plain speech, no social bookkeeping (part 3)", () => {
+  /** Docket and act-derived labels that no new-mode agent input may carry. */
+  const LABELS =
+    /Unanswered |responseDocket|respondsTo|"acts"|acts\/respondsTo|responses owed|challenges made|response rights|frozen docket/;
+
+  it("renders every new-mode request without dockets or act-derived labels", async () => {
+    const connection = openDatabase(":memory:");
+    connections.push(connection);
+    const repository = new LabRepository(connection);
+    const config = GameConfigV2Schema.parse({
+      ...everyTurnConfig("plain-speech"),
+      safety: { ...everyTurnConfig("x").safety, maxCycles: 2 },
+    });
+    const game = repository.createGame(config);
+    // Every Claude-seat request, as sent: instructions, layers and both schemas.
+    const requests: { task: string; text: string }[] = [];
+    const fake = new FakeDecisionProvider();
+    let accused = false;
+    const llm: DecisionProvider = {
+      decide: async (request) => {
+        requests.push({
+          task: request.schemaName,
+          text: JSON.stringify({
+            prompt: request.preparedPrompt,
+            schema: providerJsonSchema(request.schema),
+            format: request.apiResponseFormat && {
+              instructions: request.apiResponseFormat.instructions,
+              schema: providerJsonSchema(request.apiResponseFormat.schema),
+            },
+          }),
+        });
+        const result = await fake.decide(request);
+        if (request.schemaName !== "discussion_free_speech") return result;
+        const seat = request.playerId!;
+        const endAction =
+          accused || request.contextV2?.rules.accusationPending
+            ? { kind: "continue" }
+            : { kind: "accuse", targetId: seat === "p8" ? "p7" : "p8" };
+        accused ||= endAction.kind === "accuse";
+        return { ...result, data: { ...(result.data as object), endAction } as never };
+      },
+    };
+    // Several seconds (so the urgency poll runs) and a failing ballot. Auction 0 is the accusing
+    // speech and 1-3 the window; from auction 4 everyone declines, which ends the day, so the
+    // night's choices are asked too.
+    let bids = 0;
+    const { jev, inputs } = scriptedJev({
+      urge: (seat, input) =>
+        Math.floor(bids++ / 8) >= 4 ? 0 : freshSpeakersFirst.urge(seat, input),
+      listen: () => 3,
+      second: () => "yes",
+      ballot: () => "no",
+    });
+    new V2GameOrchestrator(repository, new FakeDecisionProvider()).initialize(game.id);
+    const runner = new V2GameOrchestrator(repository, llm, jev);
+    repository.updateGame(game.id, { status: "running" });
+    const dayTwo = () =>
+      repository
+        .listEvents(game.id)
+        .some(
+          (e) => e.type === "phase.changed" && e.payload.to === "day_discussion" && e.day === 2,
+        );
+    for (let step = 0; step < 400 && !dayTwo(); step += 1) {
+      if (repository.getGame(game.id)!.status !== "running") break;
+      await runner.runGameStep(game.id);
+    }
+    const events = repository.listEvents(game.id);
+    expect(ofType(events, "lynch.resolved"), "an accusation reached its ballot").toHaveLength(1);
+    expect(ofType(events, "discussion.ended"), "the day ended").toHaveLength(1);
+    // Every task type was asked: speech and reflection; bids, polls, urgency, ballot, night.
+    expect([...new Set(requests.map((r) => r.task))].sort()).toEqual(
+      expect.arrayContaining(["discussion_free_speech", "journal_update"]),
+    );
+    const points = new Set(
+      inputs.map((call) => {
+        const questions = Object.keys((JSON.parse(call.input) as JevRequest).questions);
+        return (
+          questions.find((key) => ["urge", "second", "urgency", "ballot"].includes(key)) ??
+          (questions.includes("target") || questions.includes("forced") ? "night" : "other")
+        );
+      }),
+    );
+    expect([...points].sort()).toEqual(
+      expect.arrayContaining(["ballot", "night", "second", "urge", "urgency"]),
+    );
+    for (const request of requests)
+      expect(request.text.match(LABELS)?.[0], request.task).toBeUndefined();
+    for (const call of inputs) expect(call.input.match(LABELS)?.[0], call.seat).toBeUndefined();
+    // And the public record carries plain speech: text and the formal endAction only.
+    for (const speech of speeches(events)) {
+      expect(speech.payload.acts, "acts").toBeUndefined();
+      expect(speech.payload.respondsTo, "respondsTo").toBeUndefined();
+      expect(speech.payload.endAction).toBeDefined();
+    }
   }, 300_000);
 });

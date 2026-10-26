@@ -11,3 +11,29 @@ describe("formatCompactCount", () => {
     expect(formatCompactCount(4_500_000_000_000)).toBe("4.5T");
   });
 });
+
+describe("speechActLabel", () => {
+  it("labels an old game's speech acts, and nothing for a plain new-mode speech", async () => {
+    // Looked up dynamically so this test runs, and fails on its assertion, before the helper exists.
+    const format = (await import("./format")) as Record<string, unknown>;
+    const label = format.speechActLabel as
+      | ((payload: Record<string, unknown>, nameOf: (id: string) => string) => string | null)
+      | undefined;
+    expect(typeof label).toBe("function");
+    const nameOf = (id: string) => (id === "p8" ? "Hollis" : id);
+    // Exactly what the observer showed for a recorded staged speech.
+    expect(
+      label!(
+        {
+          text: "I claim seer, and Hollis is lying.",
+          acts: [
+            { kind: "role_claim", targetId: null },
+            { kind: "accusation", targetId: "p8" },
+          ],
+        },
+        nameOf,
+      ),
+    ).toBe("role claim  · accusation Hollis · Claims are unverified");
+    expect(label!({ text: "Plain speech.", endAction: { kind: "continue" } }, nameOf)).toBeNull();
+  });
+});
