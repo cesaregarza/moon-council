@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   providerJsonSchema,
+  RationaleSchema,
+  RATIONALE_INSTRUCTIONS,
   DecisionBriefTextSchema,
   type ActionProposalV2,
   type ContextSourceV2,
@@ -18,7 +20,6 @@ import type { ApiResponseFormat } from "@werewolf/llm";
 import type { V3TaskSpec } from "./request-v3";
 
 const Brief = z.string().max(240);
-const Rationale = z.string().max(300);
 const EvidenceHandle = z.string().regex(/^[ER][1-9][0-9]*$/);
 const PublicHandle = z.string().regex(/^E[1-9][0-9]*$/);
 const ChoiceHandle = z.enum([
@@ -189,14 +190,14 @@ export function v31SubmissionSchema(
     Object.fromEntries(ids.map((id) => [id, z.number().min(0).max(1).nullable()])),
   );
   if (task.type === "journal_update")
-    return z.strictObject({ memory, rationale: Rationale }) as z.ZodType<V31Submission>;
+    return z.strictObject({ memory, rationale: RationaleSchema }) as z.ZodType<V31Submission>;
   if (task.type === "discussion_score")
     return z.strictObject({
       urge: z.number().min(0).max(1),
       ready: z.boolean(),
       listen,
       memory,
-      rationale: Rationale,
+      rationale: RationaleSchema,
     }) as z.ZodType<V31Submission>;
   if (task.type === "discussion_bid") {
     const plan = z.strictObject({
@@ -211,7 +212,7 @@ export function v31SubmissionSchema(
       plan: plan.nullable(),
       listen,
       memory,
-      rationale: Rationale,
+      rationale: RationaleSchema,
     }) as z.ZodType<V31Submission>;
   }
   if (task.type === "discussion_listen")
@@ -219,7 +220,7 @@ export function v31SubmissionSchema(
       ready: z.boolean(),
       listen,
       memory,
-      rationale: Rationale,
+      rationale: RationaleSchema,
     }) as z.ZodType<V31Submission>;
   if (
     task.type === "discussion_speech" ||
@@ -240,14 +241,14 @@ export function v31SubmissionSchema(
       text: z.string().min(1).max(1_200).nullable(),
       acts: z.array(act).max(4),
       respondsTo: publicEvidence,
-      rationale: Rationale,
+      rationale: RationaleSchema,
       memory,
     }) as z.ZodType<V31Submission>;
   }
   return z.strictObject({
     mode: z.enum(["direct", "uniform", "abstain"]),
     choiceHandles: z.array(ChoiceHandle).max(16),
-    rationale: Rationale,
+    rationale: RationaleSchema,
     evidence: allEvidence,
     memory,
     reconsiderationQuestion: Brief.nullable(),
@@ -283,7 +284,7 @@ export function v31ApiResponseFormat(
     task: z.enum(["journal_update", "discussion_free_speech", "closing_response"]),
     memory: memorySchema(packet, true),
     speech: speech.nullable(),
-    rationale: Rationale,
+    rationale: RationaleSchema,
   });
   return {
     name:
@@ -626,6 +627,7 @@ function decisionRequest(
   const jsonSchema = providerJsonSchema(schema);
   const apiResponseFormat = v31ApiResponseFormat(packet, task);
   const built = layers(packet, task, commitOnly, previous, repair, protocol);
+  built.instructions += `\n\n${RATIONALE_INSTRUCTIONS}`;
   const layerHashes = {
     l0: hash(built.instructions),
     l1: hash(built.publicInput),
