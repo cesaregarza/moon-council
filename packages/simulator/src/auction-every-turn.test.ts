@@ -1192,24 +1192,20 @@ describe("auction_every_turn: resource ceilings during the procedures (round 2)"
 });
 
 describe("auction_every_turn: the lynch denominator and the docket contract (round 2)", () => {
-  const outcomeOf = lynchOutcome as (
-    ballots: Record<string, "yes" | "no">,
-    livingPlayerIds: string[],
-  ) => ReturnType<typeof lynchOutcome>;
   const roster = ["p1", "p2", "p3", "p4"];
 
   it("takes the denominator from the living roster and refuses a missing or extra ballot", () => {
-    expect(outcomeOf({ p1: "yes", p2: "yes", p3: "yes", p4: "no" }, roster)).toEqual({
+    expect(lynchOutcome({ p1: "yes", p2: "yes", p3: "yes", p4: "no" }, roster)).toEqual({
       yes: 3,
       no: 1,
       living: 4,
       passed: true,
     });
-    expect(outcomeOf({ p1: "yes", p2: "yes", p3: "no", p4: "no" }, roster).passed).toBe(false);
+    expect(lynchOutcome({ p1: "yes", p2: "yes", p3: "no", p4: "no" }, roster).passed).toBe(false);
     // Two yes of a partial map would be a majority of the map, never of the living.
-    expect(() => outcomeOf({ p1: "yes", p2: "yes", p3: "no" }, roster)).toThrow(/ballot/);
+    expect(() => lynchOutcome({ p1: "yes", p2: "yes", p3: "no" }, roster)).toThrow(/ballot/);
     expect(() =>
-      outcomeOf({ p1: "yes", p2: "yes", p3: "no", p4: "no", p9: "yes" }, roster),
+      lynchOutcome({ p1: "yes", p2: "yes", p3: "no", p4: "no", p9: "yes" }, roster),
     ).toThrow(/ballot/);
   });
 
