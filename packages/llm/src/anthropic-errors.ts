@@ -132,6 +132,61 @@ export function claudeErrorDiagnostics(
   };
 }
 
+const API_ERROR_TYPES = new Set([
+  ...TERMINAL_API_TYPES,
+  "not_found_error",
+  "request_too_large",
+  "rate_limit_error",
+  "api_error",
+  "overloaded_error",
+  "timeout_error",
+]);
+// Prefixed keys, auth headers, and long tokens that mix letters and digits.
+const CREDENTIAL_SHAPED =
+  /\b(?:sk|pk|rk)-[\w-]{16,}|\b(?:bearer|basic)\s+\S{8,}|\b(?=[\w+/=-]*\d)(?=[\w+/=-]*[a-z])[\w+/=-]{32,}/gi;
+const ECHO_WINDOW = 20;
+
+/**
+ * Operator-only detail of an Anthropic API error (CES-1578): the API's own error type and message
+ * from the documented `{ type: "error", error: { type, message } }` body, so a rejected request
+ * names its cause. Credential-shaped text and any stretch of the message that echoes the request
+ * are redacted, and it is capped at 500 characters. It is stored only on the attempt record and
+ * never reaches a model-facing request, a repair prompt or an event: claudeErrorText and
+ * claudeErrorDiagnostics stay free of provider messages.
+ */
+export function claudeOperatorApiError(
+  error: unknown,
+  requestText: string,
+): { type: string; message: string } | null {
+  if (!(error instanceof Anthropic.APIError)) return null;
+  const body = ownValue(error, "error");
+  const detail = ownValue(body, "error");
+  const type = ownValue(detail, "type"),
+    message = ownValue(detail, "message");
+  if (ownValue(body, "type") !== "error" || typeof type !== "string" || !API_ERROR_TYPES.has(type))
+    return null;
+  if (typeof message !== "string") return { type, message: "" };
+  const text = message
+    .slice(0, 2_000)
+    .replace(/\s+/g, " ")
+    .split("")
+    .filter((char) => char >= " " && char !== "\x7f")
+    .join("");
+  // Redact every stretch of at least ECHO_WINDOW characters that also occurs in the request.
+  const echoed = new Array<boolean>(text.length).fill(false);
+  for (let i = 0; i + ECHO_WINDOW <= text.length; i++)
+    if (requestText.includes(text.slice(i, i + ECHO_WINDOW))) echoed.fill(true, i, i + ECHO_WINDOW);
+  let kept = "";
+  for (let i = 0; i < text.length;) {
+    if (!echoed[i]) kept += text[i++];
+    else {
+      kept += "[request text]";
+      while (echoed[i]) i++;
+    }
+  }
+  return { type, message: kept.replace(CREDENTIAL_SHAPED, "[redacted]").trim().slice(0, 500) };
+}
+
 /** Unknown connection causes fail closed; HTTP retry behavior stays bounded by the same loop. */
 export function retryableClaudeError(
   error: unknown,

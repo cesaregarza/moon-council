@@ -109,10 +109,11 @@ const endsWithAction = (packet: PlayerContextV2) =>
  * A speech's endAction schema; an accusation names a seat (validation checks it is living). It is
  * the same whether or not an accusation is pending, so a Claude session's pinned output schema
  * and system blocks stay constant: a pending accusation is stated in the call's REQUEST and
- * enforced by validation (CES-1575).
+ * enforced by validation (CES-1575). A plain union of the two closed objects, which serializes as
+ * anyOf: Claude's structured outputs reject the oneOf a discriminated union becomes (CES-1578).
  */
 const endActionSchema = (player: z.ZodType<string>) =>
-  z.discriminatedUnion("kind", [
+  z.union([
     z.strictObject({ kind: z.literal("continue") }),
     z.strictObject({ kind: z.literal("accuse"), targetId: player }),
   ]);

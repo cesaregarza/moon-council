@@ -8,6 +8,7 @@ import type { DecisionProvider, DecisionRequest, DecisionResult } from "./provid
 import { ClaudeWarmGate } from "./claude-warm-gate";
 import {
   claudeErrorDiagnostics,
+  claudeOperatorApiError,
   retryableClaudeError,
   type ClaudeErrorDiagnostics,
 } from "./anthropic-errors";
@@ -79,13 +80,20 @@ const UNSUPPORTED_SCHEMA_KEYS = new Set([
   "minItems",
   "maxItems",
 ]);
-export function claudeJsonSchema(schema: unknown): unknown {
-  if (Array.isArray(schema)) return schema.map(claudeJsonSchema);
+/**
+ * The output schema as Claude takes it. A `oneOf` is refused, never rewritten (CES-1578):
+ * structured outputs reject it, so a schema must be built to emit `anyOf` instead.
+ */
+export function claudeJsonSchema(schema: unknown, path = "$"): unknown {
+  if (Array.isArray(schema))
+    return schema.map((item, index) => claudeJsonSchema(item, `${path}[${index}]`));
   if (!schema || typeof schema !== "object") return schema;
+  if ("oneOf" in schema)
+    throw new Error(`Claude output schema has oneOf at ${path}; build it as an anyOf union`);
   return Object.fromEntries(
     Object.entries(schema)
       .filter(([key]) => !UNSUPPORTED_SCHEMA_KEYS.has(key))
-      .map(([key, value]) => [key, claudeJsonSchema(value)]),
+      .map(([key, value]) => [key, claudeJsonSchema(value, `${path}.${key}`)]),
   );
 }
 
@@ -309,7 +317,7 @@ export class AnthropicMessagesProvider implements DecisionProvider {
         });
       if (call.attempts > 0)
         request.onProviderMetadata?.(
-          claudeFailureMetadata(call, body.model, error, signal, reported.metadata),
+          claudeFailureMetadata(call, body, error, signal, reported.metadata),
         );
       throw claudeFailure(error, signal);
     }
@@ -402,14 +410,17 @@ function claudeSpendMetadata(call: ClaudeCall, cost: number | null) {
 /** A parse failure already reported actual spend; diagnostics must not replace it with a hold. */
 function claudeFailureMetadata(
   call: ClaudeCall,
-  model: string,
+  body: Anthropic.MessageCreateParamsNonStreaming,
   error: unknown,
   signal: AbortSignal,
   reported: Record<string, unknown> | null,
 ) {
+  const operatorApiError = claudeOperatorApiError(error, JSON.stringify(body));
   return {
-    ...(reported ?? { model, heldUsd: call.recordedUsd, attempts: call.attempts }),
+    ...(reported ?? { model: body.model, heldUsd: call.recordedUsd, attempts: call.attempts }),
     errorDiagnostics: claudeErrorDiagnostics(error, signal),
+    // Operator-only (CES-1578): stored on the attempt record, never sent to a model or an event.
+    ...(operatorApiError ? { operatorApiError } : {}),
     ...(call.transportFailures.length ? { transportFailures: call.transportFailures } : {}),
   };
 }

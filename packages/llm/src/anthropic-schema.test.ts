@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
 import { AnthropicMessagesProvider, claudeJsonSchema } from "./anthropic";
+import { claudeErrorText } from "./anthropic-errors";
 
 /**
  * CES-1578. Claude's structured outputs do not take `oneOf`. Schemas are built to emit `anyOf`
@@ -93,9 +94,10 @@ describe("operator-only Claude API error detail (CES-1578)", () => {
     expect(detail.message.length).toBeLessThanOrEqual(500);
     expect(detail.message).not.toContain(credential);
     expect(detail.message).not.toContain(echo);
-    // The message stays out of the error text and the shared diagnostics.
+    // The message stays out of the shared error text (attempts, events and repair prompts all use
+    // claudeErrorText) and the shared diagnostics.
     const { operatorApiError: _detail, ...rest } = metadata;
-    for (const sink of [String(error), JSON.stringify(rest)])
+    for (const sink of [claudeErrorText(error), JSON.stringify(rest)])
       for (const marker of ["oneOf is not supported", credential, echo, injection])
         expect(sink).not.toContain(marker);
   });
