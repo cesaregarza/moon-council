@@ -23,6 +23,7 @@ import {
 import { usesJournalWorkflow } from "./jev-actions";
 import { journalCompactionRequest, materializeCompactedJournal } from "./journal-compaction";
 import { prepareJevStage, usesJev } from "./jev-decision";
+import { isEveryTurn } from "./every-turn";
 import type { ApiResponseFormat, DecisionRequest, PreparedPrompt } from "@werewolf/llm";
 import type { z } from "zod";
 import {
@@ -503,6 +504,7 @@ export class DecisionExecutorV2 {
           policy.maxJournalTokens,
           config.safety.maxOutputTokens,
           feedback ?? null,
+          isEveryTurn(config),
           previousDraft?.response,
         );
       } else if (options.requestForAttempt) {

@@ -1958,6 +1958,7 @@ describe("staged instructions stay byte-identical (part 3, round 2)", () => {
       16_000,
       8192,
       null,
+      false,
     );
     expect({
       score: sha(jevInput("discussion_score")),

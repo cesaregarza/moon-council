@@ -26,9 +26,13 @@ function rulesFor(packet: PlayerContextV2, task: V3TaskKind | undefined, name: N
     second_urgency: `Several players offered to second the accusation against ${accused}. Rate how important it is to you to be its seconder; only the seconder's name becomes public.`,
     lynch_ballot: `Cast a public yes or no ballot on eliminating ${accused}. Every living player votes; abstaining is not allowed. It passes only if yes votes exceed half of the living players; otherwise play returns to the speaker auction.`,
   };
+  const scoring = `Score urgency and listening interest using the journal's reasons. ${String(packet.rules.speakerPriorityFormula)}.`;
+  // The auction-every-turn mode asks no readiness and gives no reply or defense hints.
   return (
     (task && rules[task]) ??
-    `Score urgency and listening interest using the journal's reasons. ${String(packet.rules.speakerPriorityFormula)}. Readiness is independent of urgency. A useful defense can deserve attention even from a suspect.`
+    (packet.rules.discussionMode === "auction_every_turn"
+      ? scoring
+      : `${scoring} Readiness is independent of urgency. A useful defense can deserve attention even from a suspect.`)
   );
 }
 /** Journal-first decision packet. Never copy the full LLM evidence or role catalog. */

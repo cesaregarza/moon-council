@@ -66,7 +66,7 @@ function speechAnnotations(
  *
  * `alias` maps a canonical event id to its delivered handle; nested references are dropped
  * when they resolve to nothing, exactly as the full rendering already does. `annotated` is false
- * in the auction-every-turn mode.
+ * in the auction-every-turn mode, whose speeches carry no annotations and no closing flag.
  */
 export function tierPayload(
   source: ContextSourceV2,
@@ -97,6 +97,6 @@ export function tierPayload(
     speakerName: source.data.playerName,
     text,
     ...annotations,
-    closing: source.data.closing,
+    ...(annotated ? { closing: source.data.closing } : {}),
   };
 }
