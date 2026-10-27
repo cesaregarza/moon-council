@@ -33,12 +33,16 @@ import { V2GameOrchestrator } from "./orchestrator-v2";
 import { JOURNAL_EVIDENCE_TYPES } from "./player-brief";
 import {
   decisionRequestV32,
+  normalizeV31Submission,
   v31ApiResponseFormat,
   v31SubmissionSchema,
   validateV31Submission,
 } from "./request-v3-1";
+import { prepareActorJevAction } from "./jev-actor";
+import { journalCompactionRequest } from "./journal-compaction";
+import type { V3TaskSpec } from "./request-v3";
 import { publicRevision, rankSpeakerAuction, responseDockets } from "./scheduler-v2";
-import { actorConfig } from "./testing/actor-fixtures";
+import { actorConfig, actorFixtures } from "./testing/actor-fixtures";
 
 /**
  * CES-1575: the `auction_every_turn` discussion mode. Every turn, every living player bids or
@@ -101,6 +105,8 @@ interface Script {
    * question it asks) and seat; a number returned is reported as that call's token usage.
    */
   onCall?: (point: string, seat: string) => number | void;
+  /** A request for which this returns true fails, as a Jev outage would. */
+  fail?: (point: string, seat: string) => boolean;
 }
 const POINTS = ["urge", "second", "urgency", "ballot"];
 
@@ -113,6 +119,7 @@ function scriptedJev(script: Script) {
     inputs.push({ seat, input });
     const point = POINTS.find((key) => key in request.questions) ?? "other";
     const tokens = script.onCall?.(point, seat) ?? 1;
+    if (script.fail?.(point, seat)) throw new Error("scripted Jev outage");
     const answers = Object.fromEntries(
       Object.entries(request.questions).map(([key, q]) => {
         if (key === "urge") return [key, score(script.urge(seat, input))];
@@ -1555,7 +1562,7 @@ describe("auction_every_turn: Claude sessions carry plain speech only (part 3, r
   async function sessionGame(
     seed: string,
     endAction: (turn: string, self: string) => EndAction,
-    options: { older?: boolean } = {},
+    options: { older?: boolean; overlong?: string; jevFail?: Script["fail"] } = {},
   ) {
     const connection = openDatabase(":memory:");
     connections.push(connection);
@@ -1604,13 +1611,25 @@ describe("auction_every_turn: Claude sessions carry plain speech only (part 3, r
         });
     }
     const bodies: Body[] = [];
+    let overflowed = false;
     const reply = (body: Body) => {
       const turn = JSON.stringify(body.messages.at(-1));
+      if (turn.includes("targetTokens")) return { text: "Compacted: listening for new evidence." };
+      const first = body.messages[0] as { content: { text: string }[] };
+      const self = String(JSON.parse(first.content[0]!.text).DAY_START.self.id);
+      // `overlong`'s first reflection overruns the journal budget, so it is compacted.
+      const overflow = self === options.overlong && !overflowed;
+      if (turn.includes("journal_update")) overflowed ||= overflow;
       if (turn.includes("journal_update"))
         return {
           task: "journal_update",
           memory: {
-            journalUpdate: { mode: "append", text: "Listening for new evidence." },
+            journalUpdate: {
+              mode: "append",
+              text: overflow
+                ? `Listening for new evidence. ${"detail ".repeat(9_000)}`
+                : "Listening for new evidence.",
+            },
             decisionBrief: {
               action: "Weigh the claims before voting.",
               attention: "Hear the quiet seats.",
@@ -1619,8 +1638,6 @@ describe("auction_every_turn: Claude sessions carry plain speech only (part 3, r
           speech: null,
           rationale: "Reflect.",
         };
-      const first = body.messages[0] as { content: { text: string }[] };
-      const self = String(JSON.parse(first.content[0]!.text).DAY_START.self.id);
       return {
         task: "discussion_free_speech",
         memory: { journalUpdate: null, decisionBrief: null },
@@ -1668,6 +1685,7 @@ describe("auction_every_turn: Claude sessions carry plain speech only (part 3, r
       listen: () => 3,
       second: () => "yes",
       ballot: () => "no",
+      fail: options.jevFail,
     });
     new V2GameOrchestrator(repository, new FakeDecisionProvider()).initialize(game.id);
     const runner = new V2GameOrchestrator(repository, claude, jev);
@@ -1789,6 +1807,100 @@ describe("auction_every_turn: Claude sessions carry plain speech only (part 3, r
       rmSync(play.directory, { recursive: true, force: true });
     }
   }, 300_000);
+
+  describe("coordination through dialogue only (part 4)", () => {
+    /**
+     * Reply-tracking scaffolding no new-mode body may carry, matched with case and whitespace
+     * removed. The seats' own prose here is the harness's, which uses none of these words.
+     */
+    const SCAFFOLDING = [
+      "unresolved accusation",
+      "unanswered",
+      "accusations still in dispute",
+      "promised evidence",
+      "useful defense",
+      "response docket",
+      "responsesOwed",
+    ].map((phrase) => phrase.toLowerCase().replace(/\s+/g, ""));
+    /** A key in a body, whether in the body's own JSON or in a JSON string inside it. */
+    const KEYS = /\\*"(closing|responsedocket|silencecase|interests)\\*":/;
+    const flat = (text: string) => text.toLowerCase().replace(/\s+/g, "");
+
+    it("sends no reply-tracking scaffolding in any provider or Jev body, through a compaction and a resume", async () => {
+      // Briar's (p2) bids fail until the outage ends: the game pauses, and an operator resumes it.
+      let outage = true;
+      const play = await sessionGame("dialogue-only", accuseOnce(), {
+        older: true,
+        overlong: "p1",
+        jevFail: (point, seat) => outage && point === "urge" && seat === "p2",
+      });
+      try {
+        await play.run();
+        expect(play.repository.getGame(play.game.id)!.status).toBe("paused");
+        expect(play.repository.getGame(play.game.id)!.error).toMatch(/exhausted decision retries/);
+        outage = false;
+        play.repository.updateGame(play.game.id, { status: "running", error: null });
+        await play.run();
+        const events = play.repository.listEvents(play.game.id);
+        expect(play.repository.getGame(play.game.id)!.error ?? "", "no second pause").toBe("");
+        expect(ofType(events, "lynch.resolved"), "an accusation reached its ballot").toHaveLength(
+          1,
+        );
+        expect(ofType(events, "discussion.ended"), "the day ended").toHaveLength(1);
+        const compactions = play.bodies.filter((body) =>
+          JSON.stringify(body.messages.at(-1)).includes("targetTokens"),
+        );
+        expect(compactions.length, "a journal was compacted").toBeGreaterThan(0);
+        const texts = [
+          ...play.bodies.map((body) => ({ who: "claude", text: JSON.stringify(body) })),
+          ...play.inputs.map((call) => ({ who: `jev ${call.seat}`, text: call.input })),
+        ];
+        for (const { who, text } of texts) {
+          const body = flat(text);
+          expect(
+            SCAFFOLDING.filter((phrase) => body.includes(phrase)),
+            who,
+          ).toEqual([]);
+          expect(body.match(KEYS)?.[0], who).toBeUndefined();
+        }
+        for (const call of play.inputs)
+          expect(
+            Object.keys((JSON.parse(call.input) as JevRequest).questions),
+            call.seat,
+          ).not.toContain("ready");
+        // The instruction change renewed the older session, through the session identity.
+        for (const body of play.bodies) expect(JSON.stringify(body)).not.toContain("OLDER");
+        expect(play.store.get(play.game.id, "claude-session:p1:d1:s2")).toBeDefined();
+      } finally {
+        rmSync(play.directory, { recursive: true, force: true });
+      }
+    }, 300_000);
+
+    it("writes no defense case for a silent new-mode speech", () => {
+      const state = createGameState("g", everyTurnConfig("silent"));
+      state.phase = "day_discussion";
+      state.day = 1;
+      const packet = buildContextV2(state, [], "p1", emptyJournalV2(), "speech", "discussion");
+      const task = { type: "discussion_free_speech", ready: false, revision: "1" } as const;
+      const report = normalizeV31Submission(
+        packet,
+        task,
+        {
+          text: null,
+          rationale: "Nothing to add yet.",
+          memory: { journalUpdate: null, decisionBrief: null },
+          endAction: { kind: "continue" },
+        } as never,
+        "silent",
+        false,
+      );
+      expect(report.proposal).toMatchObject({
+        kind: "discussion",
+        speech: null,
+        silenceCase: null,
+      });
+    });
+  });
 });
 
 describe("staged instructions stay byte-identical (part 3, round 2)", () => {
@@ -1815,5 +1927,42 @@ describe("staged instructions stay byte-identical (part 3, round 2)", () => {
       format: sha(format),
       sessionBlock: sha(sharedSystemBlocks(packet, instructions, format)[0]),
     }).toEqual(RECORDED);
+  });
+
+  /** sha256 of staged Jev scheduling requests and the prose compaction text, at main a0782d70. */
+  const RECORDED_PART_4 = {
+    score: "c1a8491e01b532cff4fba7fcae350c2a7f846306bca9630fd4fdedeb57dcc814",
+    listen: "6dd641ee901dd6a42d7a3f0830edfe807ce83e987b09d4765a7849cc5d0cc2ec",
+    compaction: "d3b5baa2ebb793422243d22538e9ea169d5f22c8de8fd0bf8c008deb035b245b",
+  };
+  it("keeps the staged Jev scheduling requests and compaction text as before (part 4)", () => {
+    const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+    const { packet } = actorFixtures().find((f) => f.label === "listening-defense")!;
+    const jevInput = (taskType: "discussion_score" | "discussion_listen") => {
+      const task = { type: taskType, revision: "1" } as V3TaskSpec;
+      const base = {
+        ...decisionRequestV32(packet, task, true, null, null),
+        schemaName: taskType,
+        normalize: (v: unknown) => v,
+      };
+      const op = { packet, playerId: packet.self.id, taskType };
+      return prepareActorJevAction(op as never, actorConfig(), base as never).prepared.prompt.input;
+    };
+    const compaction = journalCompactionRequest(
+      {
+        candidate: { ...emptyJournalV2(), text: "Notes." },
+        sourceReport: {} as never,
+        sourceSubmission: {},
+        sourceAttemptId: "a",
+      } as never,
+      16_000,
+      8192,
+      null,
+    );
+    expect({
+      score: sha(jevInput("discussion_score")),
+      listen: sha(jevInput("discussion_listen")),
+      compaction: sha(compaction.prompt.instructions),
+    }).toEqual(RECORDED_PART_4);
   });
 });
