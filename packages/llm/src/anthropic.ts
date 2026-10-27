@@ -80,20 +80,46 @@ const UNSUPPORTED_SCHEMA_KEYS = new Set([
   "minItems",
   "maxItems",
 ]);
+// Where a schema holds schemas (CES-1578 round 2). The keys of a map are names, never keywords:
+// a property or seat called `oneOf` or `maxItems` is kept as it is.
+const SCHEMA_MAPS = new Set(["properties", "$defs", "definitions", "patternProperties"]);
+const SCHEMA_VALUES = new Set([
+  "items",
+  "additionalProperties",
+  "not",
+  "if",
+  "then",
+  "else",
+  "contains",
+]);
+const SCHEMA_LISTS = new Set(["anyOf", "allOf", "oneOf", "prefixItems"]);
+
 /**
- * The output schema as Claude takes it. A `oneOf` is refused, never rewritten (CES-1578):
- * structured outputs reject it, so a schema must be built to emit `anyOf` instead.
+ * The output schema as Claude takes it, walked structurally. A `oneOf` is refused, never
+ * rewritten (CES-1578): structured outputs reject it, so a schema must be built to emit `anyOf`.
  */
 export function claudeJsonSchema(schema: unknown, path = "$"): unknown {
-  if (Array.isArray(schema))
-    return schema.map((item, index) => claudeJsonSchema(item, `${path}[${index}]`));
-  if (!schema || typeof schema !== "object") return schema;
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
   if ("oneOf" in schema)
     throw new Error(`Claude output schema has oneOf at ${path}; build it as an anyOf union`);
+  const child = (key: string, value: unknown): unknown => {
+    if (SCHEMA_MAPS.has(key) && value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value).map(([name, item]) => [
+          name,
+          claudeJsonSchema(item, `${path}.${key}.${name}`),
+        ]),
+      );
+    if (SCHEMA_LISTS.has(key) || (key === "items" && Array.isArray(value)))
+      return Array.isArray(value)
+        ? value.map((item, index) => claudeJsonSchema(item, `${path}.${key}[${index}]`))
+        : value;
+    return SCHEMA_VALUES.has(key) ? claudeJsonSchema(value, `${path}.${key}`) : value;
+  };
   return Object.fromEntries(
     Object.entries(schema)
       .filter(([key]) => !UNSUPPORTED_SCHEMA_KEYS.has(key))
-      .map(([key, value]) => [key, claudeJsonSchema(value, `${path}.${key}`)]),
+      .map(([key, value]) => [key, child(key, value)]),
   );
 }
 
@@ -415,7 +441,7 @@ function claudeFailureMetadata(
   signal: AbortSignal,
   reported: Record<string, unknown> | null,
 ) {
-  const operatorApiError = claudeOperatorApiError(error, JSON.stringify(body));
+  const operatorApiError = claudeOperatorApiError(error, body);
   return {
     ...(reported ?? { model: body.model, heldUsd: call.recordedUsd, attempts: call.attempts }),
     errorDiagnostics: claudeErrorDiagnostics(error, signal),

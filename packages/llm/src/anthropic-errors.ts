@@ -144,19 +144,55 @@ const API_ERROR_TYPES = new Set([
 // Prefixed keys, auth headers, and long tokens that mix letters and digits.
 const CREDENTIAL_SHAPED =
   /\b(?:sk|pk|rk)-[\w-]{16,}|\b(?:bearer|basic)\s+\S{8,}|\b(?=[\w+/=-]*\d)(?=[\w+/=-]*[a-z])[\w+/=-]{32,}/gi;
-const ECHO_WINDOW = 20;
+const ECHO_WINDOW = 16;
+const JSON_ESCAPE = /\\(["\\/bfnrt]|u[0-9a-fA-F]{4})/g;
+const JSON_ESCAPED: Record<string, string> = { b: " ", f: " ", n: " ", r: " ", t: " " };
+
+/** Collapse whitespace and drop control characters, the same way on both sides of a comparison. */
+function normalized(text: string): string {
+  return text
+    .replace(/\s+/g, " ")
+    .split("")
+    .filter((char) => char >= " " && char !== "\x7f")
+    .join("");
+}
+/** Every string a request carries, decoded, plus its JSON wire form: what an API might echo. */
+function requestTexts(request: unknown): string {
+  const texts: string[] = [];
+  const visit = (value: unknown, depth = 0) => {
+    if (typeof value === "string") {
+      texts.push(value);
+      // Request layers are JSON documents carried as strings; their decoded strings count too.
+      if (depth < 4 && /^\s*[[{]/.test(value))
+        try {
+          visit(JSON.parse(value), depth + 1);
+        } catch {
+          /* not JSON: kept as text */
+        }
+      return;
+    }
+    if (Array.isArray(value)) value.forEach((item) => visit(item, depth));
+    else if (value && typeof value === "object")
+      Object.values(value).forEach((item) => visit(item, depth));
+  };
+  visit(request);
+  texts.push(JSON.stringify(request) ?? "");
+  // A separator no message keeps, so no window spans two texts.
+  return texts.map(normalized).join("\u0001");
+}
 
 /**
  * Operator-only detail of an Anthropic API error (CES-1578): the API's own error type and message
  * from the documented `{ type: "error", error: { type, message } }` body, so a rejected request
  * names its cause. Credential-shaped text and any stretch of the message that echoes the request
- * are redacted, and it is capped at 500 characters. It is stored only on the attempt record and
+ * are redacted, and it is capped at 500 characters. The message is JSON-unescaped and compared,
+ * normalized alike, with every decoded request string and the request's wire form (round 2). It is stored only on the attempt record and
  * never reaches a model-facing request, a repair prompt or an event: claudeErrorText and
  * claudeErrorDiagnostics stay free of provider messages.
  */
 export function claudeOperatorApiError(
   error: unknown,
-  requestText: string,
+  request: unknown,
 ): { type: string; message: string } | null {
   if (!(error instanceof Anthropic.APIError)) return null;
   const body = ownValue(error, "error");
@@ -166,12 +202,16 @@ export function claudeOperatorApiError(
   if (ownValue(body, "type") !== "error" || typeof type !== "string" || !API_ERROR_TYPES.has(type))
     return null;
   if (typeof message !== "string") return { type, message: "" };
-  const text = message
-    .slice(0, 2_000)
-    .replace(/\s+/g, " ")
-    .split("")
-    .filter((char) => char >= " " && char !== "\x7f")
-    .join("");
+  const text = normalized(
+    message
+      .slice(0, 2_000)
+      .replace(JSON_ESCAPE, (_escape, code: string) =>
+        code.startsWith("u")
+          ? String.fromCharCode(parseInt(code.slice(1), 16))
+          : (JSON_ESCAPED[code] ?? code),
+      ),
+  );
+  const requestText = requestTexts(request);
   // Redact every stretch of at least ECHO_WINDOW characters that also occurs in the request.
   const echoed = new Array<boolean>(text.length).fill(false);
   for (let i = 0; i + ECHO_WINDOW <= text.length; i++)
