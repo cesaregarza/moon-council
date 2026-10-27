@@ -38,16 +38,21 @@ export function actorChoices(
   return choices;
 }
 
-/** One public line per living player, so listeners can judge who has dominated the floor. */
+/**
+ * One public line per living player, so listeners can judge who has dominated the floor. The
+ * auction-every-turn mode counts speeches only: it keeps no accusation or reply annotations.
+ */
 function floorToday(packet: PlayerContextV2): string | undefined {
   const floor = packet.publicFloor;
   if (!floor) return undefined;
   const name = (id: string) => packet.players.find((p) => p.id === id)?.name ?? id;
+  const plain = packet.rules.discussionMode === "auction_every_turn";
   return [
     `Public floor today (Day ${floor.day}), counted from every public speech:`,
-    ...floor.players.map(
-      (p) =>
-        `${name(p.playerId)} (${p.playerId}): ${p.speeches} public speeches, ${p.accusations} accusations and ${p.challenges} challenges made, ${p.responsesOwed} responses owed.`,
+    ...floor.players.map((p) =>
+      plain
+        ? `${name(p.playerId)} (${p.playerId}): ${p.speeches} public speeches.`
+        : `${name(p.playerId)} (${p.playerId}): ${p.speeches} public speeches, ${p.accusations} accusations and ${p.challenges} challenges made, ${p.responsesOwed} responses owed.`,
     ),
   ].join("\n");
 }

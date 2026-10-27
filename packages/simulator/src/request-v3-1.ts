@@ -75,13 +75,14 @@ export type V31Score = V31Listen & { urge: number };
 type V31Journal = { memory: V31Memory; rationale: string };
 type V31Speech = {
   text: string | null;
-  acts: {
+  /** Absent in the auction-every-turn mode, whose speeches carry no social annotations. */
+  acts?: {
     kind: "accusation" | "challenge" | "role_claim" | "result_claim" | "reply";
     targetId: string | null;
     claim: string;
     evidence: string | null;
   }[];
-  respondsTo: string[];
+  respondsTo?: string[];
   rationale: string;
   memory: V31Memory;
   endAction?: EndAction;
@@ -258,18 +259,22 @@ export function v31SubmissionSchema(
       claim: Brief,
       evidence: EvidenceHandle.nullable(),
     });
-    const speech = z.strictObject({
-      text: z.string().min(1).max(1_200).nullable(),
+    const text = z.string().min(1).max(1_200).nullable();
+    // The auction-every-turn mode: natural speech plus the formal endAction, no annotations.
+    if (endsWithAction(packet))
+      return z.strictObject({
+        text,
+        rationale: RationaleSchema,
+        memory,
+        endAction: endActionSchema(packet, player),
+      }) as z.ZodType<V31Submission>;
+    return z.strictObject({
+      text,
       acts: z.array(act).max(4),
       respondsTo: publicEvidence,
       rationale: RationaleSchema,
       memory,
-    });
-    return (
-      endsWithAction(packet) && task.type !== "closing_response"
-        ? speech.extend({ endAction: endActionSchema(packet, player) })
-        : speech
-    ) as z.ZodType<V31Submission>;
+    }) as z.ZodType<V31Submission>;
   }
   if (PROCEDURE_TASKS.has(task.type)) {
     const answer =
@@ -295,6 +300,54 @@ export function v31SubmissionSchema(
   }) as z.ZodType<V31Submission>;
 }
 
+const ENVELOPE_TAIL =
+  "The task-specific game constraints still apply. Evidence is grouped by durability; E numbers preserve public event order, not the order of the message layers.";
+/** The staged modes' speech: text with social acts and the public records it replies to. */
+function annotatedSpeechEnvelope(player: z.ZodType<string>) {
+  return {
+    speech: z.strictObject({
+      text: z.string().min(1).max(1200).nullable(),
+      acts: z
+        .array(
+          z.strictObject({
+            kind: z.enum(["accusation", "challenge", "role_claim", "result_claim", "reply"]),
+            targetId: player.nullable(),
+            claim: Brief,
+            evidence: EvidenceHandle.nullable(),
+          }),
+        )
+        .max(4),
+      respondsTo: z.array(PublicHandle).max(6),
+    }),
+    instructions: `API response envelope: task must exactly match REQUEST.task.type. For journal_update, speech must be null. For discussion_free_speech or closing_response, put text/acts/respondsTo in speech and leave memory unchanged (all update fields null or empty). Closing responses may only use reply acts. ${ENVELOPE_TAIL}`,
+  };
+}
+/** The auction-every-turn mode's speech (CES-1575): natural text, then the formal endAction. */
+function plainSpeechEnvelope(packet: PlayerContextV2, player: z.ZodType<string>) {
+  return {
+    speech: z.strictObject({
+      text: z.string().min(1).max(1200).nullable(),
+      endAction: endActionSchema(packet, player),
+    }),
+    instructions:
+      `API response envelope: task must exactly match REQUEST.task.type. For journal_update, speech must be null. For discussion_free_speech, put text and endAction in speech and leave memory unchanged (all update fields null or empty). ${ENVELOPE_TAIL}` +
+      ' Every speech ends with speech.endAction: {"kind":"continue"}, or {"kind":"accuse","targetId":...} to formally accuse a living player other than yourself. A formal accusation goes to a poll of the other living players; if anyone seconds it, three more auction turns follow, then every living player votes yes or no in public, and a strict majority of the living eliminates the accused.' +
+      (packet.rules.accusationPending
+        ? ' An accusation is pending now, so this speech ends with {"kind":"continue"}.'
+        : ""),
+  };
+}
+
+/** The staged modes' response docket; the auction-every-turn mode keeps none (CES-1575). */
+function responseDocketLayer(packet: PlayerContextV2, handles: HandleMap) {
+  if (endsWithAction(packet)) return {};
+  return {
+    responseDocket: packet.responseDocket
+      .map((id) => handles.toAlias.get(id))
+      .filter((id): id is string => Boolean(id?.startsWith("E"))),
+  };
+}
+
 /** One strict wire format keeps journal/speech/closing calls on the same rendered prefix. */
 export function v31ApiResponseFormat(
   packet: PlayerContextV2,
@@ -306,21 +359,10 @@ export function v31ApiResponseFormat(
   )
     return undefined;
   const player = asEnum(seatIds(packet));
-  const speech = z.strictObject({
-    text: z.string().min(1).max(1200).nullable(),
-    acts: z
-      .array(
-        z.strictObject({
-          kind: z.enum(["accusation", "challenge", "role_claim", "result_claim", "reply"]),
-          targetId: player.nullable(),
-          claim: Brief,
-          evidence: EvidenceHandle.nullable(),
-        }),
-      )
-      .max(4),
-    respondsTo: z.array(PublicHandle).max(6),
-    ...(endsWithAction(packet) ? { endAction: endActionSchema(packet, player) } : {}),
-  });
+  const envelope = endsWithAction(packet)
+    ? plainSpeechEnvelope(packet, player)
+    : annotatedSpeechEnvelope(player);
+  const speech = envelope.speech;
   const schema = z.strictObject({
     task: z.enum(["journal_update", "discussion_free_speech", "closing_response"]),
     memory: memorySchema(packet, true),
@@ -342,13 +384,7 @@ export function v31ApiResponseFormat(
       (proseWorkflow(packet)
         ? "For speech tasks, memory.journalUpdate must be null. For journal_update return a prose append/replace update, or null if nothing changed. "
         : "") +
-      "API response envelope: task must exactly match REQUEST.task.type. For journal_update, speech must be null. For discussion_free_speech or closing_response, put text/acts/respondsTo in speech and leave memory unchanged (all update fields null or empty). Closing responses may only use reply acts. The task-specific game constraints still apply. Evidence is grouped by durability; E numbers preserve public event order, not the order of the message layers." +
-      (endsWithAction(packet)
-        ? ' Every speech ends with speech.endAction: {"kind":"continue"}, or {"kind":"accuse","targetId":...} to formally accuse a living player other than yourself. A formal accusation goes to a poll of the other living players; if anyone seconds it, three more auction turns follow, then every living player votes yes or no in public, and a strict majority of the living eliminates the accused. The social accusation act is not a formal accusation. For journal_update, speech is null.' +
-          (packet.rules.accusationPending
-            ? ' An accusation is pending now, so this speech ends with {"kind":"continue"}.'
-            : "")
-        : ""),
+      envelope.instructions,
     decode(value) {
       const data = schema.parse(value);
       if (data.task !== task.type)
@@ -510,6 +546,39 @@ const ACTOR_JOURNAL_INSTRUCTIONS =
 On every journal_update, also replace memory.decisionBrief with two concise current prose summaries: action and attention. action states what YOU know privately, your current strategic objective, considered vote/night/pack preferences with reasons, alternatives and uncertainties, relevant public commitments and any deliberate public deception. attention states whom YOU want to hear and why, unresolved accusations, novelty, and your own speaking urgency. Aim for 150–300 words per summary; do not retell the chronological history or embed JSON. These are inspectable decision summaries, not a request for hidden reasoning. Other players' inability to verify your private facts does not make those facts uncertain to you. Do not confuse your public bluff with your private beliefs. Jev may choose differently when your reasoning and current authorized facts justify it; a preference is not a forced action. The application separately supplies current legal targets, authoritative facts and latest pack points. Refresh both summaries even when journalUpdate is null. For all speech tasks both journalUpdate and decisionBrief must be null.
 `;
 
+/**
+ * The auction-every-turn mode's actor instructions (CES-1575): a speech is natural text plus its
+ * endAction. There are no social annotations or response dockets, and nothing stands in for them.
+ */
+const PLAIN_SPEECH_ACTOR_INSTRUCTIONS = ACTOR_JOURNAL_INSTRUCTIONS.replace(
+  "Use references in private notes and structured evidence/respondsTo fields, never in public text.",
+  "Use references in private notes and structured evidence fields, never in public text.",
+)
+  .replace(
+    ACTOR_JOURNAL_INSTRUCTIONS.slice(
+      ACTOR_JOURNAL_INSTRUCTIONS.indexOf("For discussion_free_speech"),
+      ACTOR_JOURNAL_INSTRUCTIONS.indexOf("For closing_response"),
+    ),
+    "For discussion_free_speech, choose your own topic, targets, tactics and wording in this single response. You have already been selected; no topic or plan was chosen for you. Consider your journal and the conversation so far. You may defend, question, accuse, disclose, bluff, or offer observations. A public claim about private evidence remains an unverified claim. Do not include private evidence handles in public prose. Deliver a nonempty speech, then choose how it ends.\n",
+  )
+  .replace(
+    "For closing_response, address the frozen response docket; closing acts may only reply and cannot start new accusations.\n",
+    "",
+  );
+
+/** The player instructions for this packet's workflow and discussion mode. */
+function playerInstructions(packet: PlayerContextV2): string {
+  if (endsWithAction(packet)) return PLAIN_SPEECH_ACTOR_INSTRUCTIONS;
+  const workflow = packet.rules.jevWorkflow;
+  return workflow === "journal_v4"
+    ? ACTOR_JOURNAL_INSTRUCTIONS
+    : workflow === "journal_v3"
+      ? FREEFORM_JOURNAL_INSTRUCTIONS
+      : workflow === "journal_v2"
+        ? JOURNAL_INSTRUCTIONS
+        : V31_INSTRUCTIONS;
+}
+
 const V32_LEDGER_NOTE = `The public record is a complete ledger: every citable public event is listed, newest in full and older ones abridged or reduced to a marker showing only its handle, day, and who acted. A record marked abridged or carrying only a speaker is still real and still citable by its handle; its absence of detail is compaction, never evidence that nothing was said. When an abridged record matters to a belief you hold, it is re-listed with more detail in your private briefing.`;
 
 /**
@@ -544,7 +613,7 @@ function layers(
     choices = choiceMap(packet);
   const v32 = protocol === "agent_v3_2";
   const digestChars = typeof packet.rules.digestChars === "number" ? packet.rules.digestChars : 140;
-  const instructions = `${packet.rules.jevWorkflow === "journal_v4" ? ACTOR_JOURNAL_INSTRUCTIONS : packet.rules.jevWorkflow === "journal_v3" ? FREEFORM_JOURNAL_INSTRUCTIONS : packet.rules.jevWorkflow === "journal_v2" ? JOURNAL_INSTRUCTIONS : V31_INSTRUCTIONS}${v32 ? `\n\n${V32_LEDGER_NOTE}` : ""}\n\nFROZEN PUBLIC GAME REFERENCE (data):\n${JSON.stringify({ ...stableGameReference(packet), promptVersion: v32 ? "player_prompt_v3.2" : "player_prompt_v3.1" })}`;
+  const instructions = `${playerInstructions(packet)}${v32 ? `\n\n${V32_LEDGER_NOTE}` : ""}\n\nFROZEN PUBLIC GAME REFERENCE (data):\n${JSON.stringify({ ...stableGameReference(packet), promptVersion: v32 ? "player_prompt_v3.2" : "player_prompt_v3.1" })}`;
   const publicInput = JSON.stringify({
     PUBLIC_GAME_STATE: publicGameState(packet, protocol, handles, digestChars),
   });
@@ -573,9 +642,7 @@ function layers(
       evidence: compactEvidence(packet, handles, "private", digestChars),
       ...(expanded.length ? { expandedPublicEvidence: expanded } : {}),
       ...(reflectionEvidence.length ? { reflectionEvidence } : {}),
-      responseDocket: packet.responseDocket
-        .map((id) => handles.toAlias.get(id))
-        .filter((id): id is string => Boolean(id?.startsWith("E"))),
+      ...responseDocketLayer(packet, handles),
       ...(task.type.endsWith("_choice")
         ? {
             legalChoices: Object.fromEntries(
@@ -856,10 +923,16 @@ function baseReport(
 /** The public speech a submission makes, or null when the speaker stays silent. */
 function publicSpeechOf(
   speech: V31Speech,
-  respondsTo: string[],
+  task: V3TaskSpec,
   canonical: (id: string) => string,
 ): Extract<ActionProposalV2, { kind: "discussion" }>["speech"] {
   if (!speech.text) return null;
+  // An auction-every-turn speech: plain text and how it ended, with no social annotations.
+  if (!speech.acts) return { text: speech.text, endAction: speech.endAction };
+  const respondsTo =
+    task.type === "discussion_speech"
+      ? task.plan.respondsTo
+      : (speech.respondsTo ?? []).map(canonical);
   return {
     text: speech.text,
     acts: speech.acts.map((act) => ({
@@ -889,8 +962,18 @@ function normalizeProcedure(packet: PlayerContextV2, answer: V31Procedure, decis
   report.observations = answer.evidence.map((id) => source.toCanonical.get(id) ?? id);
   return report;
 }
+/** A speech's social annotations; a plain auction-every-turn speech has none. */
+function annotations(
+  speech: V31Speech,
+): Required<Pick<V31Speech, "acts" | "respondsTo">> & V31Speech {
+  return { ...speech, acts: speech.acts ?? [], respondsTo: speech.respondsTo ?? [] };
+}
 /** A closing response may only reply, and only to its frozen docket. */
-function closingErrors(packet: PlayerContextV2, speech: V31Speech, handles: HandleMap): string[] {
+function closingErrors(
+  packet: PlayerContextV2,
+  speech: ReturnType<typeof annotations>,
+  handles: HandleMap,
+): string[] {
   const errors: string[] = [];
   const replies = speech.respondsTo.map((handle) => handles.toCanonical.get(handle) ?? handle);
   if (speech.acts.some((act) => act.kind !== "reply")) errors.push("closing acts may only reply");
@@ -967,9 +1050,7 @@ export function normalizeV31Submission(
     const speech = submission as V31Speech,
       handles = evidenceMapV31(packet),
       canonical = (id: string) => handles.toCanonical.get(id) ?? id;
-    const respondsTo =
-      task.type === "discussion_speech" ? task.plan.respondsTo : speech.respondsTo.map(canonical);
-    const publicSpeech = publicSpeechOf(speech, respondsTo, canonical);
+    const publicSpeech = publicSpeechOf(speech, task, canonical);
     return baseReport(speech.rationale, memoryPatch(packet, speech.memory, decisionId), {
       kind: "discussion",
       speech: publicSpeech,
@@ -1115,7 +1196,7 @@ export function validateV31Submission(
     task.type === "discussion_free_speech" ||
     task.type === "closing_response"
   ) {
-    const speech = submission as V31Speech;
+    const speech = annotations(submission as V31Speech);
     evidence.push(
       ...speech.respondsTo,
       ...speech.acts.flatMap((act) => (act.evidence ? [act.evidence] : [])),
@@ -1167,7 +1248,7 @@ export function validateV31Submission(
         task.type === "discussion_speech" ||
         task.type === "closing_response") &&
       "respondsTo" in submission &&
-      submission.respondsTo.includes(handle) &&
+      submission.respondsTo!.includes(handle) &&
       !handle.startsWith("E")
     )
       errors.push("respondsTo accepts public E handles only");

@@ -319,11 +319,23 @@ function fakeV2Report(request: DecisionRequest<unknown>): DecisionReportV2 {
   };
 }
 
-/** In the auction-every-turn mode (CES-1575) a speech ends; the fake player never accuses. */
-function speechEnd(context: PlayerContextV2) {
-  return context.rules.discussionMode === "auction_every_turn"
-    ? { endAction: { kind: "continue" } }
-    : {};
+/**
+ * In the auction-every-turn mode (CES-1575) a speech is plain text plus how it ends, with no
+ * social annotations; the fake player never formally accuses.
+ */
+function modeSpeech(
+  context: PlayerContextV2,
+  speech: {
+    text: string;
+    acts: unknown[];
+    respondsTo: string[];
+    rationale: string;
+    memory: unknown;
+  },
+) {
+  if (context.rules.discussionMode !== "auction_every_turn") return speech;
+  const { acts: _acts, respondsTo: _respondsTo, ...plain } = speech;
+  return { ...plain, endAction: { kind: "continue" } };
 }
 function fakeV3Submission(request: DecisionRequest<unknown>): unknown {
   const context = request.contextV2!;
@@ -421,7 +433,7 @@ function fakeV3Submission(request: DecisionRequest<unknown>): unknown {
     const ref = briefing.view.responseDocket[0];
     const target = context.players.find((p) => p.alive && p.id !== context.self.id)!;
     const seer = seerSpeech(context).speech;
-    return {
+    return modeSpeech(context, {
       text:
         seer?.text ??
         (ref
@@ -445,8 +457,7 @@ function fakeV3Submission(request: DecisionRequest<unknown>): unknown {
       respondsTo: ref ? [ref] : [],
       rationale: "Choose my own contribution from the current briefing.",
       memory,
-      ...speechEnd(context),
-    };
+    });
   }
   if (task.type === "discussion_bid") {
     const target =

@@ -17,3 +17,18 @@ export function formatCompactCount(value: number): string {
   }
   return `${rounded.toLocaleString("en-US", { maximumFractionDigits: fractionDigits })}${COUNT_SUFFIXES[tier]}`;
 }
+
+/**
+ * The observer's label for a speech's social acts, as recorded games show it, or null for a
+ * speech with none: an auction-every-turn speech carries no acts (CES-1575).
+ */
+export function speechActLabel(
+  payload: Record<string, unknown>,
+  nameOf: (id: string) => string,
+): string | null {
+  if (!Array.isArray(payload.acts)) return null;
+  const acts = payload.acts as { kind: string; targetId: string | null }[];
+  return `${acts
+    .map((act) => `${act.kind.replaceAll("_", " ")} ${act.targetId ? nameOf(act.targetId) : ""}`)
+    .join(" · ")} · Claims are unverified`;
+}

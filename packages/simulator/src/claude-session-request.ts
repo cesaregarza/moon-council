@@ -96,7 +96,10 @@ export function turnText(packet: PlayerContextV2, cursors: TurnCursors, requestI
   const { evidence: _events, ...publicState } = publicGameState(packet, "agent_v3_2", map);
   const now = {
     ...publicState,
-    responseDocket: packet.responseDocket.flatMap((id) => map.toAlias.get(id) ?? []),
+    // The auction-every-turn mode keeps no response docket (CES-1575).
+    ...(packet.rules.discussionMode === "auction_every_turn"
+      ? {}
+      : { responseDocket: packet.responseDocket.flatMap((id) => map.toAlias.get(id) ?? []) }),
     ...(choices.length ? { legalChoices: Object.fromEntries(choices) } : {}),
   };
   return {

@@ -5,16 +5,22 @@ export {
 } from "./speaker-auction";
 import type { GameEventV1 } from "@werewolf/contracts";
 import { shuffled, type GameState } from "@werewolf/engine";
-import { isEveryTurn, namesWholeWord } from "./every-turn";
+import { isEveryTurn } from "./every-turn";
 import { revisionIsCurrent } from "./revisions";
 export { publicRevision } from "./revisions";
 
 /** The auction-every-turn mode's stages (CES-1575): ordinary turns, and the window after a second. */
 export type DiscussionStage = "opening" | "followup" | "closing" | "turn" | "post_second";
+/**
+ * Each living player's response docket: today's speeches that accused, challenged or named them
+ * since they last completed a turn. The auction-every-turn mode keeps none: its speeches carry no
+ * social annotations, and nothing stands in for them (CES-1575).
+ */
 export function responseDockets(state: GameState, events: GameEventV1[]): Record<string, string[]> {
   const result: Record<string, string[]> = Object.fromEntries(
     state.players.filter((p) => p.alive).map((p) => [p.id, []]),
   );
+  if (isEveryTurn(state.config)) return result;
   for (const event of events.filter((e) => e.day === state.day)) {
     if (event.type === "speech.public" && !event.payload.closing) {
       const acts = (event.payload.acts ?? []) as { kind: string; targetId: string | null }[];
@@ -24,10 +30,9 @@ export function responseDockets(state: GameState, events: GameEventV1[]): Record
         const formal = acts.some(
           (a) => ["accusation", "challenge"].includes(a.kind) && a.targetId === player.id,
         );
-        // The staged mode keeps its recorded substring match, so old games replay unchanged.
-        const mentioned = isEveryTurn(state.config)
-          ? namesWholeWord(String(event.payload.text), player.name)
-          : String(event.payload.text).toLowerCase().includes(player.name.toLowerCase());
+        const mentioned = String(event.payload.text)
+          .toLowerCase()
+          .includes(player.name.toLowerCase());
         if (formal || mentioned) result[player.id]!.push(event.id);
       }
     }

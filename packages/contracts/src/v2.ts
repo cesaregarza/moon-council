@@ -498,14 +498,19 @@ export const ActionProposalV2Schema = z.discriminatedUnion("kind", [
 ]);
 type ProposalFromSchema = z.infer<typeof ActionProposalV2Schema>;
 /**
- * A speech in the auction-every-turn mode also records how it ended. The field lives on the type
- * only: the V2 provider report schema is built from the schema above, and old protocols must
- * keep sending it byte for byte. The V3.1 speech schemas validate it in that mode.
+ * A speech in the auction-every-turn mode is plain text plus how it ended: it has no social
+ * `acts` or `respondsTo` annotations, and it records its `endAction` (CES-1575). These variations
+ * live on the type only: the V2 provider report schema is built from the schema above, and old
+ * protocols must keep sending it byte for byte. The V3.1 speech schemas validate each mode.
  */
-export type PublicSpeechV2 = z.infer<typeof PublicSpeechV2Schema> & { endAction?: EndAction };
+type AnnotatedSpeechV2 = z.infer<typeof PublicSpeechV2Schema>;
+export type PublicSpeechV2 = Omit<AnnotatedSpeechV2, "acts" | "respondsTo"> &
+  Partial<Pick<AnnotatedSpeechV2, "acts" | "respondsTo">> & { endAction?: EndAction };
 export type ActionProposalV2 =
   | Exclude<ProposalFromSchema, { kind: "discussion" }>
-  | (Extract<ProposalFromSchema, { kind: "discussion" }> & { speech: PublicSpeechV2 | null });
+  | (Omit<Extract<ProposalFromSchema, { kind: "discussion" }>, "speech"> & {
+      speech: PublicSpeechV2 | null;
+    });
 export const ListenerPreferenceV1Schema = z.strictObject({
   playerId: Id,
   willingness: z.number().min(0).max(1),
@@ -626,7 +631,10 @@ export const DecisionReportV2Schema = z.strictObject({
       .nullable(),
   }),
 });
-export type DecisionReportV2 = z.infer<typeof DecisionReportV2Schema>;
+/** A report's proposal, with the speech variations of `ActionProposalV2` (see `PublicSpeechV2`). */
+export type DecisionReportV2 = Omit<z.infer<typeof DecisionReportV2Schema>, "proposal"> & {
+  proposal: ActionProposalV2;
+};
 export type DecisionReportWithSpeakerIntentV1 = DecisionReportV2 & {
   speakerIntent: SpeakerIntentV1;
 };

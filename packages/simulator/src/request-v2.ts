@@ -90,8 +90,8 @@ function mapReportReferences(
   if (next.proposal.kind === "discussion" && next.proposal.speech)
     next.proposal.speech = {
       ...next.proposal.speech,
-      respondsTo: next.proposal.speech.respondsTo.map(map),
-      acts: next.proposal.speech.acts.map((act) => ({
+      respondsTo: (next.proposal.speech.respondsTo ?? []).map(map),
+      acts: (next.proposal.speech.acts ?? []).map((act) => ({
         ...act,
         sourceId: act.sourceId ? map(act.sourceId) : null,
       })),
