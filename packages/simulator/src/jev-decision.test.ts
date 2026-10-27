@@ -983,7 +983,7 @@ describe("free-form journals and journal-first Jev input", () => {
       sourceSubmission: submission,
       sourceAttemptId: "reflection",
     };
-    const compact = journalCompactionRequest(compacting, 16_000, 8192, null);
+    const compact = journalCompactionRequest(compacting, 16_000, 8192, null, false);
     const summary = {
       text: "I still suspect Ben, but this is inference. I promised to vote Ben unless he answers the contradiction. Hear Gus defend himself first. ".repeat(
         30,

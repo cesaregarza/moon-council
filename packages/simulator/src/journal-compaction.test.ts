@@ -102,6 +102,7 @@ describe("journal compaction", () => {
       1200,
       8192,
       "shorter",
+      false,
       JSON.stringify(draft),
     );
     expect(JSON.parse(prompt.prompt.input).previousSummary).toEqual(journalTextDraft(candidate));
@@ -112,8 +113,8 @@ describe("journal compaction", () => {
     const corrupted = { ...draft, beliefs: [{ ...draft.beliefs[0]!, probability: 1 }] };
     expect(
       JSON.parse(
-        journalCompactionRequest(compaction, 1200, 8192, "repair", JSON.stringify(corrupted)).prompt
-          .input,
+        journalCompactionRequest(compaction, 1200, 8192, "repair", false, JSON.stringify(corrupted))
+          .prompt.input,
       ).previousSummary,
     ).toBeNull();
   });

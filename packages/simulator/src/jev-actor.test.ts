@@ -231,7 +231,7 @@ describe("actor perspective Jev workflow", () => {
       sourceSubmission: submission,
       sourceAttemptId: "one",
     };
-    const compact = journalCompactionRequest(compaction, 500, 8192, null);
+    const compact = journalCompactionRequest(compaction, 500, 8192, null, false);
     const summary = materializeCompactedJournal(compaction, {
       text: "Earlier suspicion was superseded by my own verified result.",
     });
