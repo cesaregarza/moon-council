@@ -38,16 +38,21 @@ export function actorChoices(
   return choices;
 }
 
-/** One public line per living player, so listeners can judge who has dominated the floor. */
+/**
+ * One public line per living player, so listeners can judge who has dominated the floor. The
+ * auction-every-turn mode counts speeches only: it keeps no accusation or reply annotations.
+ */
 function floorToday(packet: PlayerContextV2): string | undefined {
   const floor = packet.publicFloor;
   if (!floor) return undefined;
   const name = (id: string) => packet.players.find((p) => p.id === id)?.name ?? id;
+  const plain = packet.rules.discussionMode === "auction_every_turn";
   return [
     `Public floor today (Day ${floor.day}), counted from every public speech:`,
-    ...floor.players.map(
-      (p) =>
-        `${name(p.playerId)} (${p.playerId}): ${p.speeches} public speeches, ${p.accusations} accusations and ${p.challenges} challenges made, ${p.responsesOwed} responses owed.`,
+    ...floor.players.map((p) =>
+      plain
+        ? `${name(p.playerId)} (${p.playerId}): ${p.speeches} public speeches.`
+        : `${name(p.playerId)} (${p.playerId}): ${p.speeches} public speeches, ${p.accusations} accusations and ${p.challenges} challenges made, ${p.responsesOwed} responses owed.`,
     ),
   ].join("\n");
 }
@@ -158,6 +163,31 @@ function procedureSubmission(
   return { ...shared, urgency: urgency.score! / 4 };
 }
 
+/**
+ * How useful hearing a player next would be. The auction-every-turn mode keeps no record of
+ * owed replies, so its wording names none (CES-1575); the staged wording is unchanged.
+ */
+function listenQuestion(
+  packet: PlayerContextV2,
+  player: { id: string; name: string },
+): JevQuestion {
+  const plain = packet.rules.discussionMode === "auction_every_turn";
+  const reasons = plain
+    ? "Use the listening reasons, open questions, promised evidence, novelty, repetition and prior domination of discussion."
+    : "Use the listening reasons, unanswered accusations, promised evidence, novelty, repetition and prior domination of discussion.";
+  return {
+    type: "score",
+    instructions: `${perspective} How useful is hearing ${player.name} (${player.id}) next? ${reasons} A useful defense can deserve attention from a suspect. Rate speaking value, not alignment.`,
+    criteria: [
+      "Nothing useful expected",
+      "Little new value",
+      "Some useful contribution",
+      "Important to hear",
+      plain ? "Critical contribution" : "Critical unanswered contribution",
+    ],
+  };
+}
+
 export function prepareActorJevAction(
   op: Opportunity,
   config: GameConfigV2,
@@ -176,17 +206,7 @@ export function prepareActorJevAction(
     };
     for (const [index, player] of op.packet.players.entries()) {
       if (!player.alive || player.id === op.playerId) continue;
-      questions[`listen_${index}`] = {
-        type: "score",
-        instructions: `${perspective} How useful is hearing ${player.name} (${player.id}) next? Use the listening reasons, unanswered accusations, promised evidence, novelty, repetition and prior domination of discussion. A useful defense can deserve attention from a suspect. Rate speaking value, not alignment.`,
-        criteria: [
-          "Nothing useful expected",
-          "Little new value",
-          "Some useful contribution",
-          "Important to hear",
-          "Critical unanswered contribution",
-        ],
-      };
+      questions[`listen_${index}`] = listenQuestion(op.packet, player);
     }
     if (scoreTask)
       questions.urge = {

@@ -13,8 +13,10 @@ import {
   type JevRequest,
 } from "@werewolf/llm";
 import { authorizedSources, buildContextV2 } from "./context-v2";
+import { actorBriefing } from "./jev-actor";
 import { V2GameOrchestrator } from "./orchestrator-v2";
 import { currentDecisionBrief, journalEvidenceRevision } from "./player-brief";
+import { decisionRequestV32 } from "./request-v3-1";
 import { acknowledgeSemanticAnomaly } from "./semantic-recovery";
 
 /**
@@ -79,12 +81,24 @@ const seatOf = (request: JevRequest) => /\((p\d+)\), /.exec(JSON.stringify(reque
  * day's vote had already resolved when a player-model call was made.
  */
 function providers(voted: () => boolean = () => false) {
-  const llmCalls: { task: string; playerId: string | undefined; afterVote: boolean }[] = [];
+  const llmCalls: {
+    task: string;
+    playerId: string | undefined;
+    afterVote: boolean;
+    body: string;
+  }[] = [];
   const jevCalls: { seat: string | undefined; input: string; afterVote: boolean }[] = [];
   const fake = new FakeDecisionProvider();
   const llm: DecisionProvider = {
     decide: (request) => {
-      llmCalls.push({ task: request.schemaName, playerId: request.playerId, afterVote: voted() });
+      llmCalls.push({
+        task: request.schemaName,
+        playerId: request.playerId,
+        afterVote: voted(),
+        body: Object.values(request.preparedPrompt ?? {})
+          .filter((part) => typeof part === "string")
+          .join("\n"),
+      });
       return fake.decide(request);
     },
   };
@@ -284,5 +298,137 @@ describe("games saved before sequence-keyed revisions", () => {
         "Reviewed the final model receipt",
       ),
     ).toThrow(/stale/);
+  });
+});
+
+/**
+ * CES-1575 part 3: an auction-every-turn game saved by the base code (main 19017ee8; see
+ * testing/compat-fixtures/README.md) still holds the social bookkeeping that mode no longer keeps:
+ * Gale's speech carries a challenge act against Briar, and Briar's paused score bid persists a
+ * response docket naming that speech. Resumed by the current code, no agent input may restate it,
+ * and nothing stored is rewritten. Bodies are compared case- and whitespace-insensitively.
+ */
+describe("an auction-every-turn game saved with response dockets", () => {
+  const flat = (text: string) => text.toLowerCase().replace(/\s+/g, "");
+  const CLAIM = flat("Please explain your current read.");
+  // The derived reminder line. The seat's own journal, written by its model, may say "unanswered".
+  const REMINDER = /unanswered(challenge|accusation)by/;
+  const savedBid = () => {
+    const loaded = load("saved-bid");
+    const op = decision(loaded.store, loaded.fixture.gameId, loaded.fixture.decisionId!)!;
+    return { ...loaded, op };
+  };
+
+  it("holds a saved score bid whose persisted docket names an annotated challenge", () => {
+    const { fixture, op } = savedBid();
+    expect(op.taskType).toBe("discussion_score");
+    expect(op.playerId).toBe(fixture.outageSeat);
+    expect(op.packet.rules.discussionMode).toBe("auction_every_turn");
+    const docketed = op.packet.sources.filter((s) => op.packet.responseDocket.includes(s.id));
+    expect(docketed.map((s) => (s.data.acts as { kind: string }[])[0]?.kind)).toEqual([
+      "challenge",
+    ]);
+  });
+
+  it("resumes it with no docket or annotation in the Jev or provider bodies, the stored bytes unchanged", async () => {
+    const { fixture, repository, store, op } = savedBid();
+    const storedPacket = (row: Record<string, unknown>) =>
+      JSON.stringify(JSON.parse(String(row.value_json)).packet);
+    const savedRow = fixture.rows.agent_records!.find(
+      (row) => row.record_key === `decision:${fixture.decisionId}`,
+    )!;
+    const speechesBefore = repository
+      .listEvents(fixture.gameId)
+      .filter((e) => e.type === "speech.public").length;
+    const driven = providers();
+    await resume(
+      repository,
+      fixture.gameId,
+      driven,
+      (all) => all.filter((e) => e.type === "speech.public").length > speechesBefore,
+    );
+    expect(
+      decision(store, fixture.gameId, op.id)?.status,
+      repository.getGame(fixture.gameId)?.error ?? "",
+    ).toBe("committed");
+    // The bidder's Jev request, and every player-model request made while resuming.
+    const bid = driven.jevCalls.filter((call) => call.seat === fixture.outageSeat);
+    expect(bid.length).toBeGreaterThan(0);
+    expect(driven.llmCalls.length).toBeGreaterThan(0);
+    for (const body of [...bid.map((call) => call.input), ...driven.llmCalls.map((c) => c.body)]) {
+      const text = flat(body);
+      expect(text).not.toMatch(REMINDER);
+      expect(text).not.toContain("responsesowed");
+      expect(text).not.toContain(CLAIM);
+      expect(text).not.toMatch(/\\?"(acts|respondsto|responsedocket)\\?":/);
+    }
+    // The stored packet is as the base code wrote it.
+    const after = connections
+      .at(-1)!
+      .sqlite.prepare("select value_json from agent_records where game_id = ? and record_key = ?")
+      .get(fixture.gameId, `decision:${fixture.decisionId}`) as Record<string, unknown>;
+    expect(storedPacket(after)).toBe(storedPacket(savedRow));
+    const speech = repository.listEvents(fixture.gameId).find((e) => e.type === "speech.public")!;
+    expect(speech.payload.acts).toEqual([
+      expect.objectContaining({ kind: "challenge", targetId: fixture.outageSeat }),
+    ]);
+  }, 30_000);
+
+  it("renders a listen opportunity on the restored packet without the docket", () => {
+    const { op } = savedBid();
+    const text = flat(
+      JSON.stringify(actorBriefing({ ...op, taskType: "discussion_listen" } as never)),
+    );
+    expect(text).not.toMatch(REMINDER);
+    expect(text).not.toContain(CLAIM);
+  });
+
+  it("renders a speech request on the restored packet without the annotations or the docket", () => {
+    const { op } = savedBid();
+    // Demoted to a stub, the docketed speech is not re-delivered because the docket cites it.
+    const packet = {
+      ...op.packet,
+      sources: op.packet.sources.map((s) =>
+        op.packet.responseDocket.includes(s.id) ? { ...s, detail: "stub" as const } : s,
+      ),
+      journal: { ...op.packet.journal, beliefs: [], hypotheses: [], attentionNotes: [] },
+    };
+    const request = decisionRequestV32(
+      packet,
+      { type: "discussion_free_speech", ready: false, revision: "resume" },
+      false,
+      null,
+      null,
+    );
+    const text = flat(
+      Object.values(request.prompt)
+        .filter((p) => typeof p === "string")
+        .join("\n"),
+    );
+    expect(text).not.toContain(flat("what concrete observation"));
+    const full = decisionRequestV32(
+      op.packet,
+      { type: "discussion_free_speech", ready: false, revision: "resume" },
+      false,
+      null,
+      null,
+    );
+    const fullText = flat(
+      Object.values(full.prompt)
+        .filter((p) => typeof p === "string")
+        .join("\n"),
+    );
+    expect(fullText).toContain(flat("what concrete observation"));
+    expect(fullText).not.toMatch(/\\?"(acts|respondsto|responsedocket)\\?":/);
+    expect(fullText).not.toContain(CLAIM);
+  });
+
+  it("still renders the reminder for the same packet in the staged mode", () => {
+    const { op } = savedBid();
+    const { discussionMode: _mode, ...rules } = op.packet.rules;
+    const staged = { ...op, packet: { ...op.packet, rules } };
+    expect(actorBriefing(staged as never).verifiedFacts).toContain(
+      "Unanswered challenge by Gale to Briar: Please explain your current read. (unverified claim).",
+    );
   });
 });

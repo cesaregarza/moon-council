@@ -11,12 +11,6 @@ import { shuffled, type GameState } from "@werewolf/engine";
 export const isEveryTurn = (config: GameState["config"]): boolean =>
   config.schemaVersion === "game_config_v2" && config.discussion.mode === "auction_every_turn";
 
-/** Whether `text` names `name` as a whole word: the seat "Eli" is not named by "believe". */
-export function namesWholeWord(text: string, name: string): boolean {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "iu").test(text);
-}
-
 const today = (state: GameState, events: GameEventV1[]) =>
   events.filter((event) => event.day === state.day);
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PlayerContextV2, UsageV2 } from "@werewolf/contracts";
 import type { DecisionStore } from "@werewolf/db";
 import {
@@ -41,6 +42,11 @@ export interface ClaudeSessionRecord {
    */
   lastTotalTokens: number | null;
   closed: boolean;
+  /**
+   * What the session was opened under: a hash of block 1 (instructions, response-format text
+   * and session format) and the response schema. Absent on records opened before CES-1575 part 3.
+   */
+  instructionIdentity?: string;
 }
 
 /** Prompt size at which a new session starts; Haiku 5.5's price rises above 100K tokens. */
@@ -62,6 +68,8 @@ export interface SessionCall {
   formatInstructions: string;
   /** l3 of the v3.2 request: the task, commitOnly, previous and repair. */
   requestInput: string;
+  /** The response format's JSON schema, serialized: part of the session's identity. */
+  responseSchema?: string;
 }
 
 export interface SessionTurn {
@@ -96,7 +104,30 @@ const SessionRecordSchema = z.strictObject({
   lastPromptTokens: TokenCount.nullable(),
   lastTotalTokens: TokenCount.nullable(),
   closed: z.boolean(),
+  instructionIdentity: z.string().optional(),
 });
+
+/** A session's instruction identity: its block 1 and the response schema it answers in. */
+function instructionIdentity(call: SessionCall): string {
+  const block = sharedSystemBlocks(call.packet, call.instructions, call.formatInstructions)[0];
+  return createHash("sha256")
+    .update(JSON.stringify([block, call.responseSchema ?? ""]))
+    .digest("hex");
+}
+/**
+ * Whether the code now instructs differently than when the session opened (CES-1575): a game
+ * paused under older code and resumed under newer renews the session, carrying the current state
+ * forward; its history and stored record are left as they were. A record from before identities
+ * existed renews only if its block 1 differs, so unchanged staged sessions keep their cache.
+ */
+function instructionsChanged(record: ClaudeSessionRecord, call: SessionCall): boolean {
+  if (record.instructionIdentity !== undefined)
+    return record.instructionIdentity !== instructionIdentity(call);
+  return (
+    record.systemBlocks[0] !==
+    sharedSystemBlocks(call.packet, call.instructions, call.formatInstructions)[0]
+  );
+}
 
 const ANOMALIES_KEY = "claude-session-anomalies";
 const currentKey = (playerId: string) => `claude-session-current:${playerId}`;
@@ -175,9 +206,9 @@ export class ClaudeSessions {
   }
 
   /**
-   * A new day, a compaction, a model change or the size threshold opens a session. A different
-   * per-call effort does not: effort is pinned at opening, because changing it would invalidate
-   * the messages cache.
+   * A new day, a compaction, a model change, changed instructions or the size threshold opens a
+   * session. A different per-call effort does not: effort is pinned at opening, because changing
+   * it would invalidate the messages cache.
    */
   private mustRenew(record: ClaudeSessionRecord, call: SessionCall, turn: string): boolean {
     const limit = SESSION_TOKEN_LIMITS[call.model] ?? DEFAULT_SESSION_TOKEN_LIMIT;
@@ -185,6 +216,7 @@ export class ClaudeSessions {
       record.closed ||
       record.day !== call.packet.day ||
       record.model !== call.model ||
+      instructionsChanged(record, call) ||
       record.lastTotalTokens === null ||
       record.lastTotalTokens + estimatedTokens(turn) > limit
     );
@@ -213,6 +245,7 @@ export class ClaudeSessions {
       lastPromptTokens: null,
       lastTotalTokens: 0,
       closed: false,
+      instructionIdentity: instructionIdentity(call),
     };
     this.save(call.gameId, record);
     return record;

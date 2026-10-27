@@ -122,7 +122,13 @@ function call(
   sessions: ClaudeSessions,
   seat: string,
   day: number,
-  options: { effort?: string; journal?: PrivateJournalV2; model?: string } = {},
+  options: {
+    effort?: string;
+    journal?: PrivateJournalV2;
+    model?: string;
+    /** Instructions other than the current code's, as a session opened by older code had. */
+    instructions?: string;
+  } = {},
 ) {
   const model = options.model ?? MODEL;
   game.state.day = day;
@@ -145,7 +151,7 @@ function call(
     model,
     effort: options.effort ?? "medium",
     kind: "journal_update_v3_2",
-    instructions: prepared.prompt.instructions,
+    instructions: options.instructions ?? prepared.prompt.instructions,
     formatInstructions: format.instructions,
     requestInput: prepared.prompt.input,
   });
@@ -408,6 +414,32 @@ describe("Claude session harness", () => {
   });
 
   // Felix's Rule O: a persisted session is replayed only for its own game and seat.
+  it("renews a session opened under other instructions, leaving its record as it was", () => {
+    // A game paused under older code and resumed under newer: the seat's open session carries
+    // the old instructions in its system blocks. CES-1575 part 3, round 2.
+    const game = scriptedGame();
+    const sessions = new ClaudeSessions(game.store);
+    const old = call(game, sessions, game.villager, 1, { instructions: "OLDER INSTRUCTIONS" });
+    answer(old.turn);
+    const oldRecord = structuredClone(
+      game.store.get(game.gameId, `claude-session:${old.turn.metadata.id}`),
+    );
+    game.speech(game.seer, 1);
+    const resumed = call(game, sessions, game.villager, 1);
+    expect(resumed.turn.metadata.id).not.toBe(old.turn.metadata.id);
+    expect(sessionTexts(resumed.body)).not.toContain("OLDER INSTRUCTIONS");
+    expect(sessionTexts(resumed.body)).toContain(resumed.prepared.prompt.instructions);
+    // A fresh session: the day-start block and the pending turn, no replayed history.
+    expect(resumed.body.messages).toHaveLength(2);
+    expect(game.store.get(game.gameId, `claude-session:${old.turn.metadata.id}`)).toEqual(
+      oldRecord,
+    );
+    // Unchanged instructions keep the session: no renewal, no extra cache write.
+    answer(resumed.turn);
+    game.speech(game.seer, 1);
+    expect(call(game, sessions, game.villager, 1).turn.metadata.id).toBe(resumed.turn.metadata.id);
+  });
+
   describe("session ownership on load", () => {
     const anomalies = (game: Game) =>
       game.store.get<{ playerId: string; reason: string }[]>(

@@ -34,38 +34,53 @@ function clip(text: string, chars: number): string {
 }
 
 /**
+ * A staged speech's social annotations (acts and the records it replies to), as aliases. The
+ * auction-every-turn mode delivers none, including those a speech saved before CES-1575 part 3
+ * still carries, so its speeches render without either key.
+ */
+function speechAnnotations(
+  source: ContextSourceV2,
+  alias: (id: string) => string | undefined,
+  annotated: boolean,
+): { acts?: Record<string, unknown>[]; respondsTo?: string[] } {
+  if (!annotated || !Array.isArray(source.data.acts)) return {};
+  return {
+    acts: source.data.acts.map((value) => {
+      const act = value as Record<string, unknown>;
+      const evidence = typeof act.sourceId === "string" ? alias(act.sourceId) : undefined;
+      return {
+        kind: act.kind,
+        targetId: act.targetId,
+        ...(evidence?.startsWith("E") ? { evidence } : {}),
+      };
+    }),
+    respondsTo: Array.isArray(source.data.respondsTo)
+      ? source.data.respondsTo
+          .map((id) => (typeof id === "string" ? alias(id) : undefined))
+          .filter((id): id is string => Boolean(id?.startsWith("E")))
+      : [],
+  };
+}
+/**
  * Shape a record's payload for delivery at `tier`.
  *
  * `alias` maps a canonical event id to its delivered handle; nested references are dropped
- * when they resolve to nothing, exactly as the full rendering already does.
+ * when they resolve to nothing, exactly as the full rendering already does. `annotated` is false
+ * in the auction-every-turn mode.
  */
 export function tierPayload(
   source: ContextSourceV2,
   tier: DeliveryTier,
   digestChars: number,
   alias: (id: string) => string | undefined,
+  annotated: boolean,
 ): Record<string, unknown> {
   if (!isDemotable(source)) return source.data;
 
   const speakerId = source.data.playerId;
   if (tier === "stub") return { speakerId };
 
-  const acts = Array.isArray(source.data.acts)
-    ? source.data.acts.map((value) => {
-        const act = value as Record<string, unknown>;
-        const evidence = typeof act.sourceId === "string" ? alias(act.sourceId) : undefined;
-        return {
-          kind: act.kind,
-          targetId: act.targetId,
-          ...(evidence?.startsWith("E") ? { evidence } : {}),
-        };
-      })
-    : [];
-  const respondsTo = Array.isArray(source.data.respondsTo)
-    ? source.data.respondsTo
-        .map((id) => (typeof id === "string" ? alias(id) : undefined))
-        .filter((id): id is string => Boolean(id?.startsWith("E")))
-    : [];
+  const annotations = speechAnnotations(source, alias, annotated);
   const text = typeof source.data.text === "string" ? source.data.text : "";
 
   if (tier === "digest") {
@@ -74,16 +89,14 @@ export function tierPayload(
       speakerId,
       text: clipped,
       ...(clipped === text ? {} : { abridged: true }),
-      acts,
-      respondsTo,
+      ...annotations,
     };
   }
   return {
     speakerId,
     speakerName: source.data.playerName,
     text,
-    acts,
-    respondsTo,
+    ...annotations,
     closing: source.data.closing,
   };
 }

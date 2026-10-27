@@ -63,6 +63,15 @@ function speakerRules(state: GameState, events: GameEventV1[]) {
         speakerPriorityFormula: `${formula}; response rights restrict the candidate set before scoring`,
       };
 }
+/**
+ * A discussion proposal's speech with its social annotations, which a plain auction-every-turn
+ * speech lacks (CES-1575): those read as empty. Null when there is no speech.
+ */
+function annotatedSpeech(proposal: ActionProposalV2) {
+  if (proposal.kind !== "discussion" || !proposal.speech) return null;
+  const { acts = [], respondsTo = [] } = proposal.speech;
+  return { ...proposal.speech, acts, respondsTo };
+}
 /** In the auction-every-turn mode, every speech ends with an endAction naming a valid target. */
 function endActionErrors(proposal: ActionProposalV2, packet: PlayerContextV2): string[] {
   if (proposal.kind !== "discussion" || !proposal.speech || !packet.rules.discussionMode) return [];
@@ -410,7 +419,7 @@ export function buildContextV2(
       estimatedTokens({
         type: source.type,
         day: source.day,
-        data: tierPayload(source, tier, digestChars, () => "E1"),
+        data: tierPayload(source, tier, digestChars, () => "E1", !isEveryTurn(state.config)),
       });
     // Only structural records are pinned, because their outcomes cannot be recovered from
     // a summary and they are few. Speech -- including the current day's -- stays in the
@@ -624,10 +633,11 @@ export function validateReport(
     ),
   ];
   const proposal = report.proposal;
-  if (proposal.kind === "discussion" && proposal.speech)
+  const speech = annotatedSpeech(proposal);
+  if (speech)
     cited.push(
-      ...proposal.speech.respondsTo,
-      ...proposal.speech.acts.flatMap((a) => (a.sourceId ? [a.sourceId] : [])),
+      ...speech.respondsTo,
+      ...speech.acts.flatMap((a) => (a.sourceId ? [a.sourceId] : [])),
     );
   if (cited.some((id) => !refs.has(id))) {
     errors.push("citations must reference delivered source IDs");
@@ -691,23 +701,19 @@ export function validateReport(
   }
   errors.push(...endActionErrors(proposal, packet));
   if (proposal.kind === "discussion") {
-    if (
-      proposal.speech?.acts.some(
-        (a) => a.targetId && !packet.players.some((p) => p.id === a.targetId),
-      )
-    )
+    if (speech?.acts.some((a) => a.targetId && !packet.players.some((p) => p.id === a.targetId)))
       errors.push("speech act has unknown target");
     if (
       packet.closing &&
-      proposal.speech?.acts.some((a) => a.kind === "accusation" || a.kind === "challenge")
+      speech?.acts.some((a) => a.kind === "accusation" || a.kind === "challenge")
     )
       errors.push("closing replies cannot open new formal accusations or challenges");
-    if (packet.closing && proposal.speech) {
-      if (!proposal.speech.respondsTo.some((id) => packet.responseDocket.includes(id)))
+    if (packet.closing && speech) {
+      if (!speech.respondsTo.some((id) => packet.responseDocket.includes(id)))
         errors.push("closing speech must reply to the frozen docket");
-      if (proposal.speech.respondsTo.some((id) => !packet.responseDocket.includes(id)))
+      if (speech.respondsTo.some((id) => !packet.responseDocket.includes(id)))
         errors.push("closing speech can only reply to the frozen docket");
-      if (proposal.speech.acts.some((a) => a.kind !== "reply"))
+      if (speech.acts.some((a) => a.kind !== "reply"))
         errors.push("closing speech acts must be replies");
     }
     if (

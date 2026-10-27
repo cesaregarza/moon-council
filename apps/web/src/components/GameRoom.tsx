@@ -8,7 +8,7 @@ import {
   type GameView,
   type ObserverGamePayload,
 } from "../api";
-import { formatCompactCount } from "../format";
+import { formatCompactCount, speechActLabel } from "../format";
 
 interface Props {
   gameId: string;
@@ -122,6 +122,18 @@ function recordValue(record: Record<string, unknown> | undefined, key: string): 
 }
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String) : [];
+}
+
+/** A speech's social acts, for recorded games; a plain auction-every-turn speech shows none. */
+function SpeechActs({
+  payload,
+  nameOf,
+}: {
+  payload: Record<string, unknown>;
+  nameOf: (id: string) => string;
+}) {
+  const label = speechActLabel(payload, nameOf);
+  return label ? <small>{label}</small> : null;
 }
 
 export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
@@ -578,16 +590,11 @@ export function GameRoom({ gameId, onBack, onChanged, onClone }: Props) {
                     </pre>
                   </details>
                 )}
-                {event.type === "speech.public" && Array.isArray(event.payload.acts) && (
-                  <small>
-                    {(event.payload.acts as { kind: string; targetId: string | null }[])
-                      .map(
-                        (act) =>
-                          `${act.kind.replaceAll("_", " ")} ${act.targetId ? playerName(act.targetId, payload.state.players) : ""}`,
-                      )
-                      .join(" · ")}{" "}
-                    · Claims are unverified
-                  </small>
+                {event.type === "speech.public" && (
+                  <SpeechActs
+                    payload={event.payload}
+                    nameOf={(id) => playerName(id, payload.state.players)}
+                  />
                 )}
               </article>
             ))}
