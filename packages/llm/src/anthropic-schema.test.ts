@@ -233,3 +233,61 @@ describe("operator API error echo redaction (CES-1578 round 2)", () => {
     expect(detail?.message).not.toContain("alibi: na");
   });
 });
+
+/**
+ * CES-1578 round 3. A request may hold literal backslash sequences (here real backslashes, not
+ * control characters). Echoed decoded or JSON-escaped, either way it must be redacted: the message
+ * is matched both as received and unescaped.
+ */
+describe("operator API error echo redaction of literal backslash text (CES-1578 round 3)", () => {
+  const literal = "private\\nrole\\tseer\\np1\\rresult\\np2\\twolf\\nend";
+  const generic = "messages.0.content.0: unexpected value";
+
+  async function operatorMessage(echo: string) {
+    const metadata: Record<string, unknown>[] = [];
+    const client = new Anthropic({
+      apiKey: "fake-anthropic-key-for-tests",
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            type: "error",
+            error: { type: "invalid_request_error", message: `${generic}; got ${echo}` },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        ),
+    });
+    await new AnthropicMessagesProvider({
+      client,
+      ledger: { reserve: () => undefined, settle: () => undefined },
+    })
+      .decide({
+        kind: "decision_v3_1",
+        model: "claude-haiku-5-5",
+        schemaName: "fixture",
+        schema: z.strictObject({ ok: z.boolean() }),
+        maxOutputTokens: 100,
+        preparedPrompt: { instructions: `Fixture notes ${literal} kept.`, input: "{}" },
+        onProviderMetadata: (value) => metadata.push(value),
+      })
+      .catch(() => undefined);
+    const detail = metadata.at(-1)?.operatorApiError as { message: string } | undefined;
+    return detail?.message ?? "";
+  }
+
+  it.each([
+    ["decoded", literal],
+    ["JSON-escaped", JSON.stringify(literal).slice(1, -1)],
+  ])("redacts a %s echo of literal backslash sequences", async (_label, echo) => {
+    const message = await operatorMessage(echo);
+    expect(message).toContain(generic);
+    for (const leaked of [
+      "role seer",
+      "seer p1",
+      "result p2",
+      "wolf end",
+      "role\\tseer",
+      "p2\\twolf",
+    ])
+      expect(message).not.toContain(leaked);
+  });
+});
