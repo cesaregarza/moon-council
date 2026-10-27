@@ -419,7 +419,7 @@ export function buildContextV2(
       estimatedTokens({
         type: source.type,
         day: source.day,
-        data: tierPayload(source, tier, digestChars, () => "E1"),
+        data: tierPayload(source, tier, digestChars, () => "E1", !isEveryTurn(state.config)),
       });
     // Only structural records are pinned, because their outcomes cannot be recovered from
     // a summary and they are few. Speech -- including the current day's -- stays in the

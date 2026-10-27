@@ -454,6 +454,7 @@ function mapJournal(journal: PrivateJournalV2, map: HandleMap, strict: boolean):
 }
 
 export function renderSource(
+  packet: PlayerContextV2,
   source: ContextSourceV2,
   map: HandleMap,
   digestChars: number,
@@ -466,7 +467,13 @@ export function renderSource(
     day: source.day,
     scope: source.scope,
     ...(tier === "full" ? {} : { detail: tier }),
-    data: tierPayload(source, tier, digestChars, (id) => map.toAlias.get(id)),
+    data: tierPayload(
+      source,
+      tier,
+      digestChars,
+      (id) => map.toAlias.get(id),
+      !endsWithAction(packet),
+    ),
   };
 }
 
@@ -482,7 +489,7 @@ function compactEvidence(
         (scope === "public" ? source.cacheLayer === "public" : source.cacheLayer !== "public") &&
         map.toAlias.has(source.id),
     )
-    .map((source) => renderSource(source, map, digestChars));
+    .map((source) => renderSource(packet, source, map, digestChars));
 }
 
 /**
@@ -496,7 +503,8 @@ function expandedPublicEvidence(packet: PlayerContextV2, map: HandleMap, digestC
     ...packet.journal.beliefs.flatMap((b) => b.sources),
     ...packet.journal.hypotheses.flatMap((h) => h.sources),
     ...(packet.journal.attentionNotes ?? []).flatMap((n) => n.sources),
-    ...packet.responseDocket,
+    // A packet saved before CES-1575 part 3 may hold a docket; that mode keeps none.
+    ...(endsWithAction(packet) ? [] : packet.responseDocket),
   ]);
   return packet.sources
     .filter(
@@ -506,7 +514,7 @@ function expandedPublicEvidence(packet: PlayerContextV2, map: HandleMap, digestC
         cited.has(source.id) &&
         map.toAlias.has(source.id),
     )
-    .map((source) => renderSource(source, map, digestChars, "digest"));
+    .map((source) => renderSource(packet, source, map, digestChars, "digest"));
 }
 
 const V31_INSTRUCTIONS = `You are one isolated player in a deterministic Werewolf simulation. Maximize your faction's chance of winning. The application owns roles, legality, phase state, action execution, voting, and victory. You supply only the small response requested for this task. Never invent private results or treat a public claim as verified.
@@ -626,7 +634,7 @@ function layers(
     task.type === "journal_update"
       ? packet.sources
           .filter((source) => task.sourceIds.includes(source.id) && tierOf(source) !== "full")
-          .map((source) => renderSource(source, handles, digestChars, "full"))
+          .map((source) => renderSource(packet, source, handles, digestChars, "full"))
       : [];
   if (task.type === "journal_update" && task.sourceIds.some((id) => !handles.toAlias.has(id)))
     throw new Error("Journal update is missing newly delivered evidence");

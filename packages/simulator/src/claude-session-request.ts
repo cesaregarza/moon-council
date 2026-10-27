@@ -29,7 +29,7 @@ function render(packet: PlayerContextV2, sources: ContextSourceV2[]) {
   const map = evidenceMapV31(packet);
   return sources
     .filter((source) => map.toAlias.has(source.id))
-    .map((source) => renderSource(source, map, digestChars(packet), "full"));
+    .map((source) => renderSource(packet, source, map, digestChars(packet), "full"));
 }
 
 /**

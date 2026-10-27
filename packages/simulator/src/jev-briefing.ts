@@ -62,8 +62,11 @@ export function jevBriefing(packet: PlayerContextV2, task: V3TaskKind | undefine
         : "No pack points yet; initial choices may be simultaneous.",
     );
   }
-  const scheduling = task === "discussion_score" || task === "discussion_listen";
-  if (scheduling)
+  // The auction-every-turn mode keeps no dockets; one saved before CES-1575 part 3 stays unread.
+  const reminders =
+    (task === "discussion_score" || task === "discussion_listen") &&
+    packet.rules.discussionMode !== "auction_every_turn";
+  if (reminders)
     for (const id of packet.responseDocket) {
       const source = sources.find(
         (s) => s.id === id && s.type === "speech.public" && s.scope === "public",

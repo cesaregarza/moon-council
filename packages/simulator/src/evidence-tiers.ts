@@ -34,14 +34,16 @@ function clip(text: string, chars: number): string {
 }
 
 /**
- * A staged speech's social annotations (acts and the records it replies to), as aliases. An
- * auction-every-turn speech carries none, so it renders without either key (CES-1575).
+ * A staged speech's social annotations (acts and the records it replies to), as aliases. The
+ * auction-every-turn mode delivers none, including those a speech saved before CES-1575 part 3
+ * still carries, so its speeches render without either key.
  */
 function speechAnnotations(
   source: ContextSourceV2,
   alias: (id: string) => string | undefined,
+  annotated: boolean,
 ): { acts?: Record<string, unknown>[]; respondsTo?: string[] } {
-  if (!Array.isArray(source.data.acts)) return {};
+  if (!annotated || !Array.isArray(source.data.acts)) return {};
   return {
     acts: source.data.acts.map((value) => {
       const act = value as Record<string, unknown>;
@@ -63,20 +65,22 @@ function speechAnnotations(
  * Shape a record's payload for delivery at `tier`.
  *
  * `alias` maps a canonical event id to its delivered handle; nested references are dropped
- * when they resolve to nothing, exactly as the full rendering already does.
+ * when they resolve to nothing, exactly as the full rendering already does. `annotated` is false
+ * in the auction-every-turn mode.
  */
 export function tierPayload(
   source: ContextSourceV2,
   tier: DeliveryTier,
   digestChars: number,
   alias: (id: string) => string | undefined,
+  annotated: boolean,
 ): Record<string, unknown> {
   if (!isDemotable(source)) return source.data;
 
   const speakerId = source.data.playerId;
   if (tier === "stub") return { speakerId };
 
-  const annotations = speechAnnotations(source, alias);
+  const annotations = speechAnnotations(source, alias, annotated);
   const text = typeof source.data.text === "string" ? source.data.text : "";
 
   if (tier === "digest") {
