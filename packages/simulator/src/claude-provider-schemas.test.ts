@@ -7,7 +7,10 @@ import { sharedSystemBlocks } from "./claude-session-request";
 import { journalCompactionRequest } from "./journal-compaction";
 import { decisionRequestV31, decisionRequestV32, v31ApiResponseFormat } from "./request-v3-1";
 import type { V3TaskSpec } from "./request-v3";
-import { actorFixtures, actorPacket } from "./testing/actor-fixtures";
+import { createGameState } from "@werewolf/engine";
+import { buildContextV2 } from "./context-v2";
+import { actorConfig, actorFixtures, actorPacket } from "./testing/actor-fixtures";
+import { GameConfigV2Schema, emptyJournalV2 } from "@werewolf/contracts";
 
 /**
  * CES-1578: every output schema the Anthropic provider would send must use only what Claude's
@@ -87,10 +90,15 @@ function violations(
     if (!resolved) found.push(`PROVIDER ${path}: unresolvable $ref ${node.$ref}`);
     else child(resolved, `${path}->${node.$ref}`);
   }
-  for (const [name, value] of Object.entries((node.properties ?? {}) as Record<string, unknown>))
-    child(value, `${path}.properties.${name}`);
-  if (node.items) child(node.items, `${path}.items`);
-  for (const key of ["anyOf", "allOf", "oneOf"])
+  // Structural walk (round 2): the names in these maps are names, never keywords.
+  for (const map of ["properties", "definitions", "$defs", "patternProperties"])
+    for (const [name, value] of Object.entries((node[map] ?? {}) as Record<string, unknown>))
+      child(value, `${path}.${map}.${name}`);
+  for (const key of ["items", "not", "if", "then", "else", "contains"])
+    if (node[key] && typeof node[key] === "object") child(node[key], `${path}.${key}`);
+  if (node.additionalProperties && typeof node.additionalProperties === "object")
+    child(node.additionalProperties, `${path}.additionalProperties`);
+  for (const key of ["anyOf", "allOf", "oneOf", "prefixItems"])
     for (const [index, value] of ((node[key] as unknown[]) ?? []).entries())
       child(value, `${path}.${key}[${index}]`);
   return found;
@@ -262,4 +270,63 @@ describe("Claude session identity follows the canonical schema (CES-1578)", () =
     const { packet } = packets()[0]!;
     expect(sessionIdentity(packet).identity).toBe(AT_1DC80AE7.staged);
   });
+});
+
+/**
+ * CES-1578 round 2. Seat ids are free strings, so a validated roster can name seats after schema
+ * keywords. Their requests must still be sent, with every seat kept as a property name.
+ */
+describe("a roster with seats named like schema keywords (CES-1578 round 2)", () => {
+  const IDS = ["oneOf", "anyOf", "properties", "$ref", "type", "maxItems", "minItems", "p8"];
+  const base = actorConfig();
+  const config = GameConfigV2Schema.parse({
+    ...base,
+    seats: base.seats.map((seat, i) => ({ ...seat, id: IDS[i]! })),
+    maxSpendUsd: 5,
+    modelSettings: Object.fromEntries(
+      IDS.map((id) => [
+        id,
+        { provider: "anthropic", model: "claude-haiku-5-5", reasoningEffort: "medium" },
+      ]),
+    ),
+  });
+  const packetIn = (phase: "day_discussion" | "day_vote", self: string) => {
+    const state = createGameState("keyword-seats", config);
+    state.phase = phase;
+    state.day = 1;
+    return buildContextV2(
+      state,
+      [],
+      self,
+      emptyJournalV2(),
+      "keyword-seats",
+      phase === "day_vote" ? "vote" : "discussion",
+    );
+  };
+
+  it.each(IDS.slice(0, 7))(
+    "sends every request schema for seat %s, keeping every seat key",
+    (self) => {
+      for (const packet of [packetIn("day_discussion", self), packetIn("day_vote", self)]) {
+        const { jevWorkflow: _workflow, ...rules } = packet.rules;
+        for (const variant of [packet, { ...packet, rules }])
+          for (const task of tasks(variant)) {
+            let prepared;
+            try {
+              prepared = decisionRequestV32(variant, task, false, null, null);
+            } catch {
+              continue;
+            }
+            const sent = sentSchema(prepared) as Record<string, unknown>;
+            expect(violations(sent), `${self} ${task.type}`).toEqual([]);
+            const listen = (sent.properties as Record<string, { properties?: object }> | undefined)
+              ?.listen;
+            if (listen?.properties)
+              expect(Object.keys(listen.properties), `${self} ${task.type}`).toEqual(
+                expect.arrayContaining(IDS.filter((id) => id !== self)),
+              );
+          }
+      }
+    },
+  );
 });

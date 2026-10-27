@@ -102,3 +102,94 @@ describe("operator-only Claude API error detail (CES-1578)", () => {
         expect(sink).not.toContain(marker);
   });
 });
+
+/**
+ * CES-1578 round 2. Names in `properties`, `$defs`/`definitions` and `patternProperties` maps are
+ * names, not keywords: a seat called `oneOf` or `maxItems` is kept, and only real schema positions
+ * are checked or stripped.
+ */
+describe("Claude output schemas are walked structurally (CES-1578 round 2)", () => {
+  const NAMES = ["oneOf", "anyOf", "properties", "$ref", "type", "maxItems", "minItems"];
+  const score = { type: "number", minimum: 0, maximum: 1 };
+
+  it("keeps properties named like keywords and strips constraints only inside their schemas", () => {
+    const schema = {
+      type: "object",
+      properties: Object.fromEntries(NAMES.map((name) => [name, score])),
+      required: NAMES,
+      additionalProperties: false,
+    };
+    let sent = { properties: {} as Record<string, unknown> };
+    expect(() => {
+      sent = claudeJsonSchema(schema) as typeof sent;
+    }).not.toThrow();
+    expect(Object.keys(sent.properties)).toEqual(NAMES);
+    for (const name of NAMES) expect(sent.properties[name]).toEqual({ type: "number" });
+  });
+
+  it.each([
+    [
+      "a property schema",
+      { type: "object", properties: { seat: { oneOf: [{ type: "string" }] } } },
+      /\$\.properties\.seat/,
+    ],
+    ["items", { type: "array", items: { oneOf: [{ type: "string" }] } }, /\$\.items/],
+    [
+      "$defs",
+      { $defs: { act: { oneOf: [{ type: "string" }] } }, type: "object" },
+      /\$\.\$defs\.act/,
+    ],
+  ])("still refuses a real oneOf inside %s, naming its path", (_label, schema, path) => {
+    expect(() => claudeJsonSchema(schema)).toThrow(path);
+  });
+});
+
+/** CES-1578 round 2: an API message echoing request text is redacted however it was encoded. */
+describe("operator API error echo redaction (CES-1578 round 2)", () => {
+  const journal =
+    'Day 2: Briar said "I am the seer" and named Cato.\nPath C:\\games\\moon; notes {"suspect":"p3","p":0.7}';
+  const wire = JSON.stringify(journal).slice(1, -1);
+  const generic = "messages.0.content.0: unexpected value";
+
+  async function operatorMessage(message: string) {
+    const metadata: Record<string, unknown>[] = [];
+    const client = new Anthropic({
+      apiKey: "fake-anthropic-key-for-tests",
+      fetch: async () =>
+        new Response(
+          JSON.stringify({ type: "error", error: { type: "invalid_request_error", message } }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        ),
+    });
+    await new AnthropicMessagesProvider({
+      client,
+      ledger: { reserve: () => undefined, settle: () => undefined },
+    })
+      .decide({
+        kind: "decision_v3_1",
+        model: "claude-haiku-5-5",
+        schemaName: "fixture",
+        schema: z.strictObject({ ok: z.boolean() }),
+        maxOutputTokens: 100,
+        preparedPrompt: { instructions: "Fixture.", input: JSON.stringify({ journal }) },
+        onProviderMetadata: (value) => metadata.push(value),
+      })
+      .catch(() => undefined);
+    return (metadata.at(-1)?.operatorApiError as { message: string }).message;
+  }
+  /** Every 16-character window of the echo, whitespace collapsed as the message is. */
+  const windows = (text: string) => {
+    const flat = text.replace(/\s+/g, " ");
+    return Array.from({ length: flat.length - 15 }, (_, i) => flat.slice(i, i + 16));
+  };
+
+  it.each([
+    ["decoded", journal],
+    ["JSON-escaped", wire],
+  ])("redacts a %s echo with quotes, newlines, backslashes and JSON", async (_label, echo) => {
+    const message = await operatorMessage(`${generic}; got ${echo}`);
+    expect(message).toContain(generic);
+    for (const window of windows(journal)) expect(message).not.toContain(window);
+    for (const window of windows(wire)) expect(message).not.toContain(window);
+  });
+});
