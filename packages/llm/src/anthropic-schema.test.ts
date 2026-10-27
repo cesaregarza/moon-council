@@ -193,4 +193,43 @@ describe("operator API error echo redaction (CES-1578 round 2)", () => {
     for (const window of windows(journal)) expect(message).not.toContain(window);
     for (const window of windows(wire)) expect(message).not.toContain(window);
   });
+
+  it("redacts an echo the API escaped as \\u sequences, as JSON may encode non-ASCII text", async () => {
+    // JSON.stringify keeps non-ASCII characters literal, so only unescaping the message matches.
+    const accented = "Gale's café alibi: naïve résumé, déjà vu at the crème brûlée stand";
+    const metadata: Record<string, unknown>[] = [];
+    const escaped = accented.replace(
+      /[^ -~]/g,
+      (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    );
+    const client = new Anthropic({
+      apiKey: "fake-anthropic-key-for-tests",
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            type: "error",
+            error: { type: "invalid_request_error", message: `${generic}; got ${escaped}` },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        ),
+    });
+    await new AnthropicMessagesProvider({
+      client,
+      ledger: { reserve: () => undefined, settle: () => undefined },
+    })
+      .decide({
+        kind: "decision_v3_1",
+        model: "claude-haiku-5-5",
+        schemaName: "fixture",
+        schema: z.strictObject({ ok: z.boolean() }),
+        maxOutputTokens: 100,
+        preparedPrompt: { instructions: `Fixture. ${accented}`, input: "{}" },
+        onProviderMetadata: (value) => metadata.push(value),
+      })
+      .catch(() => undefined);
+    const detail = metadata.at(-1)?.operatorApiError as { message: string } | undefined;
+    expect(detail?.message).toContain(generic);
+    for (const window of windows(accented)) expect(detail?.message).not.toContain(window);
+    expect(detail?.message).not.toContain("alibi: na");
+  });
 });
