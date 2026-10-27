@@ -8,6 +8,7 @@ import type { DecisionProvider, DecisionRequest, DecisionResult } from "./provid
 import { ClaudeWarmGate } from "./claude-warm-gate";
 import {
   claudeErrorDiagnostics,
+  claudeOperatorApiError,
   retryableClaudeError,
   type ClaudeErrorDiagnostics,
 } from "./anthropic-errors";
@@ -79,13 +80,46 @@ const UNSUPPORTED_SCHEMA_KEYS = new Set([
   "minItems",
   "maxItems",
 ]);
-export function claudeJsonSchema(schema: unknown): unknown {
-  if (Array.isArray(schema)) return schema.map(claudeJsonSchema);
-  if (!schema || typeof schema !== "object") return schema;
+// Where a schema holds schemas (CES-1578 round 2). The keys of a map are names, never keywords:
+// a property or seat called `oneOf` or `maxItems` is kept as it is.
+const SCHEMA_MAPS = new Set(["properties", "$defs", "definitions", "patternProperties"]);
+const SCHEMA_VALUES = new Set([
+  "items",
+  "additionalProperties",
+  "not",
+  "if",
+  "then",
+  "else",
+  "contains",
+]);
+const SCHEMA_LISTS = new Set(["anyOf", "allOf", "oneOf", "prefixItems"]);
+
+/**
+ * The output schema as Claude takes it, walked structurally. A `oneOf` is refused, never
+ * rewritten (CES-1578): structured outputs reject it, so a schema must be built to emit `anyOf`.
+ */
+export function claudeJsonSchema(schema: unknown, path = "$"): unknown {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
+  if ("oneOf" in schema)
+    throw new Error(`Claude output schema has oneOf at ${path}; build it as an anyOf union`);
+  const child = (key: string, value: unknown): unknown => {
+    if (SCHEMA_MAPS.has(key) && value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value).map(([name, item]) => [
+          name,
+          claudeJsonSchema(item, `${path}.${key}.${name}`),
+        ]),
+      );
+    if (SCHEMA_LISTS.has(key) || (key === "items" && Array.isArray(value)))
+      return Array.isArray(value)
+        ? value.map((item, index) => claudeJsonSchema(item, `${path}.${key}[${index}]`))
+        : value;
+    return SCHEMA_VALUES.has(key) ? claudeJsonSchema(value, `${path}.${key}`) : value;
+  };
   return Object.fromEntries(
     Object.entries(schema)
       .filter(([key]) => !UNSUPPORTED_SCHEMA_KEYS.has(key))
-      .map(([key, value]) => [key, claudeJsonSchema(value)]),
+      .map(([key, value]) => [key, child(key, value)]),
   );
 }
 
@@ -309,7 +343,7 @@ export class AnthropicMessagesProvider implements DecisionProvider {
         });
       if (call.attempts > 0)
         request.onProviderMetadata?.(
-          claudeFailureMetadata(call, body.model, error, signal, reported.metadata),
+          claudeFailureMetadata(call, body, error, signal, reported.metadata),
         );
       throw claudeFailure(error, signal);
     }
@@ -402,14 +436,17 @@ function claudeSpendMetadata(call: ClaudeCall, cost: number | null) {
 /** A parse failure already reported actual spend; diagnostics must not replace it with a hold. */
 function claudeFailureMetadata(
   call: ClaudeCall,
-  model: string,
+  body: Anthropic.MessageCreateParamsNonStreaming,
   error: unknown,
   signal: AbortSignal,
   reported: Record<string, unknown> | null,
 ) {
+  const operatorApiError = claudeOperatorApiError(error, body);
   return {
-    ...(reported ?? { model, heldUsd: call.recordedUsd, attempts: call.attempts }),
+    ...(reported ?? { model: body.model, heldUsd: call.recordedUsd, attempts: call.attempts }),
     errorDiagnostics: claudeErrorDiagnostics(error, signal),
+    // Operator-only (CES-1578): stored on the attempt record, never sent to a model or an event.
+    ...(operatorApiError ? { operatorApiError } : {}),
     ...(call.transportFailures.length ? { transportFailures: call.transportFailures } : {}),
   };
 }

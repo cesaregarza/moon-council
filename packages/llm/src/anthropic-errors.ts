@@ -132,6 +132,108 @@ export function claudeErrorDiagnostics(
   };
 }
 
+const API_ERROR_TYPES = new Set([
+  ...TERMINAL_API_TYPES,
+  "not_found_error",
+  "request_too_large",
+  "rate_limit_error",
+  "api_error",
+  "overloaded_error",
+  "timeout_error",
+]);
+// Prefixed keys, auth headers, and long tokens that mix letters and digits.
+const CREDENTIAL_SHAPED =
+  /\b(?:sk|pk|rk)-[\w-]{16,}|\b(?:bearer|basic)\s+\S{8,}|\b(?=[\w+/=-]*\d)(?=[\w+/=-]*[a-z])[\w+/=-]{32,}/gi;
+const ECHO_WINDOW = 16;
+const JSON_ESCAPE = /\\(["\\/bfnrt]|u[0-9a-fA-F]{4})/g;
+const JSON_ESCAPED: Record<string, string> = { b: " ", f: " ", n: " ", r: " ", t: " " };
+
+/** Collapse whitespace and drop control characters, the same way on both sides of a comparison. */
+function normalized(text: string): string {
+  return text
+    .replace(/\s+/g, " ")
+    .split("")
+    .filter((char) => char >= " " && char !== "\x7f")
+    .join("");
+}
+/** JSON escapes in an API message, decoded (whitespace escapes become spaces). */
+function unescapedJson(text: string): string {
+  return text.replace(JSON_ESCAPE, (_escape, code: string) =>
+    code.startsWith("u")
+      ? String.fromCharCode(parseInt(code.slice(1), 16))
+      : (JSON_ESCAPED[code] ?? code),
+  );
+}
+/** Replace every stretch of at least ECHO_WINDOW characters that also occurs in the request. */
+function redactEchoes(text: string, requestText: string): string {
+  const echoed = new Array<boolean>(text.length).fill(false);
+  for (let i = 0; i + ECHO_WINDOW <= text.length; i++)
+    if (requestText.includes(text.slice(i, i + ECHO_WINDOW))) echoed.fill(true, i, i + ECHO_WINDOW);
+  let kept = "";
+  for (let i = 0; i < text.length;) {
+    if (!echoed[i]) kept += text[i++];
+    else {
+      kept += "[request text]";
+      while (echoed[i]) i++;
+    }
+  }
+  return kept;
+}
+/** Every string a request carries, decoded, plus its JSON wire form: what an API might echo. */
+function requestTexts(request: unknown): string {
+  const texts: string[] = [];
+  const visit = (value: unknown, depth = 0) => {
+    if (typeof value === "string") {
+      texts.push(value);
+      // Request layers are JSON documents carried as strings; their decoded strings count too.
+      if (depth < 4 && /^\s*[[{]/.test(value))
+        try {
+          visit(JSON.parse(value), depth + 1);
+        } catch {
+          /* not JSON: kept as text */
+        }
+      return;
+    }
+    if (Array.isArray(value)) value.forEach((item) => visit(item, depth));
+    else if (value && typeof value === "object")
+      Object.values(value).forEach((item) => visit(item, depth));
+  };
+  visit(request);
+  texts.push(JSON.stringify(request) ?? "");
+  // A separator no message keeps, so no window spans two texts.
+  return texts.map(normalized).join("\u0001");
+}
+
+/**
+ * Operator-only detail of an Anthropic API error (CES-1578): the API's own error type and message
+ * from the documented `{ type: "error", error: { type, message } }` body, so a rejected request
+ * names its cause. Credential-shaped text and any stretch of the message that echoes the request
+ * are redacted, and it is capped at 500 characters. The message is compared, normalized alike,
+ * with every decoded request string and the request's wire form, both as received and
+ * JSON-unescaped (rounds 2 and 3). It is stored only on the attempt record and
+ * never reaches a model-facing request, a repair prompt or an event: claudeErrorText and
+ * claudeErrorDiagnostics stay free of provider messages.
+ */
+export function claudeOperatorApiError(
+  error: unknown,
+  request: unknown,
+): { type: string; message: string } | null {
+  if (!(error instanceof Anthropic.APIError)) return null;
+  const body = ownValue(error, "error");
+  const detail = ownValue(body, "error");
+  const type = ownValue(detail, "type"),
+    message = ownValue(detail, "message");
+  if (ownValue(body, "type") !== "error" || typeof type !== "string" || !API_ERROR_TYPES.has(type))
+    return null;
+  if (typeof message !== "string") return { type, message: "" };
+  // Match the message both as received and JSON-unescaped (round 3): a request may hold literal
+  // backslash sequences, which a decoded echo repeats verbatim and unescaping would change.
+  const requestText = requestTexts(request);
+  const asReceived = redactEchoes(normalized(message.slice(0, 2_000)), requestText);
+  const kept = redactEchoes(normalized(unescapedJson(asReceived)), requestText);
+  return { type, message: kept.replace(CREDENTIAL_SHAPED, "[redacted]").trim().slice(0, 500) };
+}
+
 /** Unknown connection causes fail closed; HTTP retry behavior stays bounded by the same loop. */
 export function retryableClaudeError(
   error: unknown,
