@@ -175,7 +175,8 @@ describe("operator API error echo redaction (CES-1578 round 2)", () => {
         onProviderMetadata: (value) => metadata.push(value),
       })
       .catch(() => undefined);
-    return (metadata.at(-1)?.operatorApiError as { message: string }).message;
+    const detail = metadata.at(-1)?.operatorApiError as { message: string } | undefined;
+    return detail?.message ?? "";
   }
   /** Every 16-character window of the echo, whitespace collapsed as the message is. */
   const windows = (text: string) => {
