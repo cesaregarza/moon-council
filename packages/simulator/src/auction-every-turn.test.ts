@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GameConfigV2Schema,
@@ -11,7 +14,9 @@ import {
 import { DecisionStore, LabRepository, openDatabase, type DatabaseConnection } from "@werewolf/db";
 import { createGameState, reduceGame, shuffled } from "@werewolf/engine";
 import {
+  AnthropicMessagesProvider,
   AskJevProvider,
+  ClaudeSpendLedger,
   FakeDecisionProvider,
   type DecisionProvider,
   type JevRequest,
@@ -19,12 +24,19 @@ import {
 import { buildApi } from "../../../apps/api/src/app";
 import { observerEvents } from "../../../apps/api/src/observer";
 import { auditGameV2 } from "./audit-v2";
+import { ClaudeSessions } from "./claude-session";
+import { sharedSystemBlocks } from "./claude-session-request";
 import { buildContextV2, publicPayload } from "./context-v2";
 import { lynchOutcome } from "./every-turn";
 import { apartFromIds } from "./testing/replay-normalize";
 import { V2GameOrchestrator } from "./orchestrator-v2";
 import { JOURNAL_EVIDENCE_TYPES } from "./player-brief";
-import { v31ApiResponseFormat, v31SubmissionSchema, validateV31Submission } from "./request-v3-1";
+import {
+  decisionRequestV32,
+  v31ApiResponseFormat,
+  v31SubmissionSchema,
+  validateV31Submission,
+} from "./request-v3-1";
 import { publicRevision, rankSpeakerAuction, responseDockets } from "./scheduler-v2";
 import { actorConfig } from "./testing/actor-fixtures";
 
@@ -696,7 +708,7 @@ describe("auction_every_turn: records, schemas and dockets", () => {
     ).toThrow();
   });
 
-  it("does not offer accuse while an accusation is pending, and refuses one returned anyway", () => {
+  it("states a pending accusation per call and refuses accuse by validation", () => {
     const raised = event("accusation.raised", {
       accuserId: "p2",
       accuserName: "Briar",
@@ -711,11 +723,16 @@ describe("auction_every_turn: records, schemas and dockets", () => {
       "speech",
       "discussion",
     );
+    // The schema is the same either way (a session pins it); the REQUEST states the pending fact.
     const schema = v31SubmissionSchema(packet, task);
     expect(schema.safeParse({ ...submission, endAction: { kind: "continue" } }).success).toBe(true);
     const accuse = { ...submission, endAction: { kind: "accuse", targetId: "p7" } };
-    expect(schema.safeParse(accuse).success).toBe(false);
-    expect(validateV31Submission(packet, task, accuse as never).join(" ")).toMatch(/pending/);
+    expect(schema.safeParse(accuse).success).toBe(true);
+    const PENDING = "an accusation is pending; this speech must end with continue";
+    expect(decisionRequestV32(packet, task, false, null, null).prompt.input).toContain(PENDING);
+    expect(validateV31Submission(packet, task, accuse as never)).toContain(
+      "no formal accusation while another is pending",
+    );
     // Once the accusation is resolved, accuse is legal again (repeat accusations are allowed).
     const resolved = event(
       "lynch.resolved",
@@ -732,6 +749,8 @@ describe("auction_every_turn: records, schemas and dockets", () => {
       "discussion",
     );
     expect(v31SubmissionSchema(after, task).safeParse(accuse).success).toBe(true);
+    expect(decisionRequestV32(after, task, false, null, null).prompt.input).not.toContain(PENDING);
+    expect(validateV31Submission(after, task, accuse as never)).toEqual([]);
   });
 
   it("takes a lynch ballot as yes or no only; abstaining is not a ballot", () => {
@@ -1219,7 +1238,8 @@ describe("auction_every_turn: the window after a second, turn grants and repeats
       );
     expect(windowOps.length).toBeGreaterThan(0);
     const speechTask = { type: "discussion_free_speech", ready: false, revision: "1" } as const;
-    for (const op of windowOps)
+    // The schema still lists accuse; each window speech's REQUEST states the pending accusation.
+    for (const op of windowOps) {
       expect(
         v31SubmissionSchema(op.packet, speechTask).safeParse({
           text: "Hollis again.",
@@ -1227,7 +1247,11 @@ describe("auction_every_turn: the window after a second, turn grants and repeats
           memory: { journalUpdate: null, decisionBrief: null },
           endAction: { kind: "accuse", targetId: "p6" },
         }).success,
-      ).toBe(false);
+      ).toBe(true);
+      expect(decisionRequestV32(op.packet, speechTask, false, null, null).prompt.input).toContain(
+        "an accusation is pending; this speech must end with continue",
+      );
+    }
   }, 180_000);
 
   it("pauses, fail-closed, when a window speech returns accuse anyway", async () => {
@@ -1242,6 +1266,13 @@ describe("auction_every_turn: the window after a second, turn grants and repeats
     expect(repository.getGame(id)!.status).toBe("paused");
     expect(repository.getGame(id)!.error).toMatch(/exhausted decision retries/);
     expect(ofType(events, "lynch.ballot_cast")).toEqual([]);
+    // Each refused attempt names the rule, which the repair turn repeats to the model.
+    const refused = new DecisionStore(repository)
+      .attempts(id)
+      .filter((attempt) => attempt.status === "invalid");
+    expect(refused.length).toBeGreaterThan(0);
+    for (const attempt of refused)
+      expect(attempt.error).toContain("no formal accusation while another is pending");
   }, 180_000);
 
   it("allows the same target to be accused again the same day after a failed vote", async () => {
@@ -1497,4 +1528,292 @@ describe("auction_every_turn: plain speech, no social bookkeeping (part 3)", () 
       expect(speech.payload.endAction).toBeDefined();
     }
   }, 300_000);
+});
+
+describe("auction_every_turn: Claude sessions carry plain speech only (part 3, round 2)", () => {
+  /** Docket, act and closing labels, matched case-insensitively with whitespace normalised. */
+  const LABELS =
+    /response docket|responsedocket|respondsto|\bacts\b|closing response|closing_response|response rights|unanswered|frozen docket/;
+  const normalised = (text: string) => text.toLowerCase().replace(/\s+/g, " ");
+  const PENDING = "an accusation is pending; this speech must end with continue";
+  type Body = { system?: { text: string }[]; messages: unknown[]; output_config?: unknown };
+  const usage = {
+    inputTokens: 1_000,
+    outputTokens: 80,
+    totalTokens: 1_080,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    reasoningTokens: null,
+  };
+
+  /**
+   * A new-mode game of Claude seats on the session harness: the real Anthropic provider with a
+   * mocked transport, so the bodies recorded are exactly what would be sent. `endAction` picks
+   * each speech's ending from the turn sent and the speaker; `older` seeds Arden (p1) with a
+   * day-1 session opened by older code, whose instructions asked for acts.
+   */
+  async function sessionGame(
+    seed: string,
+    endAction: (turn: string, self: string) => EndAction,
+    options: { older?: boolean } = {},
+  ) {
+    const connection = openDatabase(":memory:");
+    connections.push(connection);
+    const repository = new LabRepository(connection);
+    const base = everyTurnConfig(seed);
+    const config = GameConfigV2Schema.parse({
+      ...base,
+      protocolVersion: "agent_claude_session_v1",
+      maxSpendUsd: 5,
+      safety: { ...base.safety, maxCycles: 2 },
+      modelSettings: Object.fromEntries(
+        base.seats.map((seat) => [
+          seat.id,
+          { model: "claude-haiku-5-5", provider: "anthropic", reasoningEffort: "medium" },
+        ]),
+      ),
+    });
+    const game = repository.createGame(config);
+    const store = new DecisionStore(repository);
+    if (options.older) {
+      const opening = createGameState(game.id, config);
+      opening.phase = "day_discussion";
+      opening.day = 1;
+      new ClaudeSessions(store)
+        .begin({
+          gameId: game.id,
+          playerId: "p1",
+          packet: buildContextV2(opening, [], "p1", emptyJournalV2(), "older", "discussion"),
+          model: "claude-haiku-5-5",
+          effort: "medium",
+          kind: "discussion_free_speech",
+          instructions: "OLDER INSTRUCTIONS: put text/acts/respondsTo in speech.",
+          formatInstructions: "OLDER FORMAT",
+          requestInput: "{}",
+        })
+        .commit({
+          content: [
+            {
+              type: "text",
+              text: '{"task":"discussion_free_speech","speech":{"text":"x","acts":[],"respondsTo":[]}}',
+              citations: null,
+            },
+          ],
+          stopReason: "end_turn",
+          usage,
+        });
+    }
+    const bodies: Body[] = [];
+    const reply = (body: Body) => {
+      const turn = JSON.stringify(body.messages.at(-1));
+      if (turn.includes("journal_update"))
+        return {
+          task: "journal_update",
+          memory: {
+            journalUpdate: { mode: "append", text: "Listening for new evidence." },
+            decisionBrief: {
+              action: "Weigh the claims before voting.",
+              attention: "Hear the quiet seats.",
+            },
+          },
+          speech: null,
+          rationale: "Reflect.",
+        };
+      const first = body.messages[0] as { content: { text: string }[] };
+      const self = String(JSON.parse(first.content[0]!.text).DAY_START.self.id);
+      return {
+        task: "discussion_free_speech",
+        memory: { journalUpdate: null, decisionBrief: null },
+        speech: { text: "I want to hear more before we vote.", endAction: endAction(turn, self) },
+        rationale: "Speak.",
+      };
+    };
+    const directory = mkdtempSync(join(tmpdir(), "every-turn-session-"));
+    const claude = new AnthropicMessagesProvider({
+      ledger: new ClaudeSpendLedger(join(directory, "spend.json"), 200),
+      client: {
+        messages: {
+          stream(body) {
+            const sent = structuredClone(body) as Body;
+            bodies.push(sent);
+            const text = JSON.stringify(reply(sent));
+            return {
+              on: () => undefined,
+              abort: () => undefined,
+              finalMessage: async () =>
+                ({
+                  id: `msg_${bodies.length}`,
+                  type: "message",
+                  role: "assistant",
+                  model: "claude-haiku-5-5",
+                  content: [
+                    { type: "thinking", thinking: "", signature: `sig-${bodies.length}` },
+                    { type: "text", text, citations: null },
+                  ],
+                  stop_reason: "end_turn",
+                  stop_sequence: null,
+                  stop_details: null,
+                  usage: { input_tokens: 1_000, output_tokens: 80 },
+                }) as never,
+            };
+          },
+        },
+      },
+    });
+    // Everyone seconds and votes no; from the fifth auction everyone declines, ending the day.
+    let bids = 0;
+    const { jev, inputs } = scriptedJev({
+      urge: (seat, input) =>
+        Math.floor(bids++ / 8) >= 4 ? 0 : freshSpeakersFirst.urge(seat, input),
+      listen: () => 3,
+      second: () => "yes",
+      ballot: () => "no",
+    });
+    new V2GameOrchestrator(repository, new FakeDecisionProvider()).initialize(game.id);
+    const runner = new V2GameOrchestrator(repository, claude, jev);
+    repository.updateGame(game.id, { status: "running" });
+    const dayTwo = () =>
+      repository
+        .listEvents(game.id)
+        .some(
+          (e) => e.type === "phase.changed" && e.payload.to === "day_discussion" && e.day === 2,
+        );
+    const run = async () => {
+      for (let step = 0; step < 400 && !dayTwo(); step += 1) {
+        if (repository.getGame(game.id)!.status !== "running") break;
+        await runner.runGameStep(game.id);
+      }
+    };
+    return { repository, store, game, config, bodies, inputs, run, directory };
+  }
+
+  /** The first eligible speech accuses Hollis (p8), or Gale (p7) when Hollis speaks. */
+  const accuseOnce = () => {
+    let accused = false;
+    return (turn: string, self: string): EndAction => {
+      if (accused || turn.includes(PENDING)) return { kind: "continue" };
+      accused = true;
+      return { kind: "accuse", targetId: self === "p8" ? "p7" : "p8" };
+    };
+  };
+
+  it("renews an older session, sends every new-mode request without labels, and keeps block 1 constant", async () => {
+    const play = await sessionGame("session-plain", accuseOnce(), { older: true });
+    try {
+      await play.run();
+      const events = play.repository.listEvents(play.game.id);
+      expect(play.repository.getGame(play.game.id)!.error ?? "", "no pause").toBe("");
+      expect(ofType(events, "lynch.resolved"), "an accusation reached its ballot").toHaveLength(1);
+      expect(ofType(events, "discussion.ended"), "the day ended").toHaveLength(1);
+      const speechBodies = play.bodies.filter(
+        (body) => !JSON.stringify(body.messages.at(-1)).includes("journal_update"),
+      );
+      expect(speechBodies.length).toBeGreaterThan(0);
+      expect(speechBodies.length).toBeLessThan(play.bodies.length);
+      // The older session was renewed: no request carries its instructions or its history.
+      for (const body of play.bodies) expect(JSON.stringify(body)).not.toContain("OLDER");
+      for (const body of play.bodies)
+        expect(normalised(JSON.stringify(body)).match(LABELS)?.[0]).toBeUndefined();
+      for (const call of play.inputs)
+        expect(normalised(call.input).match(LABELS)?.[0], call.seat).toBeUndefined();
+      // The pending accusation is a per-call fact: window speeches' REQUESTs state it.
+      const seconded = ofType(events, "accusation.seconded")[0]!;
+      expect(
+        speechBodies.some((body) => JSON.stringify(body.messages.at(-1)).includes(PENDING)),
+      ).toBe(true);
+      // The schema always offers accuse and block 1 never changes, so no session renews
+      // around the accusation: only Arden renewed, once, for the instruction change.
+      expect(new Set(play.bodies.map((body) => JSON.stringify(body.output_config))).size).toBe(1);
+      expect(new Set(play.bodies.map((body) => body.system![0]!.text)).size).toBe(1);
+      expect(play.store.get(play.game.id, "claude-session:p1:d1:s2")).toBeDefined();
+      expect(play.store.get(play.game.id, "claude-session:p1:d1:s3")).toBeUndefined();
+      for (const seat of living(play.config).filter((id) => id !== "p1"))
+        expect(play.store.get(play.game.id, `claude-session:${seat}:d1:s2`), seat).toBeUndefined();
+      expect(seconded).toBeDefined();
+    } finally {
+      rmSync(play.directory, { recursive: true, force: true });
+    }
+  }, 300_000);
+
+  it("refuses accuse in the window on every call, before any write, and again after a resume", async () => {
+    // After the first accusation, every speech accuses again: each attempt is refused by
+    // validation, the retries run out, and the game pauses without writing anything for it.
+    let raised = false;
+    const play = await sessionGame("session-refuse", (turn, self) => {
+      if (raised && !turn.includes(PENDING)) return { kind: "continue" };
+      raised = true;
+      return { kind: "accuse", targetId: self === "p8" ? "p7" : "p8" };
+    });
+    try {
+      await play.run();
+      const refusedAttempts = () =>
+        play.store
+          .attempts(play.game.id)
+          .filter((attempt) =>
+            attempt.error?.includes("no formal accusation while another is pending"),
+          );
+      const check = () => {
+        const events = play.repository.listEvents(play.game.id);
+        const seconded = ofType(events, "accusation.seconded")[0]!;
+        expect(seconded, "seconded").toBeDefined();
+        expect(play.repository.getGame(play.game.id)!.status).toBe("paused");
+        expect(play.repository.getGame(play.game.id)!.error).toMatch(/exhausted decision retries/);
+        // Nothing is written for a refused accusation: no speech after the second, one raise.
+        expect(ofType(events, "accusation.raised")).toHaveLength(1);
+        expect(
+          events.filter((e) => e.type === "speech.public" && e.sequence > seconded.sequence),
+        ).toEqual([]);
+        // Every refused attempt was sent, counted, and stated the pending fact in its REQUEST.
+        const pendingBodies = play.bodies.filter((body) =>
+          JSON.stringify(body.messages.at(-1)).includes(PENDING),
+        );
+        expect(refusedAttempts().length).toBeGreaterThan(0);
+        expect(pendingBodies.length).toBe(refusedAttempts().length);
+        return refusedAttempts().length;
+      };
+      const firstPause = check();
+      // The retry budget holds: at most the episode's attempt cap per decision.
+      const cap =
+        play.config.deliberation.mode === "single"
+          ? Math.min(2, play.config.deliberation.maxCalls + 1)
+          : play.config.deliberation.maxCalls;
+      const perDecision = new Map<string, number>();
+      for (const attempt of refusedAttempts())
+        perDecision.set(attempt.decisionId, (perDecision.get(attempt.decisionId) ?? 0) + 1);
+      expect(Math.max(...perDecision.values())).toBeLessThanOrEqual(cap);
+      // An operator resume continues the same session mid-window and refuses again.
+      play.repository.updateGame(play.game.id, { status: "running", error: null });
+      await play.run();
+      expect(check()).toBeGreaterThan(firstPause);
+    } finally {
+      rmSync(play.directory, { recursive: true, force: true });
+    }
+  }, 300_000);
+});
+
+describe("staged instructions stay byte-identical (part 3, round 2)", () => {
+  /**
+   * sha256 of a staged journal_v4 seat's instructions and response-format text, and of a staged
+   * Claude session's block 1, recorded at main 19017ee8 before the plain-speech change.
+   */
+  const RECORDED = {
+    instructions: "03035d28c2e7672218cdf56319a41f30f9e2aa5a655491d67c67033756d8ff9d",
+    format: "32c0ce4f0f41029f00cf6b34faac71691b09256b49bfec8e3d628aa41b2a67ae",
+    sessionBlock: "bd02c1325fd1389b8bddd25b6c51fd16019c1902ce8ffc4a3aad96308168733e",
+  };
+  it("renders the staged instructions exactly as before", () => {
+    const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+    const state = createGameState("g", actorConfig());
+    state.phase = "day_discussion";
+    state.day = 1;
+    const packet = buildContextV2(state, [], "p1", emptyJournalV2(), "speech", "discussion");
+    const task = { type: "discussion_free_speech", ready: true, revision: "1" } as const;
+    const instructions = decisionRequestV32(packet, task, false, null, null).prompt.instructions;
+    const format = v31ApiResponseFormat(packet, task)!.instructions;
+    expect({
+      instructions: sha(instructions),
+      format: sha(format),
+      sessionBlock: sha(sharedSystemBlocks(packet, instructions, format)[0]),
+    }).toEqual(RECORDED);
+  });
 });
