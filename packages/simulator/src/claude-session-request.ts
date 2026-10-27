@@ -9,6 +9,8 @@ export type ClaudeReplyContent = NonNullable<DecisionResult<unknown>["content"]>
 
 /** Explains the session shape; part of system block 1, so identical for every seat and call. */
 export const SESSION_INSTRUCTIONS = `CONVERSATION FORMAT (Claude session): the second system block is the public record before today. Your first message holds your private state at the start of this day: journal, previous decision brief and private evidence. Each later message lists NEW_RECORDS you are authorized to see since your previous message, oldest first, then NOW (the current public game state with every player, the response docket and any legal choices) and the REQUEST to answer. Your earlier replies in this conversation are your own previous answers; treat them as history. Answer only the current REQUEST, in the response envelope.`;
+/** The auction-every-turn mode's session format: it keeps no response docket (CES-1575). */
+export const PLAIN_SPEECH_SESSION_INSTRUCTIONS = `CONVERSATION FORMAT (Claude session): the second system block is the public record before today. Your first message holds your private state at the start of this day: journal, previous decision brief and private evidence. Each later message lists NEW_RECORDS you are authorized to see since your previous message, oldest first, then NOW (the current public game state with every player and any legal choices) and the REQUEST to answer. Your earlier replies in this conversation are your own previous answers; treat them as history. Answer only the current REQUEST, in the response envelope.`;
 
 /**
  * Records the packet carries, in event order, without the synthetic `facts:*` entries. The
@@ -43,7 +45,13 @@ export function sharedSystemBlocks(
     (source) => source.scope === "public" && source.day < packet.day,
   );
   return [
-    [instructions, formatInstructions, SESSION_INSTRUCTIONS].join("\n\n"),
+    [
+      instructions,
+      formatInstructions,
+      packet.rules.discussionMode === "auction_every_turn"
+        ? PLAIN_SPEECH_SESSION_INSTRUCTIONS
+        : SESSION_INSTRUCTIONS,
+    ].join("\n\n"),
     JSON.stringify({ PUBLIC_RECORD_BEFORE_DAY: packet.day, records: render(packet, prior) }),
   ];
 }

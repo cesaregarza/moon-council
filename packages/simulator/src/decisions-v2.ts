@@ -350,6 +350,9 @@ export class DecisionExecutorV2 {
       instructions: call.prompt.instructions,
       formatInstructions: call.apiResponseFormat?.instructions ?? "",
       requestInput: call.prompt.input,
+      ...(call.apiResponseFormat
+        ? { responseSchema: JSON.stringify(providerJsonSchema(call.apiResponseFormat.schema)) }
+        : {}),
     });
     // Audits must see the effort that actually ran, not the one the call asked for.
     call.attempt.reasoningEffort = turn.effort;

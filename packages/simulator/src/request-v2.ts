@@ -213,6 +213,8 @@ export function stableGameReference(packet: PlayerContextV2): Record<string, unk
     factionObjective: _factionObjective,
     speakerSelection: _speakerSelection,
     journalRevision: _journalRevision,
+    // A per-call fact (CES-1575): the stable reference must not change when it does.
+    accusationPending: _accusationPending,
     ...publishedRules
   } = packet.rules;
   const roleCatalog = Array.isArray(roles) ? (roles as PublishedRole[]).map(compactRole) : [];
