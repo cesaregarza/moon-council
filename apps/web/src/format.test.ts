@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCompactCount } from "./format";
+import { formatCompactCount, speechActLabel } from "./format";
 
 describe("formatCompactCount", () => {
   it("uses readable K, M, B, and T suffixes", () => {
@@ -13,17 +13,11 @@ describe("formatCompactCount", () => {
 });
 
 describe("speechActLabel", () => {
-  it("labels an old game's speech acts, and nothing for a plain new-mode speech", async () => {
-    // Looked up dynamically so this test runs, and fails on its assertion, before the helper exists.
-    const format = (await import("./format")) as Record<string, unknown>;
-    const label = format.speechActLabel as
-      | ((payload: Record<string, unknown>, nameOf: (id: string) => string) => string | null)
-      | undefined;
-    expect(typeof label).toBe("function");
+  it("labels an old game's speech acts, and nothing for a plain new-mode speech", () => {
     const nameOf = (id: string) => (id === "p8" ? "Hollis" : id);
     // Exactly what the observer showed for a recorded staged speech.
     expect(
-      label!(
+      speechActLabel(
         {
           text: "I claim seer, and Hollis is lying.",
           acts: [
@@ -34,6 +28,8 @@ describe("speechActLabel", () => {
         nameOf,
       ),
     ).toBe("role claim  · accusation Hollis · Claims are unverified");
-    expect(label!({ text: "Plain speech.", endAction: { kind: "continue" } }, nameOf)).toBeNull();
+    expect(
+      speechActLabel({ text: "Plain speech.", endAction: { kind: "continue" } }, nameOf),
+    ).toBeNull();
   });
 });
