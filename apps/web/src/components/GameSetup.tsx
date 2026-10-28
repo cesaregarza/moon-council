@@ -2,7 +2,12 @@ import { MIN_ACTOR_JOURNAL_TOKENS, clonedAttentionExperiment } from "@werewolf/c
 import { PersonalityInput } from "./PersonalityInput";
 import { useMemo, useState } from "react";
 import { seatName } from "@werewolf/contracts";
-import type { CreateGameV2Request, RoleDefinitionV1, StoredGameConfig } from "@werewolf/contracts";
+import type {
+  CreateGameV2Request,
+  PersonalityProfile,
+  RoleDefinitionV1,
+  StoredGameConfig,
+} from "@werewolf/contracts";
 import { api } from "../api";
 
 interface Props {
@@ -76,9 +81,14 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
       (initialConfig?.seats ?? []).map((seat, index) => [index, seat.model ?? ""]),
     ),
   );
-  const [personalities, setPersonalities] = useState<Record<number, string>>(() =>
+  const [personalities, setPersonalities] = useState<
+    Record<number, PersonalityProfile | undefined>
+  >(() =>
     Object.fromEntries(
-      (initialConfig?.seats ?? []).map((seat, index) => [index, seat.personality]),
+      (initialConfig?.seats ?? []).map((seat, index) => [
+        index,
+        typeof seat.personality === "object" ? seat.personality : undefined,
+      ]),
     ),
   );
   const [roleIds, setRoleIds] = useState(
@@ -149,7 +159,7 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
       Array.from({ length: seatCount }, (_, index) => ({
         id: `player-${index + 1}`,
         name: seatName(index),
-        personality: personalities[index] ?? "Observant, concise, and socially strategic.",
+        ...(personalities[index] ? { personality: personalities[index] } : {}),
         ...(models[index] ? { model: models[index] } : {}),
       })),
     [models, personalities, seatCount],

@@ -263,7 +263,8 @@ export function buildContextV2(
     schemaVersion: "player_context_v2",
     phase: state.phase,
     day: state.day,
-    self: { id: self.id, name: self.name, personality: self.personality, role: self.role },
+    self: { id: self.id, name: self.name, role: self.role },
+    ...(typeof self.personality === "object" ? { personality: self.personality } : {}),
     players: shuffled(
       state.players.map((p) => ({
         id: p.id,

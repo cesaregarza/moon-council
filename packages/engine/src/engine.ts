@@ -3,6 +3,7 @@ import type {
   GameEventV1,
   GamePhase,
   NightActionDecisionSchema,
+  PersonalityProfile,
   PrivateJournalV1,
   RoleActionV1,
   RoleDefinitionV1,
@@ -17,7 +18,8 @@ export type NightActionDecisionV1 = z.infer<typeof NightActionDecisionSchema>;
 export interface EnginePlayer {
   id: string;
   name: string;
-  personality: string;
+  /** V1 seats: free text. V2 seats: a frozen personality profile, or none (CES-1585). */
+  personality?: string | PersonalityProfile;
   model?: string;
   role: RoleDefinitionV1;
   alive: boolean;

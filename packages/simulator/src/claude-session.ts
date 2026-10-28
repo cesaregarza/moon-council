@@ -4,6 +4,7 @@ import type { DecisionStore } from "@werewolf/db";
 import {
   dayStartBlock,
   orderedSources,
+  sessionSystemBlocks,
   sharedPrefixKey,
   sharedSystemBlocks,
   turnText,
@@ -29,7 +30,8 @@ export interface ClaudeSessionRecord {
   model: string;
   /** Pinned for the whole session: a changed effort invalidates the messages cache. */
   effort: string;
-  systemBlocks: [string, string];
+  /** Block 1, the seat's personality block when it has one (CES-1585), then block 2. */
+  systemBlocks: string[];
   dayStart: string;
   openCursor: number;
   turnCursor: number;
@@ -93,7 +95,7 @@ const SessionRecordSchema = z.strictObject({
   ordinal: z.number().int().positive(),
   model: z.string(),
   effort: z.string(),
-  systemBlocks: z.tuple([z.string(), z.string()]),
+  systemBlocks: z.array(z.string()).min(2).max(3),
   dayStart: z.string(),
   openCursor: z.number().int(),
   turnCursor: z.number().int(),
@@ -107,11 +109,18 @@ const SessionRecordSchema = z.strictObject({
   instructionIdentity: z.string().optional(),
 });
 
-/** A session's instruction identity: its block 1 and the response schema it answers in. */
-function instructionIdentity(call: SessionCall): string {
+/**
+ * A session's instruction identity: its block 1, the response schema it answers in, and the
+ * seat's personality hash when it has one (CES-1585), so it is stable within a game and on
+ * resume, and a changed personality renews the session.
+ */
+export function sessionInstructionIdentity(call: SessionCall): string {
   const block = sharedSystemBlocks(call.packet, call.instructions, call.formatInstructions)[0];
+  const personality = call.packet.personality?.textSha256;
   return createHash("sha256")
-    .update(JSON.stringify([block, call.responseSchema ?? ""]))
+    .update(
+      JSON.stringify([block, call.responseSchema ?? "", ...(personality ? [personality] : [])]),
+    )
     .digest("hex");
 }
 /**
@@ -122,7 +131,7 @@ function instructionIdentity(call: SessionCall): string {
  */
 function instructionsChanged(record: ClaudeSessionRecord, call: SessionCall): boolean {
   if (record.instructionIdentity !== undefined)
-    return record.instructionIdentity !== instructionIdentity(call);
+    return record.instructionIdentity !== sessionInstructionIdentity(call);
   return (
     record.systemBlocks[0] !==
     sharedSystemBlocks(call.packet, call.instructions, call.formatInstructions)[0]
@@ -237,7 +246,7 @@ export class ClaudeSessions {
       ordinal,
       model: call.model,
       effort: call.effort,
-      systemBlocks: sharedSystemBlocks(call.packet, call.instructions, call.formatInstructions),
+      systemBlocks: sessionSystemBlocks(call.packet, call.instructions, call.formatInstructions),
       dayStart: dayStartBlock(call.packet, openCursor),
       openCursor,
       turnCursor: -1,
@@ -245,7 +254,7 @@ export class ClaudeSessions {
       lastPromptTokens: null,
       lastTotalTokens: 0,
       closed: false,
-      instructionIdentity: instructionIdentity(call),
+      instructionIdentity: sessionInstructionIdentity(call),
     };
     this.save(call.gameId, record);
     return record;
@@ -268,9 +277,12 @@ export class ClaudeSessions {
       ...(cached ? { cache_control: FIVE_MINUTES } : {}),
     });
     return {
-      system: [text(record.systemBlocks[0], true), text(record.systemBlocks[1], true)],
+      // Breakpoints, at most four (Anthropic's limit): the end of each system block (block 1,
+      // the personality, block 2) and the automatic one at the end of the request. DAY_START
+      // carries none; the automatic breakpoint covers it from the first turn on.
+      system: record.systemBlocks.map((block) => text(block, true)),
       messages: [
-        { role: "user", content: [text(record.dayStart, true)] },
+        { role: "user", content: [text(record.dayStart)] },
         ...record.turns.flatMap((turn) => [
           { role: "user" as const, content: [text(turn.user)] },
           { role: "assistant" as const, content: turn.assistant },
@@ -282,7 +294,16 @@ export class ClaudeSessions {
         ? { replayedTokens: record.lastTotalTokens }
         : {}),
       ...(record.turns.length === 0
-        ? { warmGateKey: sharedPrefixKey(record.model, record.systemBlocks) }
+        ? {
+            // Only blocks every seat shares can be warmed for the others: with a personality
+            // block, that is block 1 alone.
+            warmGateKey: sharedPrefixKey(
+              record.model,
+              record.systemBlocks.length === 3
+                ? record.systemBlocks.slice(0, 1)
+                : record.systemBlocks,
+            ),
+          }
         : {}),
     };
   }

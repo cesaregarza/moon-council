@@ -255,7 +255,7 @@ export function stableDecisionContext(
       self: {
         id: packet.self.id,
         name: packet.self.name,
-        personality: packet.self.personality,
+        personality: packet.personality?.text,
         roleRef: {
           id: packet.self.role.id,
           version: packet.self.role.version,

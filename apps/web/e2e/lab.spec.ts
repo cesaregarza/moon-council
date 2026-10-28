@@ -38,7 +38,6 @@ const config = {
   seats: players.map((player) => ({
     id: player.id,
     name: player.name,
-    personality: "Fixture",
     model: "gpt-5.6-luna",
   })),
   roleDeck: [roles[1], roles[1], roles[2], roles[3], roles[0], roles[0], roles[0], roles[0]],
@@ -429,7 +428,10 @@ test("creates the standard V3.1 setup with editable deliberation, concurrency, a
     preset: "standard-8-v2",
     seats: [
       expect.objectContaining({
-        personality: expect.stringContaining("persistent, highly talkative rambler"),
+        personality: expect.objectContaining({
+          id: "rambler",
+          text: expect.stringContaining("persistent, highly talkative rambler"),
+        }),
       }),
       ...Array.from({ length: 7 }, () => expect.anything()),
     ],

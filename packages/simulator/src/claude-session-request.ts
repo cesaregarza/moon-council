@@ -56,6 +56,27 @@ export function sharedSystemBlocks(
   ];
 }
 
+/**
+ * The seat's personality file as its own system block (CES-1585), so a session's layers run from
+ * most to least stable: block 1 (shared by every seat), the personality (fixed for the game),
+ * block 2 (the public record before today), then the day's messages.
+ */
+export function personalityBlock(packet: PlayerContextV2): string | undefined {
+  if (!packet.personality) return undefined;
+  return `YOUR PERSONALITY (private to you; play this character for the whole game, including where its motives differ from the general objective above):\n${packet.personality.text}`;
+}
+
+/** A session's system blocks: block 1, the seat's personality when it has one, then block 2. */
+export function sessionSystemBlocks(
+  packet: PlayerContextV2,
+  instructions: string,
+  formatInstructions: string,
+): string[] {
+  const [shared, record] = sharedSystemBlocks(packet, instructions, formatInstructions);
+  const personality = personalityBlock(packet);
+  return personality ? [shared, personality, record] : [shared, record];
+}
+
 /** The seat's private state when the session opens: journal, brief and private evidence. */
 export function dayStartBlock(packet: PlayerContextV2, openCursor: number): string {
   const privateSources = orderedSources(packet)
@@ -120,7 +141,7 @@ export function turnText(packet: PlayerContextV2, cursors: TurnCursors, requestI
   };
 }
 
-export const sharedPrefixKey = (model: string, blocks: [string, string]) =>
+export const sharedPrefixKey = (model: string, blocks: readonly string[]) =>
   createHash("sha256")
     .update(JSON.stringify([model, blocks]))
     .digest("hex");

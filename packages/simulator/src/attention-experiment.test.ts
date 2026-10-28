@@ -53,7 +53,7 @@ describe("personality and urgency experiments", () => {
     expect(first.players.map((p) => p.role)).toEqual(second.players.map((p) => p.role));
     expect(
       treatment.seats
-        .filter((seat) => seat.personality !== PERSONALITY_PRESETS.rational.text)
+        .filter((seat) => seat.personality?.id !== PERSONALITY_PRESETS.rational.id)
         .map((seat) => seat.id),
     ).toEqual([targetId]);
     expect(second.players.find((p) => p.id === targetId)!.role.id).toBe("villager");
@@ -63,8 +63,8 @@ describe("personality and urgency experiments", () => {
     expect(JSON.stringify(packet)).not.toContain(PERSONALITY_PRESETS.rambler.text);
     expect(JSON.stringify(packet)).not.toContain("forcedUrgency");
     expect(
-      buildContextV2(second, [], targetId, emptyJournalV2(), "reflection", "pass").self.personality,
-    ).toBe(PERSONALITY_PRESETS.rambler.text);
+      buildContextV2(second, [], targetId, emptyJournalV2(), "reflection", "pass").personality,
+    ).toEqual(PERSONALITY_PRESETS.rambler);
   });
 
   it("remaps forced settings to cloned seats and drops removed seats", () => {

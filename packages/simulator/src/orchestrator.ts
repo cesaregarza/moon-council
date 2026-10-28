@@ -311,7 +311,7 @@ export class GameOrchestrator {
         kind,
         playerId,
         model,
-        personality: player.personality,
+        personality: typeof player.personality === "string" ? player.personality : undefined,
         view,
         schemaName,
         schema,

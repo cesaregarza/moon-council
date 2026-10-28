@@ -1,4 +1,5 @@
 import {
+  personalityDigest,
   providerJsonSchema,
   type DecisionOpportunityV1,
   type GameConfigV2,
@@ -80,10 +81,19 @@ export function actorBriefing(op: Opportunity) {
     .join("\n");
   const rules =
     task === "vote_choice"
-      ? `Your ballot has weight ${packet.self.role.passives.voteWeight}. Highest nonzero tally eliminates; ties eliminate nobody. Ballots remain sealed until resolution. Decide which available action best serves your win condition.`
+      ? `Your ballot has weight ${packet.self.role.passives.voteWeight}. Highest nonzero tally eliminates; ties eliminate nobody. Ballots remain sealed until resolution. Decide which available action best serves ${packet.personality ? "your character's motivations and your win condition, as weighed above" : "your win condition"}.`
       : rendered.task.rules;
   return {
     perspective: `You are ${packet.self.name} (${packet.self.id}), ${packet.self.role.name}, alignment ${packet.self.role.alignment}. Your win condition: ${JSON.stringify(packet.self.role.winCondition)}. Decide for yourself with your authorized private knowledge; public proof is not required.`,
+    // CES-1585: the seat's character, as numbers. Its motivations are its own; no framing in
+    // the questions below may replace them with a universal "help your team win".
+    ...(packet.personality
+      ? {
+          personality: personalityDigest(packet.personality),
+          personalityNote:
+            "This is your character. Weigh its motivations (team, survival, attention, chaos) as given, even where they conflict with your win condition.",
+        }
+      : {}),
     currentReasoning: scheduling ? brief.attention : brief.action,
     verifiedFacts: rendered.facts,
     ...(scheduling && packet.publicFloor ? { floorToday: floorToday(packet) } : {}),
@@ -226,7 +236,7 @@ export function prepareActorJevAction(
   } else if (Object.keys(choices).length >= 2) {
     questions.target = {
       type: "choice",
-      instructions: `${perspective} Select the available action that best advances your objective now, using current reasoning and verified facts. ${op.taskType === "team_point_choice" ? "Use allies' latest points to reach agreement; initial points may be simultaneous." : ""}`,
+      instructions: `${perspective} Select the available action that best ${op.packet.personality ? "fits your character's motivations and objective, as weighed in the state," : "advances your objective"} now, using current reasoning and verified facts. ${op.taskType === "team_point_choice" ? "Use allies' latest points to reach agreement; initial points may be simultaneous." : ""}`,
       criteria: choices,
     };
   } else if (Object.keys(choices).length === 1) {

@@ -35,7 +35,7 @@ describe("HTTP control surface", () => {
         name: "API game",
         deliberation: { maxContextTokens: 8000 },
         seed: "api-seed",
-        seats: ids.map((_, index) => ({ id: `p${index}`, name: `P${index}`, personality: "Test" })),
+        seats: ids.map((_, index) => ({ id: `p${index}`, name: `P${index}` })),
         roleRefs: ids.map((id) => ({ id })),
         revealRolesOnDeath: true,
         moderatorNarration: false,

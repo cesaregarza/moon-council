@@ -128,9 +128,10 @@ pairing. The game protocol is unchanged: the same call kinds, a reflection after
 the same auction.
 
 - Two system blocks are shared by every seat: the instructions with the frozen reference and the
-  response envelope, then the public record before today. The seat's first message holds its
-  journal, brief and private evidence at day start. Each later call appends one turn: the records
-  the seat is authorized to see since its last turn, then NOW and the request.
+  response envelope, then the public record before today. A seat with a personality has its
+  personality block between them (see Personalities). The seat's first message holds its journal,
+  brief and private evidence at day start. Each later call appends one turn: the records the seat is
+  authorized to see since its last turn, then NOW and the request.
 - History is append-only. Earlier turns and replies, thinking blocks included, are replayed
   byte-for-byte; thinking, effort and the response schema stay the same for the whole session.
 - A new session starts at each day, after a journal compaction, or before the prompt would pass
@@ -148,6 +149,32 @@ the same auction.
 npm run pilot -- --provider anthropic --model claude-haiku-5-5 --decision-engine jev \
   --protocol agent_claude_session_v1 --max-spend-usd 2
 ```
+
+#### Personalities
+
+A V2 seat's `personality` is a frozen profile (CES-1585), not free text. A profile has eight traits
+(0 to 1: deception, independence, conflict, risk, infoSeeking, selfPreservation, revisability,
+engagement), four motivation weights summing to 1 (team, survival, attention, chaos), the text the
+model reads (40 to 200 words), its source, and `textSha256`. A seat without one has no personality.
+
+- **Presets:** `PERSONALITY_PRESETS` holds The Liar, The Maverick, The Sacrificial Lamb, The
+  Disruptor, The Careful Reasoner, Evidence-focused and Persistent rambler. They are not sanitized.
+- **Assignment:** `personalities.assignment` is `{ kind: "explicit" }` (each seat names its profile)
+  or `{ kind: "seeded", seed, pool }`: each seat draws independently, with replacement, from the
+  pool by seed and seat ID, and the config's seats must equal that draw. Either way the config holds
+  every seat's exact profile, so resume and replay use the stored one.
+- **Delivery:** a Claude session sends block 1 (shared by every seat), then the seat's personality
+  block, then block 2 (the public record), then the day's messages. Its breakpoints are the end of
+  each system block and the automatic one at the end of the request: four at most. Other request
+  paths carry the text in the seat's private state. Jev's actor state gets a fixed digest, the label
+  and all twelve values, and is told to weigh the motivations as given. The session identity
+  includes the personality hash.
+- **Generation**, offline only:
+  `scripts/personality-generate.ts --seed-prefix S --count N --out FILE` writes a pool. A seed gives
+  the values; a generator writes the text from the numbers alone. The default generator is a
+  deterministic mock. `--generator anthropic --model M` is live and paid: it needs `--max-profiles`
+  and `--max-spend-usd` and refuses before any call unless the count and its worst-case cost fit
+  both. `scripts/fixtures/personality-samples.json` holds the five presets and three mock profiles.
 
 ## Pilot and recovery
 

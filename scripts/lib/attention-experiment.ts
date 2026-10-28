@@ -21,7 +21,7 @@ export function attentionConfigs(options: AttentionRunOptions) {
   const seats = STANDARD_ROLE_IDS.map((_, i) => ({
     id: `p${i + 1}`,
     name: seatName(i),
-    personality: PERSONALITY_PRESETS.rational.text,
+    personality: PERSONALITY_PRESETS.rational,
   }));
   const control = GameConfigV2Schema.parse({
     schemaVersion: "game_config_v2",
@@ -30,6 +30,7 @@ export function attentionConfigs(options: AttentionRunOptions) {
     name: "Attention control: evidence-focused",
     seed: options.seed,
     seats,
+    personalities: { assignment: { kind: "explicit" } },
     roleDeck: STANDARD_ROLE_IDS.map((id) =>
       id === "doctor" ? DOCTOR_V2 : STARTER_ROLES.find((role) => role.id === id),
     ),
@@ -63,7 +64,7 @@ export function attentionConfigs(options: AttentionRunOptions) {
     ...control,
     name: "Attention treatment: persistent rambler",
     seats: control.seats.map((seat) =>
-      seat.id === targetId ? { ...seat, personality: PERSONALITY_PRESETS.rambler.text } : seat,
+      seat.id === targetId ? { ...seat, personality: PERSONALITY_PRESETS.rambler } : seat,
     ),
     experiment: { forcedUrgency: { [targetId]: 1 } },
   });
