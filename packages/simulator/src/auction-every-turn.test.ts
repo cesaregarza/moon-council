@@ -18,6 +18,7 @@ import {
   AskJevProvider,
   ClaudeSpendLedger,
   FakeDecisionProvider,
+  JevTransportError,
   type AskJevRunner,
   type DecisionProvider,
   type JevRequest,
@@ -121,7 +122,7 @@ function scriptedJev(script: Script) {
     inputs.push({ seat, input });
     const point = POINTS.find((key) => key in request.questions) ?? "other";
     const tokens = script.onCall?.(point, seat) ?? 1;
-    if (script.fail?.(point, seat)) throw new Error("scripted Jev outage");
+    if (script.fail?.(point, seat)) throw new JevTransportError("scripted Jev outage");
     const answers = Object.fromEntries(
       Object.entries(request.questions).map(([key, q]) => {
         if (key === "urge") return [key, score(script.urge(seat, input))];

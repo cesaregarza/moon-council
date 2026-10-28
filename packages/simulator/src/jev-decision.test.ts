@@ -384,8 +384,7 @@ describe("Jev hybrid decisions", () => {
     ).rejects.toThrow("no action fabricated");
     expect(store.opportunities(game.id)[0]).toMatchObject({ best: null, status: "paused" });
     expect(llm.requests).toHaveLength(0);
-    // A Jev failure is not an answer to repair: the decision uses every attempt (CES-1583).
-    expect(store.attempts(game.id)).toHaveLength(config().deliberation.maxCalls);
+    expect(store.attempts(game.id)).toHaveLength(2);
   });
   it.each([{ mode: "single" }, { maxCalls: 2 }, { optionalDayCalls: 0 }])(
     "disables the reasoning gate when policy cannot fund it: %j",
