@@ -952,8 +952,7 @@ export class DecisionExecutorV2 {
     signal: AbortSignal,
     provider: string,
   ): string {
-    // A Jev call costs nothing, so a timed-out one is a plain failure, not an uncertain outcome.
-    attempt.status = signal.aborted && provider !== "jev" ? "unknown" : "invalid";
+    attempt.status = signal.aborted ? "unknown" : "invalid";
     attempt.error = (
       provider === "anthropic" && !(error instanceof DecisionValidationError)
         ? claudeErrorText(error, signal)
