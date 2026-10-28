@@ -32,6 +32,20 @@ describe.skipIf(process.platform === "win32")("Jev subprocess lifecycle", () => 
       "exit 37",
     );
   });
+  it("names a timeout, a failed exit and a failed launch as transport failures", async () => {
+    await wrapper("setInterval(()=>{},1000)");
+    await expect(runAskJev("{}", { timeoutMs: 700 })).rejects.toMatchObject({
+      name: "JevTransportError",
+    });
+    await wrapper("process.exit(3)");
+    await expect(runAskJev("{}", { timeoutMs: 5000 })).rejects.toMatchObject({
+      name: "JevTransportError",
+    });
+    vi.stubEnv("ASK_JEV_BIN", "/nonexistent/ask-jev");
+    await expect(runAskJev("{}", { timeoutMs: 5000 })).rejects.toMatchObject({
+      name: "JevTransportError",
+    });
+  });
   it("kills a wrapper and its grandchild on timeout", async () => {
     const directory = await wrapper(
       'const {spawn}=require("node:child_process");const {writeFileSync}=require("node:fs");const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"inherit"});writeFileSync(__dirname+"/pid",String(child.pid));setInterval(()=>{},1000);',

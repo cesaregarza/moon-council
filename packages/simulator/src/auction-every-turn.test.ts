@@ -18,6 +18,8 @@ import {
   AskJevProvider,
   ClaudeSpendLedger,
   FakeDecisionProvider,
+  JevTransportError,
+  type AskJevRunner,
   type DecisionProvider,
   type JevRequest,
 } from "@werewolf/llm";
@@ -114,13 +116,13 @@ const POINTS = ["urge", "second", "urgency", "ballot"];
 /** Scripted Jev, recording every request it is asked. */
 function scriptedJev(script: Script) {
   const inputs: { seat: string | undefined; input: string }[] = [];
-  const jev = new AskJevProvider(async (input) => {
+  const runner: AskJevRunner = async (input) => {
     const request = JSON.parse(input) as JevRequest;
     const seat = seatOf(input) ?? "";
     inputs.push({ seat, input });
     const point = POINTS.find((key) => key in request.questions) ?? "other";
     const tokens = script.onCall?.(point, seat) ?? 1;
-    if (script.fail?.(point, seat)) throw new Error("scripted Jev outage");
+    if (script.fail?.(point, seat)) throw new JevTransportError("scripted Jev outage");
     const answers = Object.fromEntries(
       Object.entries(request.questions).map(([key, q]) => {
         if (key === "urge") return [key, score(script.urge(seat, input))];
@@ -144,8 +146,9 @@ function scriptedJev(script: Script) {
       usage: { input_tokens: tokens, output_tokens: 1 },
       answers,
     });
-  });
-  return { jev, inputs };
+  };
+  const jev = new AskJevProvider(runner);
+  return { jev, inputs, runner };
 }
 
 type EndAction = { kind: "continue" } | { kind: "accuse"; targetId: string };
@@ -1988,4 +1991,107 @@ describe("auction_every_turn: the hard day limit (CES-1581)", () => {
     ]);
     expect(() => repository.getGame(old.id)).toThrow(/discussion\.maxDayTurns/);
   });
+});
+
+describe("Jev request timeouts and retries (CES-1583)", () => {
+  /**
+   * A Jev whose answers to p1's bids follow `sequence`, then answer normally: "hang" waits until
+   * the request is aborted (the deadline), "malformed" returns text that is not JSON.
+   */
+  const sequencedJev = (sequence: ("hang" | "malformed" | "valid")[]) => {
+    const { runner } = scriptedJev(freshSpeakersFirst);
+    let n = 0;
+    return new AskJevProvider(async (input, options) => {
+      const request = JSON.parse(input) as JevRequest;
+      if (!("urge" in request.questions) || seatOf(input) !== "p1") return runner(input, options);
+      const step = sequence[n++] ?? "valid";
+      if (step === "malformed") return "not json";
+      if (step === "hang")
+        return new Promise<string>((_resolve, reject) =>
+          options.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          }),
+        );
+      return runner(input, options);
+    });
+  };
+  /** The statuses of the Jev attempts of p1's first bid decision, in order. */
+  const firstBidAttempts = (repository: LabRepository, id: string) => {
+    const attempts = new DecisionStore(repository)
+      .attempts(id)
+      .filter((attempt) => attempt.provider === "jev" && attempt.playerId === "p1");
+    const first = attempts[0]!.decisionId;
+    return {
+      decisionId: first,
+      statuses: attempts.filter((a) => a.decisionId === first).map((a) => a.status),
+    };
+  };
+
+  it("keeps one repair for a malformed Jev answer: two malformed answers pause the decision", async () => {
+    for (const sequence of [
+      ["malformed", "malformed", "valid"],
+      ["malformed", "malformed", "malformed"],
+    ] as const) {
+      const { repository, id } = await playDay(
+        everyTurnConfig(`jev-malformed-${sequence[2]}`),
+        sequencedJev([...sequence]),
+      );
+      expect(firstBidAttempts(repository, id).statuses, sequence.join()).toEqual([
+        "invalid",
+        "invalid",
+      ]);
+      expect(repository.getGame(id)!.error, sequence.join()).toMatch(/exhausted decision retries/);
+    }
+  }, 180_000);
+
+  it("gives a Jev bid that hits its deadline twice its third attempt, which commits", async () => {
+    const base = everyTurnConfig("jev-deadline-twice");
+    const config = GameConfigV2Schema.parse({
+      ...base,
+      deliberation: { ...base.deliberation, requestTimeoutMs: 1_000 },
+    });
+    const { repository, id } = await playDay(config, sequencedJev(["hang", "hang", "valid"]));
+    const { decisionId, statuses } = firstBidAttempts(repository, id);
+    expect(statuses).toEqual(["unknown", "unknown", "valid"]);
+    expect(
+      repository
+        .listEvents(id)
+        .some((e) => e.type === "decision.committed" && e.payload.decisionId === decisionId),
+    ).toBe(true);
+  }, 180_000);
+
+  it("gives a decision whose Jev call keeps failing every attempt maxCalls allows, then pauses", async () => {
+    const config = everyTurnConfig("jev-outage-attempts");
+    const { jev } = scriptedJev({
+      ...freshSpeakersFirst,
+      fail: (point, seat) => point === "urge" && seat === "p1",
+    });
+    const { repository, id } = await playDay(config, jev);
+    expect(repository.getGame(id)!.status).toBe("paused");
+    expect(repository.getGame(id)!.error).toMatch(/exhausted decision retries/);
+    const failed = new DecisionStore(repository)
+      .attempts(id)
+      .filter((attempt) => attempt.provider === "jev" && attempt.status === "invalid");
+    const perDecision = new Map<string, number>();
+    for (const attempt of failed)
+      perDecision.set(attempt.decisionId, (perDecision.get(attempt.decisionId) ?? 0) + 1);
+    expect([...perDecision.values()]).toEqual([config.deliberation.maxCalls]);
+  }, 180_000);
+
+  it("gives each Jev request the configured deliberation.requestTimeoutMs, with no lower cap", async () => {
+    const base = everyTurnConfig("jev-timeout-config");
+    const config = GameConfigV2Schema.parse({
+      ...base,
+      deliberation: { ...base.deliberation, requestTimeoutMs: 45_000 },
+    });
+    const timeouts: number[] = [];
+    const { runner } = scriptedJev({ urge: () => 0 });
+    const jev = new AskJevProvider(async (input, options) => {
+      timeouts.push(options.timeoutMs);
+      return runner(input, options);
+    });
+    await playDay(config, jev);
+    expect(timeouts.length).toBeGreaterThan(0);
+    expect(new Set(timeouts)).toEqual(new Set([45_000]));
+  }, 120_000);
 });

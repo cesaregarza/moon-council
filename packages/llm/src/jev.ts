@@ -89,6 +89,10 @@ export type AskJevRunner = (
   options: { signal?: AbortSignal; timeoutMs: number },
 ) => Promise<string>;
 const MAX_BYTES = 1024 * 1024;
+/** A Jev call that returned no answer: deadline, failed launch, failed exit or incomplete send. */
+export class JevTransportError extends Error {
+  override name = "JevTransportError";
+}
 
 /** Use the installed CLI so credential handling and mandatory private request logging stay centralized. */
 export const runAskJev: AskJevRunner = (input, { signal, timeoutMs }) =>
@@ -152,10 +156,13 @@ export const runAskJev: AskJevRunner = (input, { signal, timeoutMs }) =>
       } else resolve(Buffer.concat(chunks).toString("utf8"));
     };
     const abort = () => finish(new Error("Jev request aborted"));
-    const timer = setTimeout(() => finish(new Error("Jev request timed out")), timeoutMs);
+    const timer = setTimeout(
+      () => finish(new JevTransportError("Jev request timed out")),
+      timeoutMs,
+    );
     signal?.addEventListener("abort", abort, { once: true });
     child.on("error", () =>
-      finish(new Error("Could not launch ask-jev; install the CLI or set ASK_JEV_BIN")),
+      finish(new JevTransportError("Could not launch ask-jev; install the CLI or set ASK_JEV_BIN")),
     );
     child.stdout.on("data", (chunk: Buffer) => {
       size += chunk.length;
@@ -175,14 +182,14 @@ export const runAskJev: AskJevRunner = (input, { signal, timeoutMs }) =>
     child.on("close", (code) => {
       if (code !== 0)
         finish(
-          new Error(
+          new JevTransportError(
             `ask-jev failed (exit ${code}); check CLI credentials, service access, and its private request log`,
           ),
         );
       else
         finish(
           stdinFailed
-            ? new Error("Could not send the complete request to ask-jev (exit 0)")
+            ? new JevTransportError("Could not send the complete request to ask-jev (exit 0)")
             : undefined,
         );
     });
@@ -194,12 +201,14 @@ export class AskJevProvider implements DecisionProvider {
   async decide<T>(request: DecisionRequest<T>): Promise<DecisionResult<T>> {
     if (request.kind !== "jev" || !request.preparedPrompt)
       throw new Error("Jev requires a typed Jev request");
+    if (request.timeoutMs === undefined)
+      throw new Error("Jev request requires timeoutMs (the game's deliberation.requestTimeoutMs)");
     let usage: UsageV2 = unknownUsage(),
       model = request.model;
     try {
       const raw = await this.run(request.preparedPrompt.input, {
         signal: request.signal,
-        timeoutMs: Math.min(request.timeoutMs ?? 20_000, 20_000),
+        timeoutMs: request.timeoutMs,
       });
       request.onRawResponse?.(raw);
       const response = JSON.parse(raw);

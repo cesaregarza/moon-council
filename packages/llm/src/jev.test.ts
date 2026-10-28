@@ -26,6 +26,7 @@ const call = () => ({
   schema: jevResponseSchema(request),
   preparedPrompt: { instructions: "typed", input: JSON.stringify(request) },
   maxOutputTokens: 200,
+  timeoutMs: 20_000,
 });
 
 describe("Ask Jev provider", () => {
@@ -135,10 +136,17 @@ describe("Ask Jev provider", () => {
       expect.anything(),
     );
   });
-  it("passes cancellation and bounds the command deadline", async () => {
+  it("passes cancellation and the caller's configured deadline unchanged", async () => {
     const signal = new AbortController().signal;
     const run = vi.fn(async (_input: string, _options: unknown) => JSON.stringify(response));
     await new AskJevProvider(run).decide({ ...call(), timeoutMs: 300_000, signal });
-    expect(run.mock.calls[0]![1]).toEqual({ signal, timeoutMs: 20_000 });
+    expect(run.mock.calls[0]![1]).toEqual({ signal, timeoutMs: 300_000 });
+  });
+  it("refuses a request with no deadline instead of assuming one", async () => {
+    const run = vi.fn(async (_input: string, _options: unknown) => JSON.stringify(response));
+    await expect(
+      new AskJevProvider(run).decide({ ...call(), timeoutMs: undefined }),
+    ).rejects.toThrow(/timeoutMs/);
+    expect(run).not.toHaveBeenCalled();
   });
 });

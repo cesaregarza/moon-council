@@ -17,6 +17,7 @@ import {
   claudeErrorText,
   CLAUDE_ERROR_FEEDBACK_VERSION,
   claudeUsageCostUsd,
+  JevTransportError,
   UnpricedModelError,
   type DecisionProvider,
 } from "@werewolf/llm";
@@ -917,7 +918,16 @@ export class DecisionExecutorV2 {
           this.store.save(op);
           return false;
         }
-        if (repairUsed || finalCall || controller.signal.aborted) break;
+        if (finalCall) break;
+        // A Jev call that returned no answer is not an answer to repair, so it keeps the decision's
+        // remaining attempts (CES-1583). The game being aborted was handled above, so an abort here
+        // is the request deadline. A malformed or invalid Jev answer still gets the one repair.
+        if (
+          attemptProvider === "jev" &&
+          (error instanceof JevTransportError || controller.signal.aborted)
+        )
+          continue;
+        if (repairUsed || controller.signal.aborted) break;
         repairUsed = true;
         feedback = failure.slice(0, 800);
       } finally {
