@@ -62,6 +62,17 @@ that every accusation receives a persuasive answer.
 
 ## What to inspect
 
+## The auction-every-turn day limit
+
+In the `auction_every_turn` discussion mode, a day has a hard limit of `discussion.maxDayTurns`
+turns, which the mode requires. A turn is a public speech or an auction round in which every bidder
+declined. When a day has used the limit, it ends with no elimination, even if an accusation is still
+waiting for its second, its post-second window or its ballot, and the game goes to night. A public
+`day.ended_by_turn_limit` event records the turns used. The stable instructions tell every player:
+"If too many turns pass, the game will go to night time and the villagers will lose their chance to
+gain information." There is no operator turn extension. A stored every-turn game from before this
+limit has no `maxDayTurns` and is refused when loaded; other games are unaffected.
+
 Moderator audit events include the submitted intents, raw and normalized listening scores, priority,
 selected player, and declined candidates. The selected speaker is public; private bids and journals
 are not public evidence. To evaluate the mechanism, inspect whose testimony was sought, whether new

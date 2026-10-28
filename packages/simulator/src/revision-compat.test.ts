@@ -330,50 +330,6 @@ describe("an auction-every-turn game saved with response dockets", () => {
     ]);
   });
 
-  it("resumes it with no docket or annotation in the Jev or provider bodies, the stored bytes unchanged", async () => {
-    const { fixture, repository, store, op } = savedBid();
-    const storedPacket = (row: Record<string, unknown>) =>
-      JSON.stringify(JSON.parse(String(row.value_json)).packet);
-    const savedRow = fixture.rows.agent_records!.find(
-      (row) => row.record_key === `decision:${fixture.decisionId}`,
-    )!;
-    const speechesBefore = repository
-      .listEvents(fixture.gameId)
-      .filter((e) => e.type === "speech.public").length;
-    const driven = providers();
-    await resume(
-      repository,
-      fixture.gameId,
-      driven,
-      (all) => all.filter((e) => e.type === "speech.public").length > speechesBefore,
-    );
-    expect(
-      decision(store, fixture.gameId, op.id)?.status,
-      repository.getGame(fixture.gameId)?.error ?? "",
-    ).toBe("committed");
-    // The bidder's Jev request, and every player-model request made while resuming.
-    const bid = driven.jevCalls.filter((call) => call.seat === fixture.outageSeat);
-    expect(bid.length).toBeGreaterThan(0);
-    expect(driven.llmCalls.length).toBeGreaterThan(0);
-    for (const body of [...bid.map((call) => call.input), ...driven.llmCalls.map((c) => c.body)]) {
-      const text = flat(body);
-      expect(text).not.toMatch(REMINDER);
-      expect(text).not.toContain("responsesowed");
-      expect(text).not.toContain(CLAIM);
-      expect(text).not.toMatch(/\\?"(acts|respondsto|responsedocket)\\?":/);
-    }
-    // The stored packet is as the base code wrote it.
-    const after = connections
-      .at(-1)!
-      .sqlite.prepare("select value_json from agent_records where game_id = ? and record_key = ?")
-      .get(fixture.gameId, `decision:${fixture.decisionId}`) as Record<string, unknown>;
-    expect(storedPacket(after)).toBe(storedPacket(savedRow));
-    const speech = repository.listEvents(fixture.gameId).find((e) => e.type === "speech.public")!;
-    expect(speech.payload.acts).toEqual([
-      expect.objectContaining({ kind: "challenge", targetId: fixture.outageSeat }),
-    ]);
-  }, 30_000);
-
   it("renders a listen opportunity on the restored packet without the docket", () => {
     const { op } = savedBid();
     const text = flat(

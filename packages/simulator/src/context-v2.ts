@@ -30,6 +30,7 @@ const publicFields: Record<string, string[]> = {
   "accusation.unseconded": ["accusationId", "targetId", "targetName"],
   "lynch.ballots_revealed": ["accusationId", "targetId", "ballots"],
   "lynch.resolved": ["accusationId", "targetId", "targetName", "yes", "no", "living", "passed"],
+  "day.ended_by_turn_limit": ["turns"],
   "player.eliminated": ["playerId", "playerName", "roleName", "cause"],
   "role.revealed": ["playerId", "playerName", "roleName"],
   "vote.resolved": ["ballots", "tally", "tied", "targetId", "targetName"],

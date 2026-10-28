@@ -163,12 +163,13 @@ export const ModelSettingsSchema = z.object({
 /**
  * CES-1575: optional, without defaults, so a config written before the mode existed parses to the
  * same object. `auction_every_turn` runs the speaker auction every turn; absent means the staged
- * opening/follow-up/closing discussion. `turnBudgetFactor` sets a day's turn budget, ceil(living
- * players x factor), past which the game pauses; the mode requires it.
+ * opening/follow-up/closing discussion. `maxDayTurns` is the mode's hard day limit (CES-1581): once
+ * a day has used that many turns, it ends with no lynch and the game goes to night. The mode
+ * requires it.
  */
 const EveryTurnDiscussionFields = {
   mode: z.enum(["auction_every_turn"]).optional(),
-  turnBudgetFactor: z.number().positive().max(8).optional(),
+  maxDayTurns: z.number().int().positive().optional(),
 };
 export const DiscussionPolicyV2Schema = DiscussionPolicySchema.extend({
   speakerSelection: z.enum(["event_queue", "listener_auction"]).default("event_queue"),
@@ -193,7 +194,7 @@ function requireEveryTurnSetup(
 ): void {
   if (value.discussion.mode !== "auction_every_turn") return;
   const missing = [
-    value.discussion.turnBudgetFactor === undefined && "discussion.turnBudgetFactor",
+    value.discussion.maxDayTurns === undefined && "discussion.maxDayTurns",
     value.discussion.speakerSelection !== "listener_auction" &&
       "listener_auction speaker selection",
     (value.decisionEngine.mode !== "jev" || value.decisionEngine.workflow !== "journal_v4") &&

@@ -986,38 +986,39 @@ export class V2GameOrchestrator {
   }
   /**
    * CES-1575, the auction-every-turn mode. Each turn every living player bids and the speaker
-   * auction alone picks the speaker; the scheduler only administers. A pending accusation is
-   * resolved first. Otherwise an all-decline round ends the day with no elimination, a spent turn
-   * budget pauses the game, and anything else is another auction turn. It never picks a speaker,
-   * forces a speech or forces a vote.
+   * auction alone picks the speaker; the scheduler only administers. A day that has used its
+   * maxDayTurns ends with no elimination, even with an accusation pending (CES-1581). Otherwise a
+   * pending accusation is resolved first, an all-decline round ends the day with no elimination,
+   * and anything else is another auction turn. It never picks a speaker, forces a speech or forces
+   * a vote.
    */
   private async discussEveryTurn(state: GameState, events: GameEventV1[]): Promise<boolean> {
+    const turn = everyTurnStatus(state, events);
+    if (turn.limitReached) {
+      this.store.atomic(() => {
+        this.append(state, "day.ended_by_turn_limit", { turns: turn.round });
+        this.closeDay(this.state(state.gameId));
+      });
+      return false;
+    }
     const accusation = pendingAccusation(state, events);
     if (accusation) return this.resolveAccusation(state, events, accusation);
-    if (everyTurnStatus(state, events).lastAllDeclined) {
+    if (turn.lastAllDeclined) {
       this.store.atomic(() => {
         this.append(state, "discussion.ended", { reason: "no_lynch" }, "moderator");
         this.closeDay(this.state(state.gameId));
       });
       return false;
     }
-    return this.auctionTurn(state, events, "turn", everyTurnStatus(state, events).round);
+    return this.auctionTurn(state, events, "turn", turn.round);
   }
-  /**
-   * One auction turn of the given stage, after the day's turn budget check: a spent budget pauses
-   * the game with a stable `turn_budget:` reason, which the operator's extend_turns resumes.
-   */
+  /** One auction turn of the given stage. */
   private auctionTurn(
     state: GameState,
     events: GameEventV1[],
     stage: "turn" | "post_second",
     round: number,
   ): Promise<boolean> {
-    const turn = everyTurnStatus(state, events);
-    if (turn.round >= turn.budget)
-      throw new DecisionPausedError(
-        `turn_budget: ${turn.round} of ${turn.budget} turns used on day ${state.day}`,
-      );
     const living = state.players
       .filter((player) => player.alive)
       .map((player) => player.id)
