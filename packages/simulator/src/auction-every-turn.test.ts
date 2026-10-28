@@ -28,6 +28,7 @@ import { ClaudeSessions } from "./claude-session";
 import { sharedSystemBlocks } from "./claude-session-request";
 import { buildContextV2, publicPayload } from "./context-v2";
 import { lynchOutcome } from "./every-turn";
+import { jevBriefing } from "./jev-briefing";
 import { apartFromIds } from "./testing/replay-normalize";
 import { V2GameOrchestrator } from "./orchestrator-v2";
 import { JOURNAL_EVIDENCE_TYPES } from "./player-brief";
@@ -169,6 +170,7 @@ async function playDay(
   config: GameConfigV2,
   jev: AskJevProvider,
   llm: DecisionProvider = players(),
+  steps = 400,
 ) {
   const connection = openDatabase(":memory:");
   connections.push(connection);
@@ -184,7 +186,7 @@ async function playDay(
       .some(
         (e) => e.type === "phase.changed" && e.payload.to !== "day_discussion" && e.sequence > 2,
       );
-  for (let step = 0; step < 400 && !over(); step += 1) await runner.runGameStep(game.id);
+  for (let step = 0; step < steps && !over(); step += 1) await runner.runGameStep(game.id);
   return { repository, id: game.id, events: repository.listEvents(game.id) };
 }
 
@@ -1965,5 +1967,166 @@ describe("staged instructions stay byte-identical (part 3, round 2)", () => {
       listen: sha(jevInput("discussion_listen")),
       compaction: sha(compaction.prompt.instructions),
     }).toEqual(RECORDED_PART_4);
+  });
+});
+
+describe("auction_every_turn: the hard day limit (CES-1581)", () => {
+  const SENTENCE =
+    "If too many turns pass, the game will go to night time and the villagers will lose their chance to gain information";
+  /** An every-turn config whose days end after `maxDayTurns` turns. */
+  const limitConfig = (seed: string, maxDayTurns: number) => {
+    const base = everyTurnConfig(seed, 8);
+    return GameConfigV2Schema.parse({ ...base, discussion: { ...base.discussion, maxDayTurns } });
+  };
+  const accuseFirst = () =>
+    players((seat, n) =>
+      n === 0 ? { kind: "accuse", targetId: seat === "p8" ? "p7" : "p8" } : { kind: "continue" },
+    );
+
+  it("reads the limit from discussion.maxDayTurns and refuses a missing or invalid one by name", () => {
+    const base = actorConfig();
+    const discussion = { ...base.discussion, mode: "auction_every_turn" };
+    const parsed = GameConfigV2Schema.safeParse({
+      ...base,
+      discussion: { ...discussion, maxDayTurns: 30 },
+    });
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    expect(parsed.data?.discussion.maxDayTurns).toBe(30);
+    for (const maxDayTurns of [undefined, 0, -3, 2.5, "30"]) {
+      const result = GameConfigV2Schema.safeParse({
+        ...base,
+        discussion: { ...discussion, maxDayTurns },
+      });
+      expect(result.success, String(maxDayTurns)).toBe(false);
+      expect(JSON.stringify(result.error?.issues), String(maxDayTurns)).toContain("maxDayTurns");
+    }
+  });
+
+  it("ends a day with no accusation after exactly 30 turns: no elimination, no pause, then night", async () => {
+    const { jev } = scriptedJev({ urge: () => 4, listen: () => 3 });
+    const { repository, id, events } = await playDay(
+      limitConfig("day-limit-30", 30),
+      jev,
+      players(),
+      4_000,
+    );
+    expect(speeches(events)).toHaveLength(30);
+    const ended = ofType(events, "day.ended_by_turn_limit");
+    expect(ended.map((e) => [e.day, e.visibility, e.payload])).toEqual([
+      [1, "public", { turns: 30 }],
+    ]);
+    expect(ended[0]!.sequence).toBeGreaterThan(speeches(events).at(-1)!.sequence);
+    expect(ofType(events, "player.eliminated")).toEqual([]);
+    expect(ofType(events, "game.paused")).toEqual([]);
+    expect(repository.getGame(id)!.status).toBe("running");
+    expect(nextPhase(events)).toBe("night_team");
+  }, 900_000);
+
+  it("ends the day at the limit with a seconded accusation pending; no ballot is taken", async () => {
+    const { jev } = scriptedJev({
+      ...freshSpeakersFirst,
+      second: () => "yes",
+      ballot: () => "yes",
+    });
+    const { events } = await playDay(limitConfig("day-limit-window", 2), jev, accuseFirst());
+    expect(ofType(events, "accusation.seconded")).toHaveLength(1);
+    expect(speeches(events)).toHaveLength(2);
+    expect(ofType(events, "lynch.ballots_revealed")).toEqual([]);
+    expect(ofType(events, "player.eliminated")).toEqual([]);
+    expect(ofType(events, "day.ended_by_turn_limit").map((e) => e.payload)).toEqual([{ turns: 2 }]);
+    expect(nextPhase(events)).toBe("night_team");
+  }, 180_000);
+
+  it("ends a day with a lynch before the limit normally", async () => {
+    const { jev } = scriptedJev({
+      ...freshSpeakersFirst,
+      second: () => "yes",
+      ballot: () => "yes",
+    });
+    const { events } = await playDay(limitConfig("day-limit-lynch", 30), jev, accuseFirst());
+    expect(ofType(events, "lynch.resolved").map((e) => e.payload.passed)).toEqual([true]);
+    expect(ofType(events, "discussion.ended").map((e) => e.payload.reason)).toEqual([
+      "lynch_passed",
+    ]);
+    expect(ofType(events, "day.ended_by_turn_limit")).toEqual([]);
+    expect(nextPhase(events)).toBe("night_team");
+  }, 180_000);
+
+  it("shows the limit's end of day to observers and players", async () => {
+    const { jev } = scriptedJev({ urge: () => 4, listen: () => 3 });
+    const { repository, id, events } = await playDay(limitConfig("day-limit-observer", 2), jev);
+    const record = ofType(events, "day.ended_by_turn_limit")[0]!;
+    expect(publicPayload(record)).toEqual({ turns: 2 });
+    for (const viewer of [{ kind: "public" }, { kind: "player", playerId: "p3" }] as const)
+      expect(
+        observerEvents(repository, id, viewer).find((e) => e.type === "day.ended_by_turn_limit")
+          ?.payload,
+        viewer.kind,
+      ).toEqual({ turns: 2 });
+  }, 180_000);
+
+  it("states the limit in block 1 verbatim, without the number; staged games do not carry it", () => {
+    const blockOne = (config: GameConfigV2) => {
+      const state = createGameState("g", config);
+      state.phase = "day_discussion";
+      state.day = 1;
+      const packet = buildContextV2(state, [], "p1", emptyJournalV2(), "speech", "discussion");
+      const task = { type: "discussion_free_speech", ready: false, revision: "1" } as const;
+      const instructions = decisionRequestV32(packet, task, false, null, null).prompt.instructions;
+      return sharedSystemBlocks(
+        packet,
+        instructions,
+        v31ApiResponseFormat(packet, task)!.instructions,
+      )[0];
+    };
+    const everyTurn = blockOne(limitConfig("block-one", 30));
+    expect(everyTurn).toContain(SENTENCE);
+    expect(everyTurn.split(SENTENCE)).toHaveLength(2);
+    expect(everyTurn).not.toMatch(/\b30\b|maxDayTurns/);
+    expect(blockOne(actorConfig())).not.toContain(SENTENCE);
+  });
+
+  it("drops the shared caution from an empty journal's Jev briefing", () => {
+    const state = createGameState("g", limitConfig("caution", 30));
+    state.phase = "day_discussion";
+    state.day = 1;
+    const packet = buildContextV2(state, [], "p1", emptyJournalV2(), "speech", "discussion");
+    const brief = JSON.stringify(jevBriefing(packet, "discussion_free_speech"));
+    expect(brief).not.toContain("absence of evidence");
+  });
+
+  it("has no operator turn extension: extend_turns is not a control action", async () => {
+    const built = await buildApi({ databaseUrl: ":memory:" });
+    apis.push(built);
+    const game = built.repository.createGame(limitConfig("no-extend", 2));
+    const response = await built.app.inject({
+      method: "POST",
+      url: `/api/v1/games/${game.id}/control`,
+      payload: { action: "extend_turns", extraTurns: 3 },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("refuses a pre-limit every-turn config per game: the list keeps the other games", () => {
+    const connection = openDatabase(":memory:");
+    connections.push(connection);
+    const repository = new LabRepository(connection);
+    const current = repository.createGame(limitConfig("current", 30));
+    const old = repository.createGame(limitConfig("old", 30));
+    const { maxDayTurns: _dropped, ...discussion } = {
+      ...old.config.discussion,
+      turnBudgetFactor: 2,
+    };
+    connection.sqlite
+      .prepare("update games set config_json = ? where id = ?")
+      .run(JSON.stringify({ ...old.config, discussion }), old.id);
+    expect(repository.listGames().map((game) => game.id)).toEqual([current.id]);
+    expect(repository.unreadableGames()).toEqual([
+      {
+        id: old.id,
+        error: expect.stringContaining("auction_every_turn requires discussion.maxDayTurns"),
+      },
+    ]);
+    expect(() => repository.getGame(old.id)).toThrow(/discussion\.maxDayTurns/);
   });
 });
