@@ -26,6 +26,7 @@ const call = () => ({
   schema: jevResponseSchema(request),
   preparedPrompt: { instructions: "typed", input: JSON.stringify(request) },
   maxOutputTokens: 200,
+  timeoutMs: 20_000,
 });
 
 describe("Ask Jev provider", () => {
@@ -143,7 +144,9 @@ describe("Ask Jev provider", () => {
   });
   it("refuses a request with no deadline instead of assuming one", async () => {
     const run = vi.fn(async (_input: string, _options: unknown) => JSON.stringify(response));
-    await expect(new AskJevProvider(run).decide(call())).rejects.toThrow(/timeoutMs/);
+    await expect(
+      new AskJevProvider(run).decide({ ...call(), timeoutMs: undefined }),
+    ).rejects.toThrow(/timeoutMs/);
     expect(run).not.toHaveBeenCalled();
   });
 });

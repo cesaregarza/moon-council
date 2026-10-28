@@ -917,7 +917,11 @@ export class DecisionExecutorV2 {
           this.store.save(op);
           return false;
         }
-        if (repairUsed || finalCall || controller.signal.aborted) break;
+        if (finalCall) break;
+        // A failed or timed-out Jev call is not an answer to repair; it keeps the decision's
+        // remaining attempts (CES-1583). The game being aborted was handled above.
+        if (attemptProvider === "jev") continue;
+        if (repairUsed || controller.signal.aborted) break;
         repairUsed = true;
         feedback = failure.slice(0, 800);
       } finally {
@@ -948,7 +952,8 @@ export class DecisionExecutorV2 {
     signal: AbortSignal,
     provider: string,
   ): string {
-    attempt.status = signal.aborted ? "unknown" : "invalid";
+    // A Jev call costs nothing, so a timed-out one is a plain failure, not an uncertain outcome.
+    attempt.status = signal.aborted && provider !== "jev" ? "unknown" : "invalid";
     attempt.error = (
       provider === "anthropic" && !(error instanceof DecisionValidationError)
         ? claudeErrorText(error, signal)

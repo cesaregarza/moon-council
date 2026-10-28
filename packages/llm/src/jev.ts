@@ -194,12 +194,14 @@ export class AskJevProvider implements DecisionProvider {
   async decide<T>(request: DecisionRequest<T>): Promise<DecisionResult<T>> {
     if (request.kind !== "jev" || !request.preparedPrompt)
       throw new Error("Jev requires a typed Jev request");
+    if (request.timeoutMs === undefined)
+      throw new Error("Jev request requires timeoutMs (the game's deliberation.requestTimeoutMs)");
     let usage: UsageV2 = unknownUsage(),
       model = request.model;
     try {
       const raw = await this.run(request.preparedPrompt.input, {
         signal: request.signal,
-        timeoutMs: Math.min(request.timeoutMs ?? 20_000, 20_000),
+        timeoutMs: request.timeoutMs,
       });
       request.onRawResponse?.(raw);
       const response = JSON.parse(raw);

@@ -252,7 +252,11 @@ export async function publicViews(
             decisionSequence: source.decisionSequence,
             model,
           });
-    const { response, usage } = await askJev(jev, built.request);
+    const timeoutMs =
+      game.config.schemaVersion === "game_config_v2"
+        ? game.config.deliberation.requestTimeoutMs
+        : undefined;
+    const { response, usage } = await askJev(jev, built.request, timeoutMs);
     jevCalls.push({ momentId: source.moment.id, ...usage });
     const answer = response.answers.prediction;
     if (answer?.type !== "choice") continue;
@@ -267,7 +271,7 @@ export async function publicViews(
   return { moments: classified, jevCalls };
 }
 
-async function askJev(jev: DecisionProvider, request: JevRequest) {
+async function askJev(jev: DecisionProvider, request: JevRequest, timeoutMs: number | undefined) {
   const schema = jevResponseSchema(request);
   let reported: UsageV2 | undefined;
   let costUsd: number | null = null;
@@ -278,6 +282,7 @@ async function askJev(jev: DecisionProvider, request: JevRequest) {
     schemaName: "jev_public_view",
     schema,
     maxOutputTokens: null,
+    timeoutMs,
     preparedPrompt: { instructions: "", input: JSON.stringify(request) },
     onUsage: (usage) => (reported = usage),
     onProviderMetadata: (metadata) => {
