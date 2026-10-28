@@ -1993,6 +1993,72 @@ describe("auction_every_turn: the hard day limit (CES-1581)", () => {
 });
 
 describe("Jev request timeouts and retries (CES-1583)", () => {
+  /**
+   * A Jev whose answers to p1's bids follow `sequence`, then answer normally: "hang" waits until
+   * the request is aborted (the deadline), "malformed" returns text that is not JSON.
+   */
+  const sequencedJev = (sequence: ("hang" | "malformed" | "valid")[]) => {
+    const { runner } = scriptedJev(freshSpeakersFirst);
+    let n = 0;
+    return new AskJevProvider(async (input, options) => {
+      const request = JSON.parse(input) as JevRequest;
+      if (!("urge" in request.questions) || seatOf(input) !== "p1") return runner(input, options);
+      const step = sequence[n++] ?? "valid";
+      if (step === "malformed") return "not json";
+      if (step === "hang")
+        return new Promise<string>((_resolve, reject) =>
+          options.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          }),
+        );
+      return runner(input, options);
+    });
+  };
+  /** The statuses of the Jev attempts of p1's first bid decision, in order. */
+  const firstBidAttempts = (repository: LabRepository, id: string) => {
+    const attempts = new DecisionStore(repository)
+      .attempts(id)
+      .filter((attempt) => attempt.provider === "jev" && attempt.playerId === "p1");
+    const first = attempts[0]!.decisionId;
+    return {
+      decisionId: first,
+      statuses: attempts.filter((a) => a.decisionId === first).map((a) => a.status),
+    };
+  };
+
+  it("keeps one repair for a malformed Jev answer: two malformed answers pause the decision", async () => {
+    for (const sequence of [
+      ["malformed", "malformed", "valid"],
+      ["malformed", "malformed", "malformed"],
+    ] as const) {
+      const { repository, id } = await playDay(
+        everyTurnConfig(`jev-malformed-${sequence[2]}`),
+        sequencedJev([...sequence]),
+      );
+      expect(firstBidAttempts(repository, id).statuses, sequence.join()).toEqual([
+        "invalid",
+        "invalid",
+      ]);
+      expect(repository.getGame(id)!.error, sequence.join()).toMatch(/exhausted decision retries/);
+    }
+  }, 180_000);
+
+  it("gives a Jev bid that hits its deadline twice its third attempt, which commits", async () => {
+    const base = everyTurnConfig("jev-deadline-twice");
+    const config = GameConfigV2Schema.parse({
+      ...base,
+      deliberation: { ...base.deliberation, requestTimeoutMs: 1_000 },
+    });
+    const { repository, id } = await playDay(config, sequencedJev(["hang", "hang", "valid"]));
+    const { decisionId, statuses } = firstBidAttempts(repository, id);
+    expect(statuses).toEqual(["unknown", "unknown", "valid"]);
+    expect(
+      repository
+        .listEvents(id)
+        .some((e) => e.type === "decision.committed" && e.payload.decisionId === decisionId),
+    ).toBe(true);
+  }, 180_000);
+
   it("gives a decision whose Jev call keeps failing every attempt maxCalls allows, then pauses", async () => {
     const config = everyTurnConfig("jev-outage-attempts");
     const { jev } = scriptedJev({
