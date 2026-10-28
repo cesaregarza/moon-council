@@ -6,6 +6,7 @@ import {
   type PlayerContextV2,
   type PrivateJournalV2,
 } from "@werewolf/contracts";
+import { deliveredJournalText } from "./freeform-journal";
 
 export const estimatedTokens = (value: unknown): number =>
   Math.ceil(
@@ -49,6 +50,13 @@ function citationMaps(packet: PlayerContextV2): CitationMaps {
   };
 }
 export const citationAliasIds = (packet: PlayerContextV2): string[] => citationMaps(packet).aliases;
+
+/** The journal as this request delivers it: a prose journal less its omitted entries (CES-1584). */
+function deliveredJournal(packet: PlayerContextV2): PrivateJournalV2 {
+  return packet.journalEntriesOmitted && packet.journal.text !== undefined
+    ? { ...packet.journal, text: deliveredJournalText(packet) }
+    : packet.journal;
+}
 
 function mapJournalReferences(
   journal: PrivateJournalV2,
@@ -262,7 +270,10 @@ export function stableDecisionContext(
       evidence: privateEvidence,
       legalActions: packet.legalActions,
       legalTargets: packet.legalTargets,
-      currentJournal: mapJournalReferences(packet.journal, (id) => maps.toAlias.get(id) ?? id),
+      currentJournal: mapJournalReferences(
+        deliveredJournal(packet),
+        (id) => maps.toAlias.get(id) ?? id,
+      ),
       responseDocket: packet.responseDocket.map((id) => maps.toAlias.get(id) ?? id),
     },
   };
