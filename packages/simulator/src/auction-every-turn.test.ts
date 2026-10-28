@@ -1975,7 +1975,7 @@ describe("auction_every_turn: the hard day limit (CES-1581)", () => {
     "If too many turns pass, the game will go to night time and the villagers will lose their chance to gain information";
   /** An every-turn config whose days end after `maxDayTurns` turns. */
   const limitConfig = (seed: string, maxDayTurns: number) => {
-    const base = everyTurnConfig(seed, 8);
+    const base = everyTurnConfig(seed);
     return GameConfigV2Schema.parse({ ...base, discussion: { ...base.discussion, maxDayTurns } });
   };
   const accuseFirst = () =>
