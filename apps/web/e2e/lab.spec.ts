@@ -492,6 +492,63 @@ test("keeps a seat personality, explains it needs Jev, and creates it only with 
   });
 });
 
+/**
+ * CES-1585 (halcyon 995): only the seats in the game count. A profile on a seat removed by a
+ * resize neither warns nor blocks Create and is not sent; restoring the seat brings it back.
+ */
+test("ignores a removed seat's personality and creates the smaller game without it", async ({
+  page,
+}) => {
+  const mock = await mockApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: /new game/i }).click();
+  await page.getByRole("button", { name: /Custom roles/ }).click();
+  await page.getByLabel("Hal personality preset").selectOption("rambler");
+  await page.getByLabel("Decision engine").selectOption("llm");
+  const notice = page.getByText(/Personalities need the Jev \+ selected LLM decision engine/);
+  const create = page.getByRole("button", { name: "Create V3.1 simulation" });
+  await expect(notice).toBeVisible();
+  await page.getByLabel("Seats", { exact: true }).fill("7");
+  await expect(page.getByLabel("Hal personality preset")).toHaveCount(0);
+  await expect(notice).toBeHidden();
+  await expect(create).toBeEnabled();
+  await create.click();
+  await expect(page.getByText("Council record")).toBeVisible();
+  const seats = (mock.creations[0] as { seats: { personality?: unknown }[] }).seats;
+  expect(seats).toHaveLength(7);
+  expect(seats.every((seat) => seat.personality === undefined)).toBe(true);
+});
+
+test("restores a removed seat's personality with its seat, gated by the engine again", async ({
+  page,
+}) => {
+  const mock = await mockApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: /new game/i }).click();
+  await page.getByRole("button", { name: /Custom roles/ }).click();
+  await page.getByLabel("Hal personality preset").selectOption("rambler");
+  await page.getByLabel("Decision engine").selectOption("llm");
+  const notice = page.getByText(/Personalities need the Jev \+ selected LLM decision engine/);
+  const create = page.getByRole("button", { name: "Create V3.1 simulation" });
+  await page.getByLabel("Seats", { exact: true }).fill("7");
+  await expect(notice).toBeHidden();
+  await page.getByLabel("Seats", { exact: true }).fill("8");
+  await expect(page.getByLabel("Hal personality", { exact: true })).toHaveValue(
+    /persistent, highly talkative rambler/,
+  );
+  await expect(notice).toBeVisible();
+  await expect(create).toBeDisabled();
+  await page.getByLabel("Decision engine").selectOption("jev");
+  await expect(notice).toBeHidden();
+  await expect(create).toBeEnabled();
+  await create.click();
+  await expect(page.getByText("Council record")).toBeVisible();
+  const seats = (mock.creations[0] as { seats: { personality?: { id: string } }[] }).seats;
+  expect(seats).toHaveLength(8);
+  expect(seats[7]!.personality).toMatchObject({ id: "rambler" });
+  expect(seats.slice(0, 7).every((seat) => seat.personality === undefined)).toBe(true);
+});
+
 test("keeps observer views safe while covering both stepping controls, decisions, replay, and exports", async ({
   page,
 }) => {
