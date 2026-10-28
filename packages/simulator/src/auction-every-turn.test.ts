@@ -576,7 +576,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
     for (let n = 0; n < 3; n += 1) {
       const { jev } = scriptedJev(lynchVote(n === 0 ? ["p1", "p2", "p3", "p4", "p5"] : ["p1"]));
       const { repository, id, events } = await playDay(
-        everyTurnConfig(`audit-${n}`, 4),
+        everyTurnConfig(`audit-${n}`),
         jev,
         accuseOnce(),
       );
@@ -963,7 +963,7 @@ describe("auction_every_turn: resource ceilings during the procedures (round 2)"
   ) {
     const built = await buildApi({ databaseUrl: ":memory:" });
     apis.push(built);
-    const base = everyTurnConfig("ceilings", 4);
+    const base = everyTurnConfig("ceilings");
     // The default active-runtime limit, so an operator extension can raise it.
     const config = GameConfigV2Schema.parse({
       ...base,
