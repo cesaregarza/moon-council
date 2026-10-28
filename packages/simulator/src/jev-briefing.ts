@@ -91,9 +91,7 @@ export function jevBriefing(packet: PlayerContextV2, task: V3TaskKind | undefine
   const role = packet.self.role;
   const taskRules = rulesFor(packet, task, name);
   return {
-    journal:
-      journalText(packet.journal) ||
-      "No private notes yet; avoid treating absence of evidence as evidence of guilt.",
+    journal: journalText(packet.journal) || "No private notes yet.",
     situation: [
       `You are ${packet.self.name} (${packet.self.id}), ${role.name}, faction ${role.alignment}. Day ${packet.day}, ${packet.phase}.`,
       `Objective: ${JSON.stringify(role.winCondition)}. Village wins when all wolves are eliminated; wolves win at living parity.`,

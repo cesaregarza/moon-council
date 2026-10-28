@@ -20,26 +20,19 @@ const completesTurn = (event: GameEventV1) =>
   (event.type === "discussion.auction_resolved" && event.payload.selectedPlayerId === null);
 
 /**
- * Where today's discussion stands: the turns completed (the post-second window's included), the
- * day's turn budget, ceil(living x turnBudgetFactor) plus the operator's grants for this day, and
- * whether the last turn was an all-decline round of the ordinary auction, which ends the day.
+ * Where today's discussion stands: the turns completed (the post-second window's included),
+ * whether they have reached the day limit (CES-1581), and whether the last turn was an all-decline
+ * round of the ordinary auction, which ends the day.
  */
 export function everyTurnStatus(state: GameState, events: GameEventV1[]) {
-  const day = today(state, events);
-  const turns = day.filter(completesTurn);
-  const living = state.players.filter((player) => player.alive).length;
-  const factor =
-    state.config.schemaVersion === "game_config_v2"
-      ? state.config.discussion.turnBudgetFactor
-      : undefined;
-  const granted = day
-    .filter((event) => event.type === "discussion.turns_extended")
-    .reduce((sum, event) => sum + Number(event.payload.extraTurns), 0);
+  const turns = today(state, events).filter(completesTurn);
+  const limit =
+    state.config.schemaVersion === "game_config_v2" ? state.config.discussion.maxDayTurns : 0;
   const last = turns.at(-1);
   return {
     round: turns.length,
+    limitReached: turns.length >= (limit ?? 0),
     lastAllDeclined: last?.type === "discussion.auction_resolved" && last.payload.stage === "turn",
-    budget: Math.ceil(living * (factor ?? 0)) + granted,
   };
 }
 

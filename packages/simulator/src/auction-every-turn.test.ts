@@ -12,7 +12,7 @@ import {
   type SpeakerIntentV1,
 } from "@werewolf/contracts";
 import { DecisionStore, LabRepository, openDatabase, type DatabaseConnection } from "@werewolf/db";
-import { createGameState, reduceGame, shuffled } from "@werewolf/engine";
+import { createGameState, shuffled } from "@werewolf/engine";
 import {
   AnthropicMessagesProvider,
   AskJevProvider,
@@ -67,13 +67,13 @@ afterEach(async () => {
   }
 });
 
-function everyTurnConfig(seed: string, turnBudgetFactor = 1): GameConfigV2 {
+function everyTurnConfig(seed: string, maxDayTurns = 8): GameConfigV2 {
   const base = actorConfig();
   return GameConfigV2Schema.parse({
     ...base,
     seed,
     rules: { ...base.rules, firstCycle: "day_first" },
-    discussion: { ...base.discussion, mode: "auction_every_turn", turnBudgetFactor },
+    discussion: { ...base.discussion, mode: "auction_every_turn", maxDayTurns },
     safety: { ...base.safety, maxCycles: 1, maxModelCalls: 10_000, maxWallClockMs: 86_400_000 },
   });
 }
@@ -206,19 +206,9 @@ const freshSpeakersFirst: Script = {
 };
 
 describe("auction_every_turn: the turn loop", () => {
-  it("refuses a config without the turn budget", () => {
-    const base = actorConfig();
-    expect(() =>
-      GameConfigV2Schema.parse({
-        ...base,
-        discussion: { ...base.discussion, mode: "auction_every_turn" },
-      }),
-    ).toThrow();
-  });
-
   it("every turn, every living player bids and the top-ranked bid speaks (20 seeds)", async () => {
     for (let n = 0; n < 20; n += 1) {
-      const config = everyTurnConfig(`auction-every-turn-${n}`, 0.5);
+      const config = everyTurnConfig(`auction-every-turn-${n}`, 4);
       const { jev } = scriptedJev({ urge: (seat, input) => hash(`${seat}:${input}`) % 5 });
       const { events } = await playDay(config, jev);
       const resolved = auctions(events);
@@ -304,15 +294,6 @@ describe("auction_every_turn: the turn loop", () => {
     expect(ofType(events, "player.eliminated")).toEqual([]);
     expect(nextPhase(events)).toBe("night_team");
   }, 60_000);
-
-  it("pauses, fail-closed, when the day's turn budget is spent; it never forces an outcome", async () => {
-    const { jev } = scriptedJev({ urge: (_seat, input) => 1 + (hash(input) % 4) });
-    const { repository, id, events } = await playDay(everyTurnConfig("turn-budget", 0.25), jev);
-    expect(speeches(events)).toHaveLength(2);
-    expect(repository.getGame(id)!.status).toBe("paused");
-    expect(ofType(events, "game.paused").at(-1)?.payload.reason).toMatch(/^turn_budget: /);
-    expect(nextPhase(events)).toBe("day_discussion");
-  }, 60_000);
 });
 
 describe("auction_every_turn: accusations, seconding and the lynch vote", () => {
@@ -349,7 +330,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
   it("polls every living player but the accuser, the accused included, on one snapshot", async () => {
     const { jev } = scriptedJev({ ...freshSpeakersFirst, second: () => "no" });
     const { repository, id, events } = await playDay(
-      everyTurnConfig("second-poll", 0.5),
+      everyTurnConfig("second-poll", 4),
       jev,
       accuseOnce(),
     );
@@ -414,7 +395,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
       secondUrgency: (seat) => (seat === "p4" ? 4 : 1),
     });
     const { repository, id, events } = await playDay(
-      everyTurnConfig("second-urgency", 0.5),
+      everyTurnConfig("second-urgency", 4),
       jev,
       accuseOnce(yes),
     );
@@ -431,7 +412,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
   it("breaks an urgency tie by the seeded order, identically on replay", async () => {
     const run = async () => {
       const { jev } = scriptedJev({ ...freshSpeakersFirst, second: () => "yes" });
-      return playDay(everyTurnConfig("second-tie", 0.5), jev, accuseOnce());
+      return playDay(everyTurnConfig("second-tie", 4), jev, accuseOnce());
     };
     const first = await run();
     const second = await run();
@@ -452,7 +433,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
       secondUrgency: (seat) => (seat === "p4" ? 4 : 1),
     });
     const { repository, id, events } = await playDay(
-      everyTurnConfig("second-privacy", 0.5),
+      everyTurnConfig("second-privacy", 4),
       jev,
       accuseOnce(yes),
     );
@@ -482,7 +463,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
       second: (seat) => (seat === "p4" ? "maybe" : "no"),
     });
     const { repository, id, events } = await playDay(
-      everyTurnConfig("second-invalid", 0.5),
+      everyTurnConfig("second-invalid", 4),
       jev,
       accuseOnce(["p4"]),
     );
@@ -595,7 +576,7 @@ describe("auction_every_turn: accusations, seconding and the lynch vote", () => 
     for (let n = 0; n < 3; n += 1) {
       const { jev } = scriptedJev(lynchVote(n === 0 ? ["p1", "p2", "p3", "p4", "p5"] : ["p1"]));
       const { repository, id, events } = await playDay(
-        everyTurnConfig(`audit-${n}`, 0.5),
+        everyTurnConfig(`audit-${n}`, 4),
         jev,
         accuseOnce(),
       );
@@ -982,7 +963,7 @@ describe("auction_every_turn: resource ceilings during the procedures (round 2)"
   ) {
     const built = await buildApi({ databaseUrl: ":memory:" });
     apis.push(built);
-    const base = everyTurnConfig("ceilings", 0.5);
+    const base = everyTurnConfig("ceilings", 4);
     // The default active-runtime limit, so an operator extension can raise it.
     const config = GameConfigV2Schema.parse({
       ...base,
@@ -1170,7 +1151,7 @@ describe("auction_every_turn: the lynch denominator (round 2)", () => {
   });
 });
 
-describe("auction_every_turn: the window after a second, turn grants and repeats (part 2)", () => {
+describe("auction_every_turn: the window after a second and repeats (part 2)", () => {
   const LIVING = 8;
   /**
    * A day with one accusation of Hollis (p8, or Gale p7 when Hollis speaks first): everyone
@@ -1297,7 +1278,7 @@ describe("auction_every_turn: the window after a second, turn grants and repeats
       return { kind: "accuse", targetId: "p8" };
     });
     const { events } = await playDay(
-      everyTurnConfig("repeat", 2),
+      everyTurnConfig("repeat", 16),
       scriptedJev({ ...windowScript(), ballot: () => "no" }).jev,
       repeat,
     );
@@ -1322,124 +1303,6 @@ describe("auction_every_turn: the window after a second, turn grants and repeats
     expect(ofType(first, "lynch.resolved")).toHaveLength(1);
     expect(apartFromIds(await run())).toEqual(apartFromIds(first));
   }, 240_000);
-
-  /** An every-turn game in an API database, for the operator's extend_turns. */
-  async function apiGame(config: GameConfigV2, script: Script, llm: DecisionProvider = players()) {
-    const built = await buildApi({ databaseUrl: ":memory:" });
-    apis.push(built);
-    const game = built.repository.createGame(config);
-    const runner = new V2GameOrchestrator(built.repository, llm, scriptedJev(script).jev);
-    new V2GameOrchestrator(built.repository, new FakeDecisionProvider()).initialize(game.id);
-    built.repository.updateGame(game.id, { status: "running" });
-    const events = () => built.repository.listEvents(game.id);
-    const status = () => built.repository.getGame(game.id)!.status;
-    return {
-      built,
-      id: game.id,
-      events,
-      status,
-      run: async () => {
-        for (let step = 0; step < 400 && status() === "running"; step += 1)
-          await runner.runGameStep(game.id);
-      },
-      control: (payload: Record<string, unknown>) =>
-        built.app.inject({ method: "POST", url: `/api/v1/games/${game.id}/control`, payload }),
-    };
-  }
-
-  it("grants k more turns that day on extend_turns, then pauses again", async () => {
-    // ceil(8 living x 0.25) = 2 turns; everyone always bids.
-    const game = await apiGame(everyTurnConfig("extend", 0.25), { urge: () => 4, listen: () => 3 });
-    await game.run();
-    expect(game.status()).toBe("paused");
-    const pause = ofType(game.events(), "game.paused").at(-1)!;
-    expect(pause.payload.reason).toMatch(/^turn_budget: /);
-    expect(speeches(game.events())).toHaveLength(2);
-    const granted = await game.control({ action: "extend_turns", extraTurns: 3 });
-    expect(granted.statusCode).toBe(200);
-    const extended = ofType(game.events(), "discussion.turns_extended");
-    expect(extended.map((e) => [e.visibility, e.payload])).toEqual([
-      [
-        "moderator",
-        {
-          day: 1,
-          extraTurns: 3,
-          previousBudget: 2,
-          newBudget: 5,
-          resumedFromSequence: pause.sequence,
-        },
-      ],
-    ]);
-    expect(game.status()).toBe("running");
-    expect(reduceGame(game.id, game.events()).status).toBe("running");
-    await game.run();
-    expect(speeches(game.events())).toHaveLength(5);
-    expect(game.status()).toBe("paused");
-    expect(ofType(game.events(), "game.paused").at(-1)!.payload.reason).toMatch(/^turn_budget: /);
-  }, 180_000);
-
-  it("refuses extend_turns outside a turn-budget pause of an every-turn game", async () => {
-    const extend = { action: "extend_turns", extraTurns: 2 };
-    // Paused by the operator, not by the turn budget.
-    const operator = await apiGame(everyTurnConfig("refuse-operator"), { urge: () => 0 });
-    await operator.control({ action: "pause" });
-    expect((await operator.control(extend)).statusCode).toBe(409);
-    // A staged game.
-    const staged = await apiGame(
-      GameConfigV2Schema.parse({ ...actorConfig(), rules: { firstCycle: "day_first" } }),
-      { urge: () => 0 },
-    );
-    await staged.control({ action: "pause" });
-    expect((await staged.control(extend)).statusCode).toBe(409);
-    // A game that has ended.
-    const ended = await apiGame(everyTurnConfig("refuse-ended"), { urge: () => 0 });
-    ended.built.repository.updateGame(ended.id, { status: "completed" });
-    expect((await ended.control(extend)).statusCode).toBe(409);
-    // Turn-budget paused, but not a positive whole number of turns up to 64.
-    const paused = await apiGame(everyTurnConfig("refuse-values", 0.25), {
-      urge: () => 4,
-      listen: () => 3,
-    });
-    await paused.run();
-    expect(paused.built.repository.getGame(paused.id)!.error).toMatch(/^turn_budget: /);
-    for (const extraTurns of [0, -1, 65, 1.5, undefined])
-      expect(
-        (await paused.control({ action: "extend_turns", extraTurns })).statusCode,
-        String(extraTurns),
-      ).toBe(400);
-    expect(ofType(paused.events(), "discussion.turns_extended")).toEqual([]);
-  }, 180_000);
-
-  it("applies a grant to its own day only", async () => {
-    // Day 1: two turns, a pause, a grant of two; the fourth turn is all-decline, which ends the
-    // day with no lynch. Day 2 then has its own budget again: two turns, then a pause.
-    let dayOneBids = 0;
-    const game = await apiGame(
-      GameConfigV2Schema.parse({
-        ...everyTurnConfig("grant-day", 0.25),
-        safety: { ...everyTurnConfig("x").safety, maxCycles: 3 },
-      }),
-      {
-        urge: (_seat, input) => {
-          if (!/Day 1, day_discussion/.test(input)) return 4;
-          return Math.floor(dayOneBids++ / LIVING) === 3 ? 0 : 4;
-        },
-        listen: () => 3,
-      },
-    );
-    await game.run();
-    expect((await game.control({ action: "extend_turns", extraTurns: 2 })).statusCode).toBe(200);
-    await game.run();
-    const events = game.events();
-    expect(ofType(events, "discussion.ended").map((e) => [e.day, e.payload.reason])).toEqual([
-      [1, "no_lynch"],
-    ]);
-    const dayTwo = events.filter((e) => e.type === "speech.public" && e.day === 2);
-    expect(dayTwo).toHaveLength(2);
-    expect(game.status()).toBe("paused");
-    const pause = ofType(events, "game.paused").at(-1)!;
-    expect([pause.day, pause.payload.reason]).toEqual([2, expect.stringMatching(/^turn_budget: /)]);
-  }, 300_000);
 });
 
 describe("auction_every_turn: plain speech, no social bookkeeping (part 3)", () => {
@@ -1973,11 +1836,6 @@ describe("staged instructions stay byte-identical (part 3, round 2)", () => {
 describe("auction_every_turn: the hard day limit (CES-1581)", () => {
   const SENTENCE =
     "If too many turns pass, the game will go to night time and the villagers will lose their chance to gain information";
-  /** An every-turn config whose days end after `maxDayTurns` turns. */
-  const limitConfig = (seed: string, maxDayTurns: number) => {
-    const base = everyTurnConfig(seed);
-    return GameConfigV2Schema.parse({ ...base, discussion: { ...base.discussion, maxDayTurns } });
-  };
   const accuseFirst = () =>
     players((seat, n) =>
       n === 0 ? { kind: "accuse", targetId: seat === "p8" ? "p7" : "p8" } : { kind: "continue" },
@@ -2005,7 +1863,7 @@ describe("auction_every_turn: the hard day limit (CES-1581)", () => {
   it("ends a day with no accusation after exactly 30 turns: no elimination, no pause, then night", async () => {
     const { jev } = scriptedJev({ urge: () => 4, listen: () => 3 });
     const { repository, id, events } = await playDay(
-      limitConfig("day-limit-30", 30),
+      everyTurnConfig("day-limit-30", 30),
       jev,
       players(),
       4_000,
@@ -2028,7 +1886,7 @@ describe("auction_every_turn: the hard day limit (CES-1581)", () => {
       second: () => "yes",
       ballot: () => "yes",
     });
-    const { events } = await playDay(limitConfig("day-limit-window", 2), jev, accuseFirst());
+    const { events } = await playDay(everyTurnConfig("day-limit-window", 2), jev, accuseFirst());
     expect(ofType(events, "accusation.seconded")).toHaveLength(1);
     expect(speeches(events)).toHaveLength(2);
     expect(ofType(events, "lynch.ballots_revealed")).toEqual([]);
@@ -2043,7 +1901,7 @@ describe("auction_every_turn: the hard day limit (CES-1581)", () => {
       second: () => "yes",
       ballot: () => "yes",
     });
-    const { events } = await playDay(limitConfig("day-limit-lynch", 30), jev, accuseFirst());
+    const { events } = await playDay(everyTurnConfig("day-limit-lynch", 30), jev, accuseFirst());
     expect(ofType(events, "lynch.resolved").map((e) => e.payload.passed)).toEqual([true]);
     expect(ofType(events, "discussion.ended").map((e) => e.payload.reason)).toEqual([
       "lynch_passed",
@@ -2054,7 +1912,7 @@ describe("auction_every_turn: the hard day limit (CES-1581)", () => {
 
   it("shows the limit's end of day to observers and players", async () => {
     const { jev } = scriptedJev({ urge: () => 4, listen: () => 3 });
-    const { repository, id, events } = await playDay(limitConfig("day-limit-observer", 2), jev);
+    const { repository, id, events } = await playDay(everyTurnConfig("day-limit-observer", 2), jev);
     const record = ofType(events, "day.ended_by_turn_limit")[0]!;
     expect(publicPayload(record)).toEqual({ turns: 2 });
     for (const viewer of [{ kind: "public" }, { kind: "player", playerId: "p3" }] as const)
@@ -2079,7 +1937,7 @@ describe("auction_every_turn: the hard day limit (CES-1581)", () => {
         v31ApiResponseFormat(packet, task)!.instructions,
       )[0];
     };
-    const everyTurn = blockOne(limitConfig("block-one", 30));
+    const everyTurn = blockOne(everyTurnConfig("block-one", 30));
     expect(everyTurn).toContain(SENTENCE);
     expect(everyTurn.split(SENTENCE)).toHaveLength(2);
     expect(everyTurn).not.toMatch(/\b30\b|maxDayTurns/);
@@ -2087,7 +1945,7 @@ describe("auction_every_turn: the hard day limit (CES-1581)", () => {
   });
 
   it("drops the shared caution from an empty journal's Jev briefing", () => {
-    const state = createGameState("g", limitConfig("caution", 30));
+    const state = createGameState("g", everyTurnConfig("caution", 30));
     state.phase = "day_discussion";
     state.day = 1;
     const packet = buildContextV2(state, [], "p1", emptyJournalV2(), "speech", "discussion");
@@ -2098,7 +1956,7 @@ describe("auction_every_turn: the hard day limit (CES-1581)", () => {
   it("has no operator turn extension: extend_turns is not a control action", async () => {
     const built = await buildApi({ databaseUrl: ":memory:" });
     apis.push(built);
-    const game = built.repository.createGame(limitConfig("no-extend", 2));
+    const game = built.repository.createGame(everyTurnConfig("no-extend", 2));
     const response = await built.app.inject({
       method: "POST",
       url: `/api/v1/games/${game.id}/control`,
@@ -2111,8 +1969,8 @@ describe("auction_every_turn: the hard day limit (CES-1581)", () => {
     const connection = openDatabase(":memory:");
     connections.push(connection);
     const repository = new LabRepository(connection);
-    const current = repository.createGame(limitConfig("current", 30));
-    const old = repository.createGame(limitConfig("old", 30));
+    const current = repository.createGame(everyTurnConfig("current", 30));
+    const old = repository.createGame(everyTurnConfig("old", 30));
     const { maxDayTurns: _dropped, ...discussion } = {
       ...old.config.discussion,
       turnBudgetFactor: 2,

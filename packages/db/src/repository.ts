@@ -23,6 +23,17 @@ function now(): string {
   return new Date().toISOString();
 }
 
+/** Every message in a parse failure, a union's alternatives included. */
+function issueMessages(issues: readonly { message: string; errors?: unknown }[]): string {
+  return issues
+    .flatMap((issue) =>
+      Array.isArray(issue.errors)
+        ? (issue.errors as (typeof issues)[]).map((alternative) => issueMessages(alternative))
+        : [issue.message],
+    )
+    .join("; ");
+}
+
 function parseJson<T>(value: string): T {
   return JSON.parse(value) as T;
 }
@@ -164,15 +175,35 @@ export class LabRepository {
     };
   }
 
+  /** The readable games, newest first; a game whose stored config no longer parses is skipped. */
   listGames(limit = 100, experimentId?: string): GameRecord[] {
-    const query = this.connection.db
-      .select({ id: games.id })
+    return this.storedConfigs(limit, experimentId)
+      .filter((row) => row.parsed.success)
+      .map((row) => this.getGame(row.id)!);
+  }
+
+  /**
+   * Games whose stored config no longer parses, with the reason, e.g. an auction_every_turn game
+   * from before discussion.maxDayTurns (CES-1581). Each is refused alone: the others still list.
+   */
+  unreadableGames(limit = 100, experimentId?: string): { id: string; error: string }[] {
+    return this.storedConfigs(limit, experimentId).flatMap((row) =>
+      row.parsed.success ? [] : [{ id: row.id, error: issueMessages(row.parsed.error.issues) }],
+    );
+  }
+
+  private storedConfigs(limit: number, experimentId?: string) {
+    return this.connection.db
+      .select({ id: games.id, configJson: games.configJson })
       .from(games)
       .where(experimentId ? eq(games.experimentId, experimentId) : undefined)
       .orderBy(desc(games.createdAt))
       .limit(limit)
-      .all();
-    return query.map((row) => this.getGame(row.id)!).filter(Boolean);
+      .all()
+      .map((row) => ({
+        id: row.id,
+        parsed: StoredGameConfigSchema.safeParse(parseJson(row.configJson)),
+      }));
   }
 
   updateGame(
