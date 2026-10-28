@@ -249,6 +249,25 @@ function requireSeededPersonalities(
       });
   });
 }
+/** Seat personalities run only on the current contract, journal_v4 Jev (CES-1585). */
+function requireJournalV4Personalities(
+  value: {
+    seats: { personality?: PersonalityProfile }[];
+    decisionEngine?: { mode: string; workflow: string };
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const engine = value.decisionEngine;
+  if (engine?.mode === "jev" && engine.workflow === "journal_v4") return;
+  value.seats.forEach((seat, index) => {
+    if (seat.personality)
+      ctx.addIssue({
+        code: "custom",
+        path: ["seats", index, "personality"],
+        message: "seat personalities require the journal_v4 Jev decision engine",
+      });
+  });
+}
 export const GameConfigV2Schema = z
   .object({
     ...GameConfigSchema.shape,
@@ -289,6 +308,7 @@ export const GameConfigV2Schema = z
     requireClaudeSessionPairing(value, ctx);
     requireEveryTurnSetup(value, ctx);
     requireSeededPersonalities(value, ctx);
+    requireJournalV4Personalities(value, ctx);
     if (
       value.decisionEngine.mode === "jev" &&
       !["agent_v3_1", "agent_v3_2", CLAUDE_SESSION_PROTOCOL].includes(value.protocolVersion)
@@ -380,7 +400,7 @@ export const CreateGameV2RequestSchema = CreateGameRequestSchema.extend({
   decisionEngine: DecisionEngineSchema.extend({
     workflow: z.enum(["legacy_v1", "journal_v2", "journal_v3", "journal_v4"]).default("journal_v4"),
   }).optional(),
-});
+}).superRefine(requireJournalV4Personalities);
 export type CreateGameV2Request = z.infer<typeof CreateGameV2RequestSchema>;
 export const ExperimentSpecV2Schema = ExperimentSpecSchema.extend({
   schemaVersion: z.literal("experiment_v2"),

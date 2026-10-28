@@ -4,6 +4,9 @@ export interface SemanticAssessment {
   rule: string;
   applicable: boolean;
   issues: string[];
+  /** CES-1585: a personality seat kept its ballot after the one reconsideration; it stands. */
+  personalityException?: "applied";
+  exceptedIssues?: string[];
 }
 
 /** A narrow invariant, not a general strategy oracle or confidence threshold. */

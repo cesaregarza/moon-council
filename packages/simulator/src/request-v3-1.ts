@@ -649,7 +649,15 @@ function layers(
     throw new Error("Journal update is missing newly delivered evidence");
   const privateInput = JSON.stringify({
     AUTHORIZED_PRIVATE_STATE: {
-      ...(packet.personality ? { personality: packet.personality.text } : {}),
+      ...(packet.personality
+        ? {
+            personality: {
+              instruction:
+                "Play this character for the whole game, including where its motives differ from factionObjective.",
+              text: packet.personality.text,
+            },
+          }
+        : {}),
       self: packet.self,
       knownAllies: [...packet.knownAllies].sort((a, b) => a.id.localeCompare(b.id)),
       factionObjective: packet.rules.factionObjective,

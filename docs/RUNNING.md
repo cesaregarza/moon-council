@@ -156,6 +156,9 @@ A V2 seat's `personality` is a frozen profile (CES-1585), not free text. A profi
 (0 to 1: deception, independence, conflict, risk, infoSeeking, selfPreservation, revisability,
 engagement), four motivation weights summing to 1 (team, survival, attention, chaos), the text the
 model reads (40 to 200 words), its source, and `textSha256`. A seat without one has no personality.
+Personalities run only on the journal_v4 Jev decision engine: the config and the create-game request
+refuse `seats.N.personality` on any other engine or workflow, and the lab keeps a chosen profile but
+won't create the game until Jev is selected.
 
 - **Presets:** `PERSONALITY_PRESETS` holds The Liar, The Maverick, The Sacrificial Lamb, The
   Disruptor, The Careful Reasoner, Evidence-focused and Persistent rambler. They are not sanitized.
@@ -166,9 +169,15 @@ model reads (40 to 200 words), its source, and `textSha256`. A seat without one 
 - **Delivery:** a Claude session sends block 1 (shared by every seat), then the seat's personality
   block, then block 2 (the public record), then the day's messages. Its breakpoints are the end of
   each system block and the automatic one at the end of the request: four at most. Other request
-  paths carry the text in the seat's private state. Jev's actor state gets a fixed digest, the label
-  and all twelve values, and is told to weigh the motivations as given. The session identity
-  includes the personality hash.
+  paths carry the text in the seat's private state, with the same instruction to play the character
+  even where its motives differ from the faction objective. Jev's actor state gets a fixed digest,
+  the label and all twelve values, and every Jev question tells the seat to weigh the motivations as
+  given. The session identity includes the personality hash.
+- **Semantic review:** the verified-last-wolf ballot rule still asks a personality seat once to
+  reconsider, naming its motivations. A ballot it keeps then commits, and the
+  `decision.semantic_assessed` event records `personalityException: "applied"` with the excepted
+  issue. That records the exception, not that the ballot fits the character. No other rule has an
+  exception, and a seat without a personality is still paused for an operator acknowledgement.
 - **Generation**, offline only:
   `scripts/personality-generate.ts --seed-prefix S --count N --out FILE` writes a pool. A seed gives
   the values; a generator writes the text from the numbers alone. The default generator is a

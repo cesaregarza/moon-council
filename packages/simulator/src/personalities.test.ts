@@ -24,15 +24,15 @@ import { ClaudeSessions, sessionInstructionIdentity } from "./claude-session";
 import { V2GameOrchestrator } from "./orchestrator-v2";
 import { buildContextV2 } from "./context-v2";
 import { actorBriefing, prepareActorJevAction } from "./jev-actor";
-import { decisionRequestV2 } from "./request-v2";
 import { decisionRequestV32, v31ApiResponseFormat } from "./request-v3-1";
 import { actorConfig, actorFixtures, actorPacket } from "./testing/actor-fixtures";
 
 /**
  * CES-1585, personalities v1: each seat's personality is a frozen Profile in the config (traits,
  * motivations, the text the model reads, hashes). A Claude session sends it once, as its own
- * system block between the shared block 1 and block 2 (Cesar's layer order); other request
- * paths carry it in the private view; Jev gets a fixed numeric digest with the motivations.
+ * system block between the shared block 1 and block 2 (Cesar's layer order); the non-session
+ * V3.1 request carries it in the private state; Jev gets a fixed numeric digest with the
+ * motivations. Personalities run only on journal_v4 Jev.
  */
 const words = (text: string) => text.trim().split(/\s+/).length;
 const issuePaths = (input: unknown) => {
@@ -232,10 +232,7 @@ describe("delivery: private layer, never the shared blocks (CES-1585)", () => {
     expect(sessionSystemBlocks(plain, instructions, format)).toHaveLength(2);
   });
 
-  it("carries the text in the V2 private view and a fixed 12-value digest in the Jev state", () => {
-    const packet = packetFor("p2");
-    const v2 = JSON.stringify(decisionRequestV2(packet, "discussion", "gated").prompt);
-    expect(v2).toContain(JSON.stringify(PERSONALITY_PRESETS["careful-reasoner"].text).slice(1, 60));
+  it("gives Jev a fixed 12-value digest, never the text", () => {
     const actor = actorPacket();
     actor.personality = PERSONALITY_PRESETS.disruptor;
     const brief = actorBriefing({
