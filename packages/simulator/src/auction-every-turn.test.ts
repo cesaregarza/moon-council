@@ -1970,14 +1970,15 @@ describe("auction_every_turn: the hard day limit (CES-1581)", () => {
     connections.push(connection);
     const repository = new LabRepository(connection);
     const current = repository.createGame(everyTurnConfig("current", 30));
-    const old = repository.createGame(everyTurnConfig("old", 30));
+    const oldConfig = everyTurnConfig("old", 30);
+    const old = repository.createGame(oldConfig);
     const { maxDayTurns: _dropped, ...discussion } = {
-      ...old.config.discussion,
+      ...oldConfig.discussion,
       turnBudgetFactor: 2,
     };
     connection.sqlite
       .prepare("update games set config_json = ? where id = ?")
-      .run(JSON.stringify({ ...old.config, discussion }), old.id);
+      .run(JSON.stringify({ ...oldConfig, discussion }), old.id);
     expect(repository.listGames().map((game) => game.id)).toEqual([current.id]);
     expect(repository.unreadableGames()).toEqual([
       {
