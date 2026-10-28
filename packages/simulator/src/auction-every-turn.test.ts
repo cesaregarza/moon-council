@@ -2095,3 +2095,42 @@ describe("Jev request timeouts and retries (CES-1583)", () => {
     expect(new Set(timeouts)).toEqual(new Set([45_000]));
   }, 120_000);
 });
+
+/**
+ * Current-format replacement for a retired compatibility test (CES-1585): a speaker auction paused
+ * on one seat's failed bid resumes from its saved bids, asking only that seat again.
+ */
+describe("a paused auction resumes from its saved bids", () => {
+  it("resolves the in-flight auction, asking only the bidder whose bid failed", async () => {
+    let outage = true;
+    const { jev, inputs } = scriptedJev({
+      ...freshSpeakersFirst,
+      fail: (point, seat) => outage && point === "urge" && seat === "p2",
+    });
+    const { repository, id } = await playDay(everyTurnConfig("resume-auction"), jev);
+    expect(repository.getGame(id)!.status).toBe("paused");
+    const before = repository.listEvents(id);
+    const inFlight = String(
+      before.filter((e) => e.type === "discussion.bid_submitted").at(-1)!.payload.auctionKey,
+    );
+    const resolvedBefore = before.filter((e) => e.type === "discussion.auction_resolved").length;
+    const askedBefore = inputs.length;
+    outage = false;
+    // One committed decision per step, as the API's step_decision runs it, so the count below
+    // stops at the in-flight auction's resolution instead of running into the next auction.
+    new DecisionStore(repository).put(id, "stepUnit", "decision");
+    const runner = new V2GameOrchestrator(repository, players(), jev);
+    const resolved = () =>
+      repository.listEvents(id).filter((e) => e.type === "discussion.auction_resolved");
+    for (let step = 0; step < 50 && resolved().length === resolvedBefore; step += 1) {
+      repository.updateGame(id, { status: "stepping", error: null });
+      await runner.runGameStep(id);
+    }
+    expect(resolved()[resolvedBefore]?.payload.auctionKey).toBe(inFlight);
+    const askedAfter = inputs
+      .slice(askedBefore)
+      .filter((call) => call.input.includes('"urge"'))
+      .map((call) => call.seat);
+    expect([...new Set(askedAfter)]).toEqual(["p2"]);
+  }, 180_000);
+});

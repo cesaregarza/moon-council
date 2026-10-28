@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   GameConfigV2Schema,
@@ -13,9 +16,12 @@ import {
   type PersonalityProfile,
   type PlayerContextV2,
 } from "@werewolf/contracts";
-import { createGameState } from "@werewolf/engine";
+import { DecisionStore, LabRepository, openDatabase } from "@werewolf/db";
+import { createGameState, reduceGame } from "@werewolf/engine";
+import { FakeDecisionProvider } from "@werewolf/llm";
 import { dayStartBlock, sessionSystemBlocks, sharedSystemBlocks } from "./claude-session-request";
-import { sessionInstructionIdentity } from "./claude-session";
+import { ClaudeSessions, sessionInstructionIdentity } from "./claude-session";
+import { V2GameOrchestrator } from "./orchestrator-v2";
 import { buildContextV2 } from "./context-v2";
 import { actorBriefing } from "./jev-actor";
 import { decisionRequestV2 } from "./request-v2";
@@ -266,5 +272,82 @@ describe("delivery: private layer, never the shared blocks (CES-1585)", () => {
     const one = sessionInstructionIdentity(call(packetFor("p1")));
     expect(sessionInstructionIdentity(call(packetFor("p1")))).toBe(one);
     expect(sessionInstructionIdentity(call(packetFor("p2")))).not.toBe(one);
+  });
+});
+
+/**
+ * A real resume (CES-1585): a game with seeded profiles is written to a database file, closed, and
+ * rebuilt from that file. The exact profiles, their hashes, the request identity and the open
+ * Claude session all survive; nothing is redrawn and no session or turn is redone.
+ */
+describe("a frozen profile across a database resume", () => {
+  it("keeps the profiles, the identity and the session exactly as stored", () => {
+    const base = actorConfig();
+    const pool = [PERSONALITY_PRESETS.disruptor, PERSONALITY_PRESETS.liar];
+    const drawn = seededPersonalityAssignment(
+      "resume-seed",
+      pool,
+      base.seats.map((seat) => seat.id),
+    );
+    const config = GameConfigV2Schema.parse({
+      ...base,
+      seats: base.seats.map((seat, i) => ({ ...seat, personality: drawn[i] })),
+      personalities: { assignment: { kind: "seeded", seed: "resume-seed", pool } },
+    });
+    const path = join(mkdtempSync(join(tmpdir(), "personality-resume-")), "game.db");
+    const task = { type: "discussion_free_speech", ready: false, revision: "1" } as const;
+    const open = () => {
+      const connection = openDatabase(path);
+      const repository = new LabRepository(connection);
+      return { connection, repository, store: new DecisionStore(repository) };
+    };
+    const callFor = (repository: LabRepository, gameId: string) => {
+      const state = reduceGame(gameId, repository.listEvents(gameId));
+      const packet = buildContextV2(state, [], "p1", emptyJournalV2(), "k", "discussion");
+      return {
+        gameId,
+        playerId: "p1",
+        packet,
+        model: "claude-sonnet-5-5",
+        effort: "medium",
+        kind: "discussion",
+        instructions: decisionRequestV32(packet, task, false, null, null).prompt.instructions,
+        formatInstructions: v31ApiResponseFormat(packet, task)!.instructions,
+        requestInput: "{}",
+      };
+    };
+    const first = open();
+    const game = first.repository.createGame(config);
+    new V2GameOrchestrator(first.repository, new FakeDecisionProvider()).initialize(game.id);
+    const before = callFor(first.repository, game.id);
+    const turn = new ClaudeSessions(first.store).begin(before);
+    turn.commit({
+      content: [{ type: "text", text: "{}" }] as never,
+      stopReason: "end_turn",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 15,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        reasoningTokens: 0,
+      },
+    });
+    first.connection.close();
+
+    const second = open();
+    const stored = second.repository.getGame(game.id)!.config as typeof config;
+    expect(stored).toEqual(config);
+    stored.seats.forEach((seat, i) => {
+      expect(seat.personality).toEqual(drawn[i]);
+      expect(seat.personality!.textSha256).toBe(sha256Hex(seat.personality!.text));
+    });
+    const after = callFor(second.repository, game.id);
+    expect(after.packet.personality).toEqual(before.packet.personality);
+    expect(sessionInstructionIdentity(after)).toBe(sessionInstructionIdentity(before));
+    const resumed = new ClaudeSessions(second.store).begin(after);
+    expect(resumed.metadata).toMatchObject({ id: turn.metadata.id, turn: 1 });
+    expect(resumed.harness.system).toEqual(turn.harness.system);
+    second.connection.close();
   });
 });
