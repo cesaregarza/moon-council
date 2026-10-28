@@ -23,10 +23,10 @@ import { dayStartBlock, sessionSystemBlocks, sharedSystemBlocks } from "./claude
 import { ClaudeSessions, sessionInstructionIdentity } from "./claude-session";
 import { V2GameOrchestrator } from "./orchestrator-v2";
 import { buildContextV2 } from "./context-v2";
-import { actorBriefing } from "./jev-actor";
+import { actorBriefing, prepareActorJevAction } from "./jev-actor";
 import { decisionRequestV2 } from "./request-v2";
 import { decisionRequestV32, v31ApiResponseFormat } from "./request-v3-1";
-import { actorConfig, actorPacket } from "./testing/actor-fixtures";
+import { actorConfig, actorFixtures, actorPacket } from "./testing/actor-fixtures";
 
 /**
  * CES-1585, personalities v1: each seat's personality is a frozen Profile in the config (traits,
@@ -349,5 +349,86 @@ describe("a frozen profile across a database resume", () => {
     expect(resumed.metadata).toMatchObject({ id: turn.metadata.id, turn: 1 });
     expect(resumed.harness.system).toEqual(turn.harness.system);
     second.connection.close();
+  });
+});
+
+/**
+ * CES-1585 (halcyon 993): personalities exist only on the current contract, the journal_v4 Jev
+ * workflow. Elsewhere a seat's personality is refused, naming the field; there is no adapter.
+ */
+describe("personalities only on journal_v4 Jev", () => {
+  const withPersonality = (decisionEngine: object) => ({
+    ...actorConfig(),
+    seats: actorConfig().seats.map((seat, i) =>
+      i === 2 ? { ...seat, personality: PERSONALITY_PRESETS.disruptor } : seat,
+    ),
+    decisionEngine,
+  });
+  it.each([
+    { mode: "jev", workflow: "legacy_v1" },
+    { mode: "jev", workflow: "journal_v2" },
+    { mode: "jev", workflow: "journal_v3" },
+    { mode: "llm", workflow: "journal_v4" },
+  ])("refuses a seat personality on $mode $workflow, naming the field", (engine) => {
+    expect(issuePaths(withPersonality(engine))).toContain("seats.2.personality");
+  });
+  it("accepts a seat personality on journal_v4 Jev", () => {
+    expect(issuePaths(withPersonality({ mode: "jev", workflow: "journal_v4" }))).toEqual([]);
+  });
+});
+
+/**
+ * Every journal_v4 Jev question for a personality seat carries the digest and the motive-aware
+ * framing; a seat without one is asked exactly as before. The non-session V3.1 private state
+ * carries the same "including where its motives differ" exception as the session block.
+ */
+describe("motive-aware framing on every path (CES-1585)", () => {
+  const MOTIVE = /character's motivations.*including where they differ from your win condition/;
+  const tasks = [
+    ...actorFixtures().map(({ packet, task }) => ({ packet, task })),
+    ...(["second_poll", "second_urgency", "lynch_ballot"] as const).map((task) => ({
+      packet: actorPacket(),
+      task,
+    })),
+  ];
+  const request = (packet: PlayerContextV2, task: (typeof tasks)[number]["task"]) => {
+    const base = {
+      ...decisionRequestV32(
+        packet,
+        { type: "vote_choice", proposalKind: "vote" },
+        true,
+        null,
+        null,
+      ),
+      schemaName: task,
+      normalize: (v: unknown) => v,
+    };
+    const op = { packet, playerId: packet.self.id, taskType: task };
+    return JSON.parse(
+      prepareActorJevAction(op as never, actorConfig(), base as never).prepared.prompt.input,
+    ) as { state: { personality?: string }; questions: Record<string, { instructions: string }> };
+  };
+  it.each(tasks)(
+    "frames every $task question by the character's motivations",
+    ({ packet, task }) => {
+      const disruptor = PERSONALITY_PRESETS.disruptor;
+      const asked = request({ ...packet, personality: disruptor }, task);
+      expect(asked.state.personality).toBe(personalityDigest(disruptor));
+      for (const question of Object.values(asked.questions))
+        expect(question.instructions).toMatch(MOTIVE);
+      const plain = request(packet, task);
+      expect(plain.state.personality).toBeUndefined();
+      for (const question of Object.values(plain.questions))
+        expect(question.instructions).not.toMatch(/character/);
+    },
+  );
+  it("gives the non-session V3.1 private state the same exception as the session block", () => {
+    const task = { type: "discussion_free_speech", ready: false, revision: "1" } as const;
+    const packet = { ...actorPacket(), personality: PERSONALITY_PRESETS.disruptor };
+    const prompt = JSON.stringify(decisionRequestV32(packet, task, false, null, null).prompt);
+    expect(prompt).toContain("including where its motives differ");
+    expect(prompt).toContain(JSON.stringify(PERSONALITY_PRESETS.disruptor.text).slice(1, 60));
+    const plain = JSON.stringify(decisionRequestV32(actorPacket(), task, false, null, null).prompt);
+    expect(plain).not.toContain("including where its motives differ");
   });
 });

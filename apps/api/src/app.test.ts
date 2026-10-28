@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { CreateGameV2RequestSchema, PERSONALITY_PRESETS } from "@werewolf/contracts";
 import { reduceGame } from "@werewolf/engine";
 import { buildApi } from "./app";
 
@@ -313,6 +314,61 @@ describe("HTTP control surface", () => {
     });
     expect(reduced.statusCode).toBe(400);
     expect(reduced.json().error).toBe("limit_extension_cannot_reduce_limits");
+  });
+
+  it("refuses a seat personality outside journal_v4 Jev at the create-game boundary (CES-1585)", async () => {
+    const built = await buildApi({ databaseUrl: ":memory:" });
+    apps.push(built.app);
+    const ids = [
+      "werewolf",
+      "werewolf",
+      "seer",
+      "doctor",
+      "villager",
+      "villager",
+      "villager",
+      "villager",
+    ];
+    const disruptor = PERSONALITY_PRESETS.disruptor;
+    const payload = {
+      name: "Profiles",
+      seed: "profiles",
+      preset: "standard-8-v2",
+      seats: ids.map((_, i) => ({
+        id: `p${i}`,
+        name: `P${i}`,
+        ...(i === 0 ? { personality: disruptor } : {}),
+      })),
+      roleRefs: ids.map((id) => ({ id })),
+    };
+    for (const decisionEngine of [
+      undefined,
+      { mode: "llm" },
+      { mode: "jev", workflow: "journal_v3" },
+    ]) {
+      const body = { ...payload, ...(decisionEngine ? { decisionEngine } : {}) };
+      expect(
+        CreateGameV2RequestSchema.safeParse(body).error?.issues.map((i) => i.path.join(".")),
+      ).toContain("seats.0.personality");
+      const refused = await built.app.inject({
+        method: "POST",
+        url: "/api/v1/games",
+        payload: body,
+      });
+      expect(refused.statusCode).toBe(400);
+      expect(
+        (refused.json().issues as { path: (string | number)[] }[]).map((i) => i.path.join(".")),
+      ).toContain("seats.0.personality");
+    }
+    const games = await built.app.inject({ method: "GET", url: "/api/v1/games" });
+    expect(games.json()).toEqual([]);
+    const accepted = await built.app.inject({
+      method: "POST",
+      url: "/api/v1/games",
+      payload: { ...payload, decisionEngine: { mode: "jev" } },
+    });
+    expect(accepted.statusCode).toBe(201);
+    expect(accepted.json().game.config.seats[0].personality).toEqual(disruptor);
   });
 
   it("rejects invalid role counts", async () => {

@@ -411,30 +411,11 @@ test("creates the standard V3.1 setup with editable deliberation, concurrency, a
   await page.getByLabel("Journal tokens").fill("1500");
   await page.getByLabel("Decision concurrency").fill("2");
   await page.getByLabel("Ada model").selectOption("gpt-5.6-luna");
-  await page.getByLabel("Ada personality preset").selectOption("rambler");
-  const desktopViewport = page.viewportSize()!;
-  const personality = page.getByLabel("Ada personality", { exact: true });
-  expect((await personality.boundingBox())!.width).toBeGreaterThan(150);
-  await page.setViewportSize({ width: 390, height: 844 });
-  expect((await personality.boundingBox())!.width).toBeGreaterThan(150);
-  await page.setViewportSize(desktopViewport);
-  await expect(page.getByLabel("Ada personality", { exact: true })).toHaveValue(
-    /persistent, highly talkative rambler/,
-  );
   await page.getByRole("button", { name: "Create V3.1 simulation" }).click();
   await expect(page.getByText("Council record")).toBeVisible();
   expect(mock.requests.some((request) => request === "/api/v1/games")).toBeTruthy();
   expect(mock.creations[0]).toMatchObject({
     preset: "standard-8-v2",
-    seats: [
-      expect.objectContaining({
-        personality: expect.objectContaining({
-          id: "rambler",
-          text: expect.stringContaining("persistent, highly talkative rambler"),
-        }),
-      }),
-      ...Array.from({ length: 7 }, () => expect.anything()),
-    ],
     maxTotalTokens: null,
     reasoningEffort: "xhigh",
     discussion: {
@@ -465,6 +446,49 @@ test("fixes the journal budget at 16,000 for journal_v4 Jev games", async ({ pag
   expect(mock.creations[0]).toMatchObject({
     decisionEngine: { mode: "jev", workflow: "journal_v4" },
     deliberation: { maxJournalTokens: 16000 },
+  });
+});
+
+/**
+ * CES-1585: personalities run only on journal_v4 Jev. With the selected-LLM engine the lab keeps a
+ * chosen profile, explains why it can't be used, and won't create the game until Jev is chosen.
+ */
+test("keeps a seat personality, explains it needs Jev, and creates it only with Jev", async ({
+  page,
+}) => {
+  const mock = await mockApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: /new game/i }).click();
+  await page.getByLabel("Decision engine").selectOption("llm");
+  await page.getByLabel("Ada personality preset").selectOption("rambler");
+  const personality = page.getByLabel("Ada personality", { exact: true });
+  const desktopViewport = page.viewportSize()!;
+  expect((await personality.boundingBox())!.width).toBeGreaterThan(150);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect((await personality.boundingBox())!.width).toBeGreaterThan(150);
+  await page.setViewportSize(desktopViewport);
+  const create = page.getByRole("button", { name: "Create V3.1 simulation" });
+  const notice = page.getByText(/Personalities need the Jev \+ selected LLM decision engine/);
+  await expect(notice).toBeVisible();
+  await expect(create).toBeDisabled();
+  await expect(personality).toHaveValue(/persistent, highly talkative rambler/);
+  await page.getByLabel("Decision engine").selectOption("jev");
+  await expect(notice).toBeHidden();
+  await expect(personality).toHaveValue(/persistent, highly talkative rambler/);
+  await create.click();
+  await expect(page.getByText("Council record")).toBeVisible();
+  expect(mock.creations).toHaveLength(1);
+  expect(mock.creations[0]).toMatchObject({
+    decisionEngine: { mode: "jev", workflow: "journal_v4" },
+    seats: [
+      expect.objectContaining({
+        personality: expect.objectContaining({
+          id: "rambler",
+          text: expect.stringContaining("persistent, highly talkative rambler"),
+        }),
+      }),
+      ...Array.from({ length: 7 }, () => expect.anything()),
+    ],
   });
 });
 
