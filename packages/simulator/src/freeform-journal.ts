@@ -28,12 +28,12 @@ export function journalEntries(text: string): string[] {
 }
 
 /**
- * The journal a request delivers: the stored journal, less its oldest
- * `rules.journalEntriesOmitted` entries behind the marker. Updates apply to the stored journal.
+ * The journal a request delivers: the stored journal, less its oldest `journalEntriesOmitted`
+ * entries behind the marker. Updates apply to the stored journal.
  */
 export function deliveredJournalText(packet: PlayerContextV2): string {
   const text = journalText(packet.journal);
-  const omitted = Number(packet.rules.journalEntriesOmitted ?? 0);
+  const omitted = packet.journalEntriesOmitted ?? 0;
   if (!omitted) return text;
   return [JOURNAL_OMITTED_MARKER, ...journalEntries(text).slice(omitted)].join("\n\n");
 }

@@ -536,7 +536,7 @@ export function buildContextV2(
     omitted <= entries && requestSize() > config.deliberation.maxContextTokens;
     omitted += 1
   )
-    packet.rules.journalEntriesOmitted = omitted;
+    packet.journalEntriesOmitted = omitted;
   const essentialSize = requestSize();
   // Under V3.2 every record is already at its floor tier and the journal is fully trimmed
   // here, so this is genuinely last-resort rather than a budget that can be raised.

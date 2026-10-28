@@ -707,6 +707,12 @@ export interface PlayerContextV2 {
   closing: boolean;
   /** journal_v4 Jev only: today's public floor, never sent to the LLM. */
   publicFloor?: PublicFloorV2;
+  /**
+   * CES-1584: how many of the journal's oldest entries this request leaves out to fit the
+   * context limit. Delivery only: never in the rules or the frozen reference, and the stored
+   * journal keeps them.
+   */
+  journalEntriesOmitted?: number;
 }
 /** Per living player, counted from every public speech today; no private record contributes. */
 export interface PublicFloorV2 {
