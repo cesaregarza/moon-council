@@ -32,6 +32,19 @@ describe("streamed research artifacts (CES-1584)", () => {
     expect(await readFile(empty, "utf8")).toBe(JSON.stringify({}, null, 2));
   });
 
+  it("never serializes a top-level array whole: each element is serialized once", async () => {
+    let calls = 0;
+    const counted = (n: number) => ({ toJSON: () => ((calls += 1), { n }) });
+    const value = { events: [counted(1), counted(2), counted(3)], other: [counted(4)] };
+    const path = await file("counted.json");
+    await writePrettyJson(path, value);
+    expect(calls).toBe(4);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      events: [{ n: 1 }, { n: 2 }, { n: 3 }],
+      other: [{ n: 4 }],
+    });
+  });
+
   it("writes one JSON value per line", async () => {
     const values = [{ kind: "metadata" }, { kind: "event", event: { text: "a\nb" } }];
     const path = await file("research.jsonl");
