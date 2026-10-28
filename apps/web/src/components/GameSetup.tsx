@@ -43,22 +43,22 @@ const lunaModel = "gpt-5.6-luna";
 /** journal_v4 Jev games need the schema maximum; LLM-only games keep the editable budget. */
 type SeatProfiles = Record<number, PersonalityProfile | undefined>;
 
-/** CES-1585: a profile is kept when the engine changes, but only journal_v4 Jev can use it. */
-function profilesNeedJev(engine: "llm" | "jev", personalities: SeatProfiles) {
-  return engine !== "jev" && Object.values(personalities).some(Boolean);
+type ActiveSeats = { personality?: PersonalityProfile }[];
+
+/**
+ * CES-1585: a profile is kept when the engine or seat count changes, but only journal_v4 Jev can
+ * use it, and only the seats in the game count.
+ */
+function profilesNeedJev(engine: "llm" | "jev", seats: ActiveSeats) {
+  return engine !== "jev" && seats.some((seat) => seat.personality);
 }
 
-function cannotCreate(
-  busy: boolean,
-  roleCount: number,
-  engine: "llm" | "jev",
-  personalities: SeatProfiles,
-) {
-  return busy || roleCount === 0 || profilesNeedJev(engine, personalities);
+function cannotCreate(busy: boolean, roleCount: number, engine: "llm" | "jev", seats: ActiveSeats) {
+  return busy || roleCount === 0 || profilesNeedJev(engine, seats);
 }
 
-function ProfilesNeedJevNotice(props: { engine: "llm" | "jev"; personalities: SeatProfiles }) {
-  if (!profilesNeedJev(props.engine, props.personalities)) return null;
+function ProfilesNeedJevNotice(props: { engine: "llm" | "jev"; seats: ActiveSeats }) {
+  if (!profilesNeedJev(props.engine, props.seats)) return null;
   return (
     <div className="error-banner" role="status">
       Personalities need the Jev + selected LLM decision engine (journal_v4). Choose that engine to
@@ -609,7 +609,7 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
         </details>
 
         {error && <div className="error-banner">{error}</div>}
-        <ProfilesNeedJevNotice engine={decisionEngine} personalities={personalities} />
+        <ProfilesNeedJevNotice engine={decisionEngine} seats={seats} />
         <div className="action-row">
           <label className="toggle">
             <input
@@ -629,7 +629,7 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
           </label>
           <button
             className="primary"
-            disabled={cannotCreate(busy, latestRoles.length, decisionEngine, personalities)}
+            disabled={cannotCreate(busy, latestRoles.length, decisionEngine, seats)}
             onClick={() => void create()}
           >
             {busy ? "Preparing…" : initialConfig ? "Clone simulation" : "Create V3.1 simulation"}
