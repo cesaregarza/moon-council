@@ -49,7 +49,7 @@ describe("personality generation (CES-1585)", () => {
     );
     const pool = await samplePersonalityPool();
     expect(committed).toEqual(pool);
-    expect(pool.slice(0, 5).map((p: { id: string }) => p.id)).toEqual([
+    expect(pool.slice(0, 5).map((p) => p.id)).toEqual([
       "liar",
       "maverick",
       "sacrificial-lamb",
@@ -58,7 +58,7 @@ describe("personality generation (CES-1585)", () => {
     ]);
     expect(pool[3]).toEqual(PERSONALITY_PRESETS.disruptor);
     for (const mock of pool.slice(5)) expect(mock.label).toMatch(/^Mock /);
-    expect(pool.slice(5).map((p: { source: { seed: string } }) => p.source.seed)).toEqual([
+    expect(pool.slice(5).map((p) => (p.source.kind === "generated" ? p.source.seed : ""))).toEqual([
       "sample-1",
       "sample-2",
       "sample-3",
