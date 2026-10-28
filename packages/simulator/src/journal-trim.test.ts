@@ -4,6 +4,7 @@ import { createGameState } from "@werewolf/engine";
 import { dayStartBlock, sharedSystemBlocks } from "./claude-session-request";
 import { buildContextV2 } from "./context-v2";
 import { jevBriefing } from "./jev-briefing";
+import { decisionRequestV2 } from "./request-v2";
 import { decisionRequestV32, v31ApiResponseFormat } from "./request-v3-1";
 import { actorConfig } from "./testing/actor-fixtures";
 
@@ -101,5 +102,61 @@ describe("journal trimming at the context limit (CES-1584)", () => {
 
   it("still fails closed when the request cannot fit even without the journal", () => {
     expect(() => build(floor - 50, journal(40))).toThrow(/^context_limit: /);
+  });
+});
+
+/**
+ * The night-action step first builds a context with no request sizer, to read the legal
+ * actions (orchestrator-v2.ts). That default sizer is the V2 decision request, which must
+ * measure the journal as delivered, so the trim reaches it too (CES-1584, Pi game 5dbeada9).
+ */
+describe("the default V2 sizer measures the delivered journal (CES-1584)", () => {
+  const nightBuild = (maxContextTokens: number, text: ReturnType<typeof journal>) => {
+    const base = actorConfig();
+    const state = createGameState(
+      "g",
+      GameConfigV2Schema.parse({
+        ...base,
+        deliberation: { ...base.deliberation, maxContextTokens },
+      }),
+    );
+    state.phase = "night_actions";
+    state.day = 3;
+    const doctor = state.players.find((player) => player.role.id === "doctor")!;
+    return {
+      doctor,
+      build: () => buildContextV2(state, [], doctor.id, text, `power:${doctor.id}`, "night_action"),
+    };
+  };
+  const v2Tokens = (packet: PlayerContextV2) =>
+    decisionRequestV2(packet, "night_action", "gated").tokens;
+  /** The default sizer's size with no journal at all. */
+  const v2Floor = v2Tokens(nightBuild(32_000, journal(0)).build());
+
+  it("completes a night-action build whose stored journal is over budget, legal actions readable", () => {
+    const limit = Math.max(1_000, v2Floor + 1_500);
+    const stored = journal(80);
+    const { doctor, build } = nightBuild(limit, stored);
+    let packet: PlayerContextV2 | undefined;
+    expect(() => (packet = build())).not.toThrow();
+    expect(packet!.journalEntriesOmitted).toBeGreaterThan(0);
+    expect(packet!.legalActions.some((action) => action.targets.length > 0)).toBe(true);
+    expect(packet!.self.id).toBe(doctor.id);
+    expect(packet!.journal.text).toBe(stored.text);
+  });
+
+  it("sends a decision request that fits and carries the omission marker", () => {
+    const limit = Math.max(1_000, v2Floor + 1_500);
+    const packet = nightBuild(limit, journal(80)).build();
+    const request = decisionRequestV2(packet, "night_action", "gated");
+    expect(request.tokens).toBeLessThanOrEqual(limit);
+    expect(JSON.stringify(request.prompt)).toContain(MARKER);
+    expect(JSON.stringify(request.prompt)).toContain("Note 80.");
+    expect(JSON.stringify(request.prompt)).not.toContain("Note 1.");
+  });
+
+  it("still fails closed when the request cannot fit even without the journal", () => {
+    expect(v2Floor).toBeGreaterThan(1_050);
+    expect(() => nightBuild(v2Floor - 50, journal(80)).build()).toThrow(/^context_limit: /);
   });
 });
