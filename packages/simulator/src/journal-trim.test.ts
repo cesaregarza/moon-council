@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { GameConfigV2Schema, emptyJournalV2, type PlayerContextV2 } from "@werewolf/contracts";
 import { createGameState } from "@werewolf/engine";
-import { dayStartBlock } from "./claude-session-request";
+import { dayStartBlock, sharedSystemBlocks } from "./claude-session-request";
 import { buildContextV2 } from "./context-v2";
 import { jevBriefing } from "./jev-briefing";
+import { decisionRequestV32, v31ApiResponseFormat } from "./request-v3-1";
 import { actorConfig } from "./testing/actor-fixtures";
 
 /**
@@ -72,6 +73,24 @@ describe("journal trimming at the context limit (CES-1584)", () => {
     const packet = build(floor + 500, stored);
     expect(String(jevBriefing(packet, undefined).journal)).toBe(MARKER);
     expect(packet.journal.text).toBe(stored.text);
+  });
+
+  it("keeps the omission out of block 1: sessions keep their shared instructions", () => {
+    // Same seat, view and limit; one more stored entry makes this request omit more.
+    const fewer = build(floor + 2_000, journal(40));
+    const more = build(floor + 2_000, journal(48));
+    const delivered = (packet: PlayerContextV2) => String(jevBriefing(packet, undefined).journal);
+    expect(delivered(fewer).startsWith(MARKER)).toBe(true);
+    expect(delivered(more).startsWith(MARKER)).toBe(true);
+    const task = { type: "discussion_free_speech", ready: false, revision: "1" } as const;
+    const blockOne = (packet: PlayerContextV2) =>
+      sharedSystemBlocks(
+        packet,
+        decisionRequestV32(packet, task, false, null, null).prompt.instructions,
+        v31ApiResponseFormat(packet, task)!.instructions,
+      )[0];
+    expect(blockOne(more)).toBe(blockOne(fewer));
+    expect(blockOne(more)).not.toContain("journalEntriesOmitted");
   });
 
   it("leaves a journal that fits as it is", () => {
