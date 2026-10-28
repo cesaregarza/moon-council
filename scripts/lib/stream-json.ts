@@ -18,7 +18,10 @@ const element = (value: unknown) => JSON.stringify(value, null, 2) ?? "null";
 
 /** The same bytes as JSON.stringify(value, null, 2), with each top-level array streamed. */
 function* prettyPieces(value: Record<string, unknown>): Generator<string> {
-  const entries = Object.entries(value).filter(([, v]) => JSON.stringify(v) !== undefined);
+  // The values JSON.stringify drops from an object, found without serializing any of them.
+  const entries = Object.entries(value).filter(
+    ([, v]) => v !== undefined && typeof v !== "function" && typeof v !== "symbol",
+  );
   if (!entries.length) return yield "{}";
   yield "{";
   for (const [index, [key, v]] of entries.entries()) {
