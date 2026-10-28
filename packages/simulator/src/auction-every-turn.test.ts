@@ -18,6 +18,7 @@ import {
   AskJevProvider,
   ClaudeSpendLedger,
   FakeDecisionProvider,
+  type AskJevRunner,
   type DecisionProvider,
   type JevRequest,
 } from "@werewolf/llm";
@@ -114,7 +115,7 @@ const POINTS = ["urge", "second", "urgency", "ballot"];
 /** Scripted Jev, recording every request it is asked. */
 function scriptedJev(script: Script) {
   const inputs: { seat: string | undefined; input: string }[] = [];
-  const jev = new AskJevProvider(async (input) => {
+  const runner: AskJevRunner = async (input) => {
     const request = JSON.parse(input) as JevRequest;
     const seat = seatOf(input) ?? "";
     inputs.push({ seat, input });
@@ -144,8 +145,9 @@ function scriptedJev(script: Script) {
       usage: { input_tokens: tokens, output_tokens: 1 },
       answers,
     });
-  });
-  return { jev, inputs };
+  };
+  const jev = new AskJevProvider(runner);
+  return { jev, inputs, runner };
 }
 
 type EndAction = { kind: "continue" } | { kind: "accuse"; targetId: string };
@@ -1988,4 +1990,41 @@ describe("auction_every_turn: the hard day limit (CES-1581)", () => {
     ]);
     expect(() => repository.getGame(old.id)).toThrow(/discussion\.maxDayTurns/);
   });
+});
+
+describe("Jev request timeouts and retries (CES-1583)", () => {
+  it("gives a decision whose Jev call keeps failing every attempt maxCalls allows, then pauses", async () => {
+    const config = everyTurnConfig("jev-outage-attempts");
+    const { jev } = scriptedJev({
+      ...freshSpeakersFirst,
+      fail: (point, seat) => point === "urge" && seat === "p1",
+    });
+    const { repository, id } = await playDay(config, jev);
+    expect(repository.getGame(id)!.status).toBe("paused");
+    expect(repository.getGame(id)!.error).toMatch(/exhausted decision retries/);
+    const failed = new DecisionStore(repository)
+      .attempts(id)
+      .filter((attempt) => attempt.provider === "jev" && attempt.status === "invalid");
+    const perDecision = new Map<string, number>();
+    for (const attempt of failed)
+      perDecision.set(attempt.decisionId, (perDecision.get(attempt.decisionId) ?? 0) + 1);
+    expect([...perDecision.values()]).toEqual([config.deliberation.maxCalls]);
+  }, 180_000);
+
+  it("gives each Jev request the configured deliberation.requestTimeoutMs, with no lower cap", async () => {
+    const base = everyTurnConfig("jev-timeout-config");
+    const config = GameConfigV2Schema.parse({
+      ...base,
+      deliberation: { ...base.deliberation, requestTimeoutMs: 45_000 },
+    });
+    const timeouts: number[] = [];
+    const { runner } = scriptedJev({ urge: () => 0 });
+    const jev = new AskJevProvider(async (input, options) => {
+      timeouts.push(options.timeoutMs);
+      return runner(input, options);
+    });
+    await playDay(config, jev);
+    expect(timeouts.length).toBeGreaterThan(0);
+    expect(new Set(timeouts)).toEqual(new Set([45_000]));
+  }, 120_000);
 });
