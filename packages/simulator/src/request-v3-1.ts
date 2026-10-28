@@ -14,7 +14,7 @@ import {
   type PlayerContextV2,
   type PrivateJournalV2,
 } from "@werewolf/contracts";
-import { journalText } from "./freeform-journal";
+import { deliveredJournalText } from "./freeform-journal";
 import { tierOf, tierPayload } from "./evidence-tiers";
 import { estimatedTokens, stableGameReference } from "./request-v2";
 import type { ApiResponseFormat } from "@werewolf/llm";
@@ -653,7 +653,7 @@ function layers(
       knownAllies: [...packet.knownAllies].sort((a, b) => a.id.localeCompare(b.id)),
       factionObjective: packet.rules.factionObjective,
       journal: proseWorkflow(packet)
-        ? journalText(packet.journal)
+        ? deliveredJournalText(packet)
         : mapJournal(packet.journal, handles, v32),
       ...(packet.rules.jevWorkflow === "journal_v4"
         ? { previousDecisionBrief: packet.journal.decisionBrief ?? null }

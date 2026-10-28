@@ -13,6 +13,7 @@ import {
   type DecisionProvider,
 } from "@werewolf/llm";
 import { V2GameOrchestrator } from "../packages/simulator/src/orchestrator-v2";
+import { writeJsonLines, writePrettyJson } from "./lib/stream-json";
 import { auditGameV2 } from "../packages/simulator/src/audit-v2";
 import { analyzeGame, postGameAnalysisRequest, reviewProvider } from "./game-analyze";
 import { observerPayload, decisionRecords } from "../apps/api/src/observer";
@@ -494,21 +495,19 @@ const bundle = {
   attempts: payload.attempts ?? [],
   decisions,
 };
-await writeFile(join(directory, "research.json"), JSON.stringify(bundle, null, 2));
-await writeFile(
-  join(directory, "research.jsonl"),
-  [
-    JSON.stringify({
-      kind: "metadata",
-      schemaVersion: bundle.schemaVersion,
-      perspective: "moderator",
-      game: bundle.game,
-    }),
-    ...bundle.events.map((event) => JSON.stringify({ kind: "event", event })),
-    ...bundle.decisions.map((decision) => JSON.stringify({ kind: "decision", decision })),
-    ...bundle.attempts.map((attempt) => JSON.stringify({ kind: "attempt", attempt })),
-  ].join("\n") + "\n",
-);
+// Streamed: a long game's bundle no longer fits the heap as one string (CES-1584).
+await writePrettyJson(join(directory, "research.json"), bundle);
+await writeJsonLines(join(directory, "research.jsonl"), [
+  {
+    kind: "metadata",
+    schemaVersion: bundle.schemaVersion,
+    perspective: "moderator",
+    game: bundle.game,
+  },
+  ...bundle.events.map((event) => ({ kind: "event", event })),
+  ...bundle.decisions.map((decision) => ({ kind: "decision", decision })),
+  ...bundle.attempts.map((attempt) => ({ kind: "attempt", attempt })),
+]);
 await writeFile(join(directory, "audit.json"), JSON.stringify(audit, null, 2));
 const lines = [
   `# ${protocol === "agent_v3_1" ? "V3.1" : protocol === "agent_v3" ? "V3" : "V2"} pilot audit`,

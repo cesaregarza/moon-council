@@ -1,4 +1,4 @@
-import type { PrivateJournalV2 } from "@werewolf/contracts";
+import type { PlayerContextV2, PrivateJournalV2 } from "@werewolf/contracts";
 import { estimatedTokens } from "./request-v2";
 
 /** Existing records remain readable without making storage metadata part of memory. */
@@ -17,6 +17,25 @@ export function journalText(journal: PrivateJournalV2): string {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/** Stands in for the oldest journal entries a request left out to fit its context (CES-1584). */
+export const JOURNAL_OMITTED_MARKER = "[earlier notes omitted to fit the context limit]";
+
+/** A prose journal's entries: each appended note starts with its "Day N, phase:" line. */
+export function journalEntries(text: string): string[] {
+  return text ? text.split(/\n\n(?=Day \d+, [a-z_]+:\n)/) : [];
+}
+
+/**
+ * The journal a request delivers: the stored journal, less its oldest `journalEntriesOmitted`
+ * entries behind the marker. Updates apply to the stored journal.
+ */
+export function deliveredJournalText(packet: PlayerContextV2): string {
+  const text = journalText(packet.journal);
+  const omitted = packet.journalEntriesOmitted ?? 0;
+  if (!omitted) return text;
+  return [JOURNAL_OMITTED_MARKER, ...journalEntries(text).slice(omitted)].join("\n\n");
 }
 
 /** Same conservative estimator as context budgets, charging prose rather than JSON. */

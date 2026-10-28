@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ContextSourceV2, PlayerContextV2 } from "@werewolf/contracts";
 import type { DecisionRequest, DecisionResult } from "@werewolf/llm";
-import { journalText } from "./freeform-journal";
+import { deliveredJournalText } from "./freeform-journal";
 import { evidenceMapV31, publicGameState, renderSource } from "./request-v3-1";
 
 export type ClaudeHarness = NonNullable<DecisionRequest<unknown>["claudeHarness"]>;
@@ -67,7 +67,7 @@ export function dayStartBlock(packet: PlayerContextV2, openCursor: number): stri
       self: packet.self,
       knownAllies: [...packet.knownAllies].sort((a, b) => a.id.localeCompare(b.id)),
       factionObjective: packet.rules.factionObjective,
-      journal: journalText(packet.journal),
+      journal: deliveredJournalText(packet),
       previousDecisionBrief: packet.journal.decisionBrief ?? null,
       privateEvidence: render(packet, privateSources),
     },

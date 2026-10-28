@@ -1,5 +1,5 @@
 import type { PlayerContextV2, V3TaskKind } from "@werewolf/contracts";
-import { journalText } from "./freeform-journal";
+import { deliveredJournalText } from "./freeform-journal";
 
 type Namer = (id: unknown) => string;
 /** CES-1575: the public ballots of an auction-every-turn lynch vote, as a verified fact. */
@@ -91,7 +91,7 @@ export function jevBriefing(packet: PlayerContextV2, task: V3TaskKind | undefine
   const role = packet.self.role;
   const taskRules = rulesFor(packet, task, name);
   return {
-    journal: journalText(packet.journal) || "No private notes yet.",
+    journal: deliveredJournalText(packet) || "No private notes yet.",
     situation: [
       `You are ${packet.self.name} (${packet.self.id}), ${role.name}, faction ${role.alignment}. Day ${packet.day}, ${packet.phase}.`,
       `Objective: ${JSON.stringify(role.winCondition)}. Village wins when all wolves are eliminated; wolves win at living parity.`,

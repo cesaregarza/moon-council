@@ -15,7 +15,7 @@ import {
 import { shuffled, validateNightAction, type GameState } from "@werewolf/engine";
 import { decisionRequestV2, estimatedTokens } from "./request-v2";
 import { isDemotable, tierPayload, type DeliveryTier } from "./evidence-tiers";
-import { journalText, journalTokens } from "./freeform-journal";
+import { journalEntries, journalText, journalTokens } from "./freeform-journal";
 import { isEveryTurn, pendingAccusation } from "./every-turn";
 export { estimatedTokens } from "./request-v2";
 
@@ -528,9 +528,18 @@ export function buildContextV2(
     for (const source of all) if (source.cacheLayer === "public") selected.add(source.id);
     materialize();
   }
+  // Then trim the journal this request delivers, oldest entries first, behind a marker
+  // (CES-1584). The stored journal, which updates apply to, is untouched.
+  const entries = journalEntries(journalText(journal)).length;
+  for (
+    let omitted = 1;
+    omitted <= entries && requestSize() > config.deliberation.maxContextTokens;
+    omitted += 1
+  )
+    packet.journalEntriesOmitted = omitted;
   const essentialSize = requestSize();
-  // Under V3.2 every record is already at its floor tier here, so this is genuinely
-  // last-resort rather than a budget that can be raised.
+  // Under V3.2 every record is already at its floor tier and the journal is fully trimmed
+  // here, so this is genuinely last-resort rather than a budget that can be raised.
   if (essentialSize > config.deliberation.maxContextTokens)
     throw new ContextLimitError(
       isLedgerProtocolVersion(config.protocolVersion)
