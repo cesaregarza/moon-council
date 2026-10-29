@@ -18,7 +18,7 @@ const role = (id: string, v = 1) =>
       ? structuredClone(DOCTOR_V1)
       : structuredClone(STARTER_ROLES.find((r) => r.id === id)!);
 const seats = (ids: string[]) =>
-  ids.map((_, i) => ({ id: "p" + (i + 1), name: "Player " + (i + 1), personality: "test" }));
+  ids.map((_, i) => ({ id: "p" + (i + 1), name: "Player " + (i + 1) }));
 const config = (ids: string[], v: 1 | 2) => {
   const ss = seats(ids);
   const input = {

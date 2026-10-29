@@ -48,7 +48,6 @@ function config() {
   const seats = ids.map((_, index) => ({
     id: `p${index + 1}`,
     name: `Player ${index + 1}`,
-    personality: "test",
   }));
   return GameConfigV2Schema.parse({
     schemaVersion: "game_config_v2",

@@ -114,7 +114,13 @@ function expectMaxCycleEnding(events: GameEventV1[]) {
   expect(voted).toBe(true);
 }
 
-const RECORDED_STAGED_GAME = "a491cc8da15f55d2b942727ef619a8458f9c3b5b59c562c9afbd42d7bc4589b5";
+/**
+ * Re-recorded for CES-1585 (was a491cc8d…, main d23bb075). The only difference is in
+ * game.created: its 8 seats and 8 players no longer carry the retired default personality text
+ * ("Observant, concise, and socially strategic."). All 1,555 events and every decision are
+ * otherwise identical.
+ */
+const RECORDED_STAGED_GAME = "7e91402fdf2a27b4b0b81321eb657074d7875dab48275b13cff80b440f015897";
 
 const resolved = (events: GameEventV1[]) =>
   events.filter((e) => e.type === "discussion.auction_resolved");

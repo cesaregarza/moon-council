@@ -44,7 +44,6 @@ function config(overrides: Record<string, unknown> = {}) {
   const seats = ids.map((_, i) => ({
     id: "p" + (i + 1),
     name: "Player " + (i + 1),
-    personality: "test",
   }));
   return GameConfigV2Schema.parse({
     schemaVersion: "game_config_v2",

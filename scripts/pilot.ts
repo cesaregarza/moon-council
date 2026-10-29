@@ -276,11 +276,8 @@ await mkdir(dirname(databasePath), { recursive: true });
 const connection = openDatabase(databasePath),
   repository = new LabRepository(connection);
 repository.seedRoles([...STARTER_ROLES, DOCTOR_V2]);
-const seats = STANDARD_ROLE_IDS.map((_, i) => ({
-  id: `p${i + 1}`,
-  name: seatName(i),
-  personality: "Observant, concise, and strategically independent.",
-}));
+// No default personality: a seat has one only when its config gives it a profile (CES-1585).
+const seats = STANDARD_ROLE_IDS.map((_, i) => ({ id: `p${i + 1}`, name: seatName(i) }));
 const providerKind = values.provider as "fake" | "codex" | "openai" | "anthropic",
   model = values.model ?? "fake-model";
 const game = values.game

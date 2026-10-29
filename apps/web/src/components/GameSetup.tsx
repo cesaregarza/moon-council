@@ -2,7 +2,12 @@ import { MIN_ACTOR_JOURNAL_TOKENS, clonedAttentionExperiment } from "@werewolf/c
 import { PersonalityInput } from "./PersonalityInput";
 import { useMemo, useState } from "react";
 import { seatName } from "@werewolf/contracts";
-import type { CreateGameV2Request, RoleDefinitionV1, StoredGameConfig } from "@werewolf/contracts";
+import type {
+  CreateGameV2Request,
+  PersonalityProfile,
+  RoleDefinitionV1,
+  StoredGameConfig,
+} from "@werewolf/contracts";
 import { api } from "../api";
 
 interface Props {
@@ -36,6 +41,32 @@ const standardRoles: Record<string, string[]> = {
 const lunaModel = "gpt-5.6-luna";
 
 /** journal_v4 Jev games need the schema maximum; LLM-only games keep the editable budget. */
+type SeatProfiles = Record<number, PersonalityProfile | undefined>;
+
+type ActiveSeats = { personality?: PersonalityProfile }[];
+
+/**
+ * CES-1585: a profile is kept when the engine or seat count changes, but only journal_v4 Jev can
+ * use it, and only the seats in the game count.
+ */
+function profilesNeedJev(engine: "llm" | "jev", seats: ActiveSeats) {
+  return engine !== "jev" && seats.some((seat) => seat.personality);
+}
+
+function cannotCreate(busy: boolean, roleCount: number, engine: "llm" | "jev", seats: ActiveSeats) {
+  return busy || roleCount === 0 || profilesNeedJev(engine, seats);
+}
+
+function ProfilesNeedJevNotice(props: { engine: "llm" | "jev"; seats: ActiveSeats }) {
+  if (!profilesNeedJev(props.engine, props.seats)) return null;
+  return (
+    <div className="error-banner" role="status">
+      Personalities need the Jev + selected LLM decision engine (journal_v4). Choose that engine to
+      use them, or set each seat back to no personality. Your choices are kept.
+    </div>
+  );
+}
+
 function journalBudget(engine: "llm" | "jev", requested: number) {
   return engine === "jev" ? MIN_ACTOR_JOURNAL_TOKENS : requested;
 }
@@ -76,9 +107,12 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
       (initialConfig?.seats ?? []).map((seat, index) => [index, seat.model ?? ""]),
     ),
   );
-  const [personalities, setPersonalities] = useState<Record<number, string>>(() =>
+  const [personalities, setPersonalities] = useState<SeatProfiles>(() =>
     Object.fromEntries(
-      (initialConfig?.seats ?? []).map((seat, index) => [index, seat.personality]),
+      (initialConfig?.seats ?? []).map((seat, index) => [
+        index,
+        typeof seat.personality === "object" ? seat.personality : undefined,
+      ]),
     ),
   );
   const [roleIds, setRoleIds] = useState(
@@ -149,7 +183,7 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
       Array.from({ length: seatCount }, (_, index) => ({
         id: `player-${index + 1}`,
         name: seatName(index),
-        personality: personalities[index] ?? "Observant, concise, and socially strategic.",
+        ...(personalities[index] ? { personality: personalities[index] } : {}),
         ...(models[index] ? { model: models[index] } : {}),
       })),
     [models, personalities, seatCount],
@@ -575,6 +609,7 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
         </details>
 
         {error && <div className="error-banner">{error}</div>}
+        <ProfilesNeedJevNotice engine={decisionEngine} seats={seats} />
         <div className="action-row">
           <label className="toggle">
             <input
@@ -594,7 +629,7 @@ export function GameSetup({ roles, onCreated, initialConfig }: Props) {
           </label>
           <button
             className="primary"
-            disabled={busy || latestRoles.length === 0}
+            disabled={cannotCreate(busy, latestRoles.length, decisionEngine, seats)}
             onClick={() => void create()}
           >
             {busy ? "Preparing…" : initialConfig ? "Clone simulation" : "Create V3.1 simulation"}

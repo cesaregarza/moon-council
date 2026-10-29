@@ -210,6 +210,9 @@ export function publicFloor(state: GameState, sources: ContextSourceV2[]): Publi
   }
   return { day: state.day, players: [...rows.values()] };
 }
+/** A V2 seat's frozen personality (CES-1585), kept off `self` so it is delivered once. */
+const personalityOf = (player: GameState["players"][number]) =>
+  typeof player.personality === "object" ? { personality: player.personality } : {};
 export function buildContextV2(
   state: GameState,
   events: GameEventV1[],
@@ -263,7 +266,8 @@ export function buildContextV2(
     schemaVersion: "player_context_v2",
     phase: state.phase,
     day: state.day,
-    self: { id: self.id, name: self.name, personality: self.personality, role: self.role },
+    self: { id: self.id, name: self.name, role: self.role },
+    ...personalityOf(self),
     players: shuffled(
       state.players.map((p) => ({
         id: p.id,

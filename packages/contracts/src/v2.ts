@@ -9,7 +9,14 @@ import {
   ExperimentSpecSchema,
   ExperimentSummarySchema,
   SafetyLimitsSchema,
+  SeatConfigSchema,
 } from "./legacy";
+import {
+  PersonalityAssignmentSchema,
+  PersonalityProfileSchema,
+  seededPersonalityAssignment,
+  type PersonalityProfile,
+} from "./personalities";
 
 export const STANDARD_ROLE_IDS = [
   "werewolf",
@@ -215,9 +222,57 @@ export const SafetyLimitsV2Schema = SafetyLimitsSchema.extend({
 // Worst-case JSON escaping costs six bytes per brief character. This includes
 // bounded owner/revision metadata and at least 1,000 estimated prose tokens.
 export const MIN_ACTOR_JOURNAL_TOKENS = 16_000;
+/** A V2 seat's personality is a frozen profile (CES-1585); absent means none. */
+export const SeatConfigV2Schema = SeatConfigSchema.omit({ personality: true }).extend({
+  personality: PersonalityProfileSchema.optional(),
+});
+/** A seeded assignment's seats must be exactly its draw: the config is the frozen record. */
+function requireSeededPersonalities(
+  value: { seats: { id: string; personality?: PersonalityProfile }[] } & {
+    personalities?: z.infer<typeof PersonalityAssignmentSchema>;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const assignment = value.personalities?.assignment;
+  if (assignment?.kind !== "seeded") return;
+  const drawn = seededPersonalityAssignment(
+    assignment.seed,
+    assignment.pool,
+    value.seats.map((seat) => seat.id),
+  );
+  value.seats.forEach((seat, index) => {
+    if (JSON.stringify(seat.personality) !== JSON.stringify(drawn[index]))
+      ctx.addIssue({
+        code: "custom",
+        path: ["seats", index, "personality"],
+        message: `seat ${seat.id}'s personality is not the seeded draw (${drawn[index]!.id})`,
+      });
+  });
+}
+/** Seat personalities run only on the current contract, journal_v4 Jev (CES-1585). */
+function requireJournalV4Personalities(
+  value: {
+    seats: { personality?: PersonalityProfile }[];
+    decisionEngine?: { mode: string; workflow: string };
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const engine = value.decisionEngine;
+  if (engine?.mode === "jev" && engine.workflow === "journal_v4") return;
+  value.seats.forEach((seat, index) => {
+    if (seat.personality)
+      ctx.addIssue({
+        code: "custom",
+        path: ["seats", index, "personality"],
+        message: "seat personalities require the journal_v4 Jev decision engine",
+      });
+  });
+}
 export const GameConfigV2Schema = z
   .object({
     ...GameConfigSchema.shape,
+    seats: z.array(SeatConfigV2Schema).min(5).max(16),
+    personalities: PersonalityAssignmentSchema.optional(),
     schemaVersion: z.literal("game_config_v2"),
     safety: SafetyLimitsV2Schema.default(SafetyLimitsV2Schema.parse({})),
     preset: z.enum(["standard-8-v2", "standard-8-v3", "custom-v2"]).default("custom-v2"),
@@ -252,6 +307,8 @@ export const GameConfigV2Schema = z
     requireClaudeSpendLimit(value, ctx);
     requireClaudeSessionPairing(value, ctx);
     requireEveryTurnSetup(value, ctx);
+    requireSeededPersonalities(value, ctx);
+    requireJournalV4Personalities(value, ctx);
     if (
       value.decisionEngine.mode === "jev" &&
       !["agent_v3_1", "agent_v3_2", CLAUDE_SESSION_PROTOCOL].includes(value.protocolVersion)
@@ -329,6 +386,7 @@ const NewGameDeliberationSchema = DeliberationPolicySchema.extend({
   maxContextTokens: z.number().int().min(1_000).max(32_000).default(32_000),
 });
 export const CreateGameV2RequestSchema = CreateGameRequestSchema.extend({
+  seats: z.array(SeatConfigV2Schema).min(5).max(16),
   experiment: AttentionExperimentSchema.optional(),
   safety: NewGameSafetySchema.default(NewGameSafetySchema.parse({})),
   preset: z.enum(["standard-8-v2", "standard-8-v3", "custom-v2"]).default("custom-v2"),
@@ -342,7 +400,7 @@ export const CreateGameV2RequestSchema = CreateGameRequestSchema.extend({
   decisionEngine: DecisionEngineSchema.extend({
     workflow: z.enum(["legacy_v1", "journal_v2", "journal_v3", "journal_v4"]).default("journal_v4"),
   }).optional(),
-});
+}).superRefine(requireJournalV4Personalities);
 export type CreateGameV2Request = z.infer<typeof CreateGameV2RequestSchema>;
 export const ExperimentSpecV2Schema = ExperimentSpecSchema.extend({
   schemaVersion: z.literal("experiment_v2"),
@@ -693,9 +751,10 @@ export interface PlayerContextV2 {
   self: {
     id: string;
     name: string;
-    personality?: string;
     role: z.infer<typeof RoleDefinitionSchema>;
   };
+  /** CES-1585: this seat's frozen personality, private to it; absent when it has none. */
+  personality?: PersonalityProfile;
   players: { id: string; name: string; alive: boolean; revealedRole?: string }[];
   knownAllies: { id: string; name: string }[];
   rules: Record<string, unknown>;

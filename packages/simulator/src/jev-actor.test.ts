@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { type DecisionOpportunityV1, type PlayerContextV2 } from "@werewolf/contracts";
+import {
+  GameConfigV2Schema,
+  MOTIVATION_KEYS,
+  PERSONALITY_PRESETS,
+  personalityDigest,
+  type DecisionOpportunityV1,
+  type GameConfigV2,
+  type PlayerContextV2,
+} from "@werewolf/contracts";
 import { LabRepository, DecisionStore, openDatabase, type DatabaseConnection } from "@werewolf/db";
 import { AskJevProvider, FakeDecisionProvider, type JevRequest } from "@werewolf/llm";
 import {
@@ -28,11 +36,11 @@ const dbs: DatabaseConnection[] = [];
 afterEach(() => {
   while (dbs.length) dbs.pop()!.close();
 });
-function setup(packet = actorPacket()) {
+function setup(packet = actorPacket(), config: GameConfigV2 = actorConfig()) {
   const db = openDatabase(":memory:");
   dbs.push(db);
   const repository = new LabRepository(db),
-    game = repository.createGame(actorConfig());
+    game = repository.createGame(config);
   new V2GameOrchestrator(repository, new FakeDecisionProvider()).initialize(game.id);
   repository.appendEvent(game.id, {
     type: "phase.changed",
@@ -305,6 +313,102 @@ describe("actor perspective Jev workflow", () => {
       await new DecisionExecutorV2(repository, new FakeDecisionProvider(), jev).execute(options),
     ).toBe(true);
     expect(requests).toHaveLength(2);
+  });
+  /**
+   * CES-1585 (halcyon 993): a seat with a personality plays its character. The verified-last-wolf
+   * rule still asks it once to reconsider, naming its motivations; a ballot it keeps then commits,
+   * recorded as "personality exception applied", with no pause and no operator acknowledgement. The
+   * control seat without a personality is still rejected (the test above).
+   */
+  it("commits a Disruptor's ballot kept after one motive-aware reconsideration, with the personality exception applied", async () => {
+    const disruptor = PERSONALITY_PRESETS.disruptor;
+    const config = GameConfigV2Schema.parse({
+      ...actorConfig(),
+      seats: actorConfig().seats.map((seat) =>
+        seat.id === "p1" ? { ...seat, personality: disruptor } : seat,
+      ),
+    });
+    const { repository, options, store, game, op } = setup(
+      { ...actorPacket(), personality: disruptor },
+      config,
+    );
+    const storedConfig = repository.getGame(game.id)!.config as GameConfigV2;
+    expect(storedConfig.seats[0]!.personality).toEqual(disruptor);
+    const requests: JevRequest[] = [];
+    const executor = new DecisionExecutorV2(
+      repository,
+      new FakeDecisionProvider(),
+      provider(["abstain"], requests),
+    );
+    expect(await executor.execute(options)).toBe(true);
+    expect(requests).toHaveLength(2);
+    expect((requests[0]!.state as { personality?: string }).personality).toBe(
+      personalityDigest(disruptor),
+    );
+    const { instruction } = (requests[1]!.state as { reconsideration: { instruction: string } })
+      .reconsideration;
+    for (const key of MOTIVATION_KEYS)
+      expect(instruction).toContain(`${key} ${disruptor.motivations[key].toFixed(2)}`);
+    const stored = store.get<DecisionOpportunityV1>(game.id, `decision:${op.id}`)!;
+    expect(stored.status).toBe("committed");
+    expect(stored.jevState?.semanticRejected).toBeFalsy();
+    expect(stored.bestSubmission).toMatchObject({ mode: "abstain" });
+    const events = () => repository.listEvents(game.id);
+    const assessments = events().filter((e) => e.type === "decision.semantic_assessed");
+    expect(assessments).toHaveLength(2);
+    // The audit records that the exception was applied, not that the ballot fits the character.
+    expect(assessments[1]!.payload).toMatchObject({
+      rule: "verified_last_wolf_ballot_v1",
+      applicable: true,
+      issues: [],
+      personalityException: "applied",
+      exceptedIssues: [expect.stringContaining("sole remaining werewolf")],
+    });
+    const committed = () => events().filter((e) => e.type === "decision.committed").length;
+    expect(committed()).toBe(1);
+    // A resumed decision neither asks again nor commits again.
+    expect(await executor.execute(options)).toBe(true);
+    expect(
+      await new DecisionExecutorV2(
+        repository,
+        new FakeDecisionProvider(),
+        provider(["abstain"], requests),
+      ).execute(options),
+    ).toBe(true);
+    expect(requests).toHaveLength(2);
+    expect(committed()).toBe(1);
+  });
+  it("resumes a personality seat's reconsideration checkpoint without restarting it", async () => {
+    const disruptor = PERSONALITY_PRESETS.disruptor;
+    const config = GameConfigV2Schema.parse({
+      ...actorConfig(),
+      seats: actorConfig().seats.map((seat) =>
+        seat.id === "p1" ? { ...seat, personality: disruptor } : seat,
+      ),
+    });
+    const { repository, options, store, game, op } = setup(
+      { ...actorPacket(), personality: disruptor },
+      config,
+    );
+    const requests: JevRequest[] = [];
+    const jev = provider(["abstain"], requests, () => {
+      if (requests.length === 1) repository.updateGame(game.id, { status: "paused" });
+    });
+    expect(
+      await new DecisionExecutorV2(repository, new FakeDecisionProvider(), jev).execute(options),
+    ).toBe(false);
+    expect(store.get<DecisionOpportunityV1>(game.id, `decision:${op.id}`)!.jevState).toMatchObject({
+      semanticIssues: [expect.stringContaining("sole remaining werewolf")],
+    });
+    repository.updateGame(game.id, { status: "running" });
+    expect(
+      await new DecisionExecutorV2(repository, new FakeDecisionProvider(), jev).execute(options),
+    ).toBe(true);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]!.state).toHaveProperty("reconsideration");
+    expect(store.get<DecisionOpportunityV1>(game.id, `decision:${op.id}`)!.status).toBe(
+      "committed",
+    );
   });
   it("allows uncertain abstention and does not impose village objectives on a wolf", async () => {
     for (const packet of [

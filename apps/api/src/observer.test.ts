@@ -19,7 +19,6 @@ afterEach(async () => {
 const seats = Array.from({ length: 8 }, (_, index) => ({
   id: `p${index + 1}`,
   name: `Player ${index + 1}`,
-  personality: "Fixture",
 }));
 const baseInput = {
   name: "Observer V2",
